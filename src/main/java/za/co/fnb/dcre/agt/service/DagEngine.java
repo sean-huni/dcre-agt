@@ -43,24 +43,40 @@ public class DagEngine {
     @Inject
     JobLauncher launcher;
 
-    @Scheduled(every = "2s")
+    @Scheduled(every = "2s", concurrentExecution = io.quarkus.scheduler.Scheduled.ConcurrentExecution.SKIP)
     void tick() {
         if (!lease.holdsLease()) {
             return;
         }
         for (FileArrival arrival : repo.arrivalsByStatus(ArrivalStatus.CLAIMED)) {
-            launcher.launch(arrival.id(), Stage.CRR);
-            repo.updateArrivalStatus(arrival.id(), ArrivalStatus.DAG_RUNNING);
+            try {
+                if (arrival.claimedPath() == null) {
+                    LOG.warnf("arrival %s CLAIMED without claimed_path: not launching (F21)", arrival.id());
+                    continue;
+                }
+                launcher.launch(arrival.id(), Stage.CRR);
+                repo.transitionArrival(arrival.id(), ArrivalStatus.CLAIMED, ArrivalStatus.DAG_RUNNING);
+            } catch (Exception e) {
+                LOG.warnf("start DAG for %s failed: %s", arrival.id(), e.getMessage());
+            }
         }
         for (FileArrival arrival : repo.arrivalsByStatus(ArrivalStatus.DAG_RUNNING)) {
-            Map<Stage, Outcome> outcomes = repo.outcomesForArrival(arrival.id());
-            Set<Stage> intended = EnumSet.noneOf(Stage.class);
-            repo.intentsForArrival(arrival.id()).forEach(i -> intended.add(i.stage()));
+            try {
+                Map<Stage, Outcome> outcomes = repo.outcomesForArrival(arrival.id());
+                Set<Stage> intended = EnumSet.noneOf(Stage.class);
+                repo.intentsForArrival(arrival.id()).forEach(i -> intended.add(i.stage()));
 
-            for (Stage next : computeLaunches(outcomes, intended)) {
-                launcher.launch(arrival.id(), next);
+                if (!lease.holdsLease()) {
+                    return; // re-check before side effects (F7)
+                }
+                for (Stage next : computeLaunches(outcomes, intended)) {
+                    launcher.launch(arrival.id(), next);
+                }
+                terminalState(outcomes).ifPresent(
+                        s -> repo.transitionArrival(arrival.id(), ArrivalStatus.DAG_RUNNING, s));
+            } catch (Exception e) {
+                LOG.warnf("advance DAG for %s failed: %s", arrival.id(), e.getMessage()); // one poisoned arrival never wedges the loop (F10)
             }
-            terminalState(outcomes).ifPresent(s -> repo.updateArrivalStatus(arrival.id(), s));
         }
     }
 
@@ -69,11 +85,18 @@ public class DagEngine {
         Set<Stage> launches = EnumSet.noneOf(Stage.class);
         for (Map.Entry<Stage, Outcome> done : outcomes.entrySet()) {
             switch (done.getValue()) {
-                case BUSINESS_ACCEPTED, BUSINESS_PARTIAL -> {
+                case BUSINESS_ACCEPTED -> {
                     for (Stage next : EDGES.getOrDefault(done.getKey(), Set.of())) {
                         if (!intended.contains(next)) {
                             launches.add(next);
                         }
+                    }
+                }
+                case BUSINESS_PARTIAL -> {
+                    // A-16 fail-closed default (ALL_OR_NOTHING): partial acceptance
+                    // suppresses CDE/CRW; only the initial responder proceeds (Fugu F12).
+                    if (!intended.contains(Stage.CIR)) {
+                        launches.add(Stage.CIR);
                     }
                 }
                 case BUSINESS_FILE_FATAL -> {
@@ -91,11 +114,20 @@ public class DagEngine {
         return launches;
     }
 
-    /** Terminal arrival state, when reached. */
+    /** Terminal arrival state, when reached. The responder (CIR) must itself be
+     *  business-done before any terminal verdict (Fugu F6: a tech-failed CIR
+     *  means the NACK never left; the arrival stays open for the reconciler). */
     public static java.util.Optional<ArrivalStatus> terminalState(Map<Stage, Outcome> outcomes) {
-        if (outcomes.getOrDefault(Stage.CIR, null) != null
-                && outcomes.values().stream().anyMatch(o -> o == Outcome.BUSINESS_FILE_FATAL)) {
-            return java.util.Optional.of(ArrivalStatus.DAG_FAILED);
+        boolean cirDone = isBusinessDone(outcomes.get(Stage.CIR));
+        boolean anyFatal = outcomes.values().stream().anyMatch(o -> o == Outcome.BUSINESS_FILE_FATAL);
+        boolean anyPartial = outcomes.values().stream().anyMatch(o -> o == Outcome.BUSINESS_PARTIAL);
+        if (anyFatal) {
+            return cirDone ? java.util.Optional.of(ArrivalStatus.DAG_FAILED) : java.util.Optional.empty();
+        }
+        if (anyPartial) {
+            // Fail-closed partial (F12): CDE/CRW suppressed; CIR reporting the
+            // partial verdict completes the arrival.
+            return cirDone ? java.util.Optional.of(ArrivalStatus.DAG_COMPLETE) : java.util.Optional.empty();
         }
         boolean allTerminalDone = TERMINAL.stream()
                 .allMatch(s -> isBusinessDone(outcomes.get(s)));

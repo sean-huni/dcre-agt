@@ -30,18 +30,18 @@ class LedgerAndLeaseTest {
     @Test
     void arrivalIdentityIsUniqueAndRedeliveryIsNoOp() {
         String name = "FNBRF01_TEST" + UUID.randomUUID().toString().substring(0, 6) + ".txt";
-        Optional<UUID> first = repo.insertArrival("onhost-req", name, "hash-a", "FNBRF01", "MSG1",
-                ArrivalStatus.CLAIMED, null);
+        Optional<UUID> first = repo.insertArrival(UUID.randomUUID(), "onhost-req", name, "hash-a", "FNBRF01", "MSG1",
+                ArrivalStatus.CLAIMED, null, null);
         assertTrue(first.isPresent());
-        Optional<UUID> replay = repo.insertArrival("onhost-req", name, "hash-a", "FNBRF01", "MSG1",
-                ArrivalStatus.CLAIMED, null);
+        Optional<UUID> replay = repo.insertArrival(UUID.randomUUID(), "onhost-req", name, "hash-a", "FNBRF01", "MSG1",
+                ArrivalStatus.CLAIMED, null, null);
         assertTrue(replay.isEmpty(), "same (route,name,hash) must be a no-op");
     }
 
     @Test
     void intentIsWriteAheadAndNonOverlapping() {
-        UUID arrival = repo.insertArrival("onhost-req", "FNBCC01_M" + UUID.randomUUID(), "h",
-                "FNBCC01", "M1", ArrivalStatus.CLAIMED, null).orElseThrow();
+        UUID arrival = repo.insertArrival(UUID.randomUUID(), "onhost-req", "FNBCC01_M" + UUID.randomUUID(), "h",
+                "FNBCC01", "M1", ArrivalStatus.CLAIMED, null, null).orElseThrow();
         Optional<UUID> intent = repo.insertIntent(arrival, Stage.CRR, "dcre-crr-" + arrival.toString().substring(0, 8));
         assertTrue(intent.isPresent());
         assertTrue(repo.insertIntent(arrival, Stage.CRR, "other-name").isEmpty(),

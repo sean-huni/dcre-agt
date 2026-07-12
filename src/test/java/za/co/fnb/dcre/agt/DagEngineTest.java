@@ -27,9 +27,33 @@ class DagEngineTest {
     @Test
     void ctvAcceptedForksCdeAndCirTogether() {
         Set<Stage> launches = DagEngine.computeLaunches(
-                Map.of(Stage.CRR, Outcome.BUSINESS_ACCEPTED, Stage.CTV, Outcome.BUSINESS_PARTIAL),
+                Map.of(Stage.CRR, Outcome.BUSINESS_ACCEPTED, Stage.CTV, Outcome.BUSINESS_ACCEPTED),
                 EnumSet.of(Stage.CRR, Stage.CTV));
         assertEquals(EnumSet.of(Stage.CDE, Stage.CIR), launches);
+    }
+
+    @Test
+    void partialSuppressesCdeAndCrwFailClosed() {
+        // A-16 fail-closed default (Fugu F12): partial acceptance never debits.
+        Set<Stage> launches = DagEngine.computeLaunches(
+                Map.of(Stage.CRR, Outcome.BUSINESS_ACCEPTED, Stage.CTV, Outcome.BUSINESS_PARTIAL),
+                EnumSet.of(Stage.CRR, Stage.CTV));
+        assertEquals(EnumSet.of(Stage.CIR), launches);
+    }
+
+    @Test
+    void techFailedResponderBlocksTerminalVerdict() {
+        // Fugu F6: a NACK that never left OnHost must keep the arrival open.
+        assertTrue(DagEngine.terminalState(Map.of(
+                Stage.CRR, Outcome.BUSINESS_ACCEPTED, Stage.CTV, Outcome.BUSINESS_FILE_FATAL,
+                Stage.CIR, Outcome.TECH_FAILED)).isEmpty());
+    }
+
+    @Test
+    void partialCompletesOnceResponderReports() {
+        assertEquals(ArrivalStatus.DAG_COMPLETE, DagEngine.terminalState(Map.of(
+                Stage.CRR, Outcome.BUSINESS_ACCEPTED, Stage.CTV, Outcome.BUSINESS_PARTIAL,
+                Stage.CIR, Outcome.BUSINESS_ACCEPTED)).orElseThrow());
     }
 
     @Test

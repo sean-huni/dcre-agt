@@ -31,8 +31,32 @@ public class LeaseService {
         tryAcquire(config.holderId());
     }
 
+    /** Retry CRDB serialization aborts (SQLSTATE 40001) with backoff (SPEC-DAG 6b). */
+    static <T> T retry40001(java.util.function.Supplier<T> op) {
+        for (int attempt = 1; ; attempt++) {
+            try {
+                return op.get();
+            } catch (IllegalStateException e) {
+                if (attempt >= 4 || !(e.getCause() instanceof SQLException sql)
+                        || !"40001".equals(sql.getSQLState())) {
+                    throw e;
+                }
+                try {
+                    Thread.sleep(50L * attempt);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    throw e;
+                }
+            }
+        }
+    }
+
     /** CAS acquire/renew. @return true when this holder now owns the lease. */
     public boolean tryAcquire(String holder) {
+        return retry40001(() -> casAcquire(holder));
+    }
+
+    private boolean casAcquire(String holder) {
         String sql = """
                 INSERT INTO agt_lease (singleton, holder, expires_at)
                 VALUES (true, ?, now() + INTERVAL '%d seconds')

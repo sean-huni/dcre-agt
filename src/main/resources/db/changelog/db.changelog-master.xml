@@ -6,5 +6,6 @@
         http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
 
     <include file="db/changelog/2026/07/001-agtops-core.xml"/>
+    <include file="db/changelog/2026/07/002-intent-job-uid.xml"/>
 
 </databaseChangeLog>

@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+        xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+        http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
+
+    <!-- Fugu F9/F1: persist the created Job's UID so a same-name recreate is
+         never mistaken for the original; widen k8s_condition for real reasons
+         (DeadlineExceeded, BackoffLimitExceeded). F3/F11: content-level and
+         logical-key dedup become DB-enforced backstops, not pre-checks. -->
+    <changeSet id="002-intent-job-uid" author="dcre">
+        <addColumn tableName="launch_intent">
+            <column name="job_uid" type="VARCHAR(64)"/>
+        </addColumn>
+        <modifyDataType tableName="stage_outcome" columnName="k8s_condition" newDataType="VARCHAR(64)"/>
+    </changeSet>
+
+    <changeSet id="002-arrival-dedup-indexes" author="dcre">
+        <sql>
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_arrival_content
+                ON file_arrival (route_id, payload_sha256)
+                WHERE status &lt;&gt; 'QUARANTINED';
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_arrival_logical_key
+                ON file_arrival (route_id, client_token, msg_id_token)
+                WHERE status &lt;&gt; 'QUARANTINED' AND client_token IS NOT NULL;
+        </sql>
+    </changeSet>
+
+</databaseChangeLog>

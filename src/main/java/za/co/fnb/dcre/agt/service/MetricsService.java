@@ -38,7 +38,7 @@ public class MetricsService {
         registry.gauge("agt_lease_held", leaseHeld);
     }
 
-    @Scheduled(every = "10s")
+    @Scheduled(every = "10s", concurrentExecution = io.quarkus.scheduler.Scheduled.ConcurrentExecution.SKIP)
     void refresh() {
         leaseHeld.set(lease.holdsLease() ? 1 : 0);
         count("SELECT status, count(*) FROM file_arrival GROUP BY 1", "agt_file_arrivals_total", "status");

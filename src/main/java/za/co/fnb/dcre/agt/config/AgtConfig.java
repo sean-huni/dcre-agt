@@ -20,4 +20,8 @@ public interface AgtConfig {
     /** Gate for K8s launches; disabled in unit tests. */
     @WithDefault("true")
     boolean launchEnabled();
+
+    /** Observation stays on even when launching is paused (Fugu F1a). */
+    @WithDefault("true")
+    boolean observeEnabled();
 }

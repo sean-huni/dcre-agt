@@ -38,8 +38,9 @@ public class JobLauncher {
     @Inject
     KubernetesClient k8s;
 
+    /** Full 128-bit arrival identity in the name (Fugu F2): 41 chars, DNS-1123 safe. */
     public static String jobName(Stage stage, UUID arrivalId) {
-        return "dcre-" + stage.name().toLowerCase() + "-" + arrivalId.toString().substring(0, 8);
+        return "dcre-" + stage.name().toLowerCase() + "-" + arrivalId.toString().replace("-", "");
     }
 
     /** Launch stage for arrival; no-op when an intent already exists (non-overlap). */
@@ -59,16 +60,20 @@ public class JobLauncher {
             return;
         }
         Job job = stubJob(name, stage, arrivalId);
+        String uid;
         try {
-            k8s.batch().v1().jobs().inNamespace(config.namespace()).resource(job).create();
-            LOG.infof("Launched %s", name);
+            Job created = k8s.batch().v1().jobs().inNamespace(config.namespace()).resource(job).create();
+            uid = created.getMetadata() != null ? created.getMetadata().getUid() : null;
+            LOG.infof("Launched %s (uid %s)", name, uid);
         } catch (KubernetesClientException e) {
             if (e.getCode() != 409) {
                 throw e; // reconciler retries later; intent stays INTENDED
             }
-            LOG.infof("Job %s already exists (409): treating as launched", name);
+            Job existing = k8s.batch().v1().jobs().inNamespace(config.namespace()).withName(name).get();
+            uid = existing != null && existing.getMetadata() != null ? existing.getMetadata().getUid() : null;
+            LOG.infof("Job %s already exists (409, uid %s): treating as launched", name, uid);
         }
-        repo.markIntentLaunched(intentId);
+        repo.markIntentLaunched(intentId, uid);
     }
 
     private Job stubJob(String name, Stage stage, UUID arrivalId) {
@@ -77,7 +82,9 @@ public class JobLauncher {
         String script = "echo run $DCRE_STAGE for $DCRE_ARRIVAL; sleep 2; "
                 + "if [ -f /exchange/chaos/fail-$DCRE_STAGE ]; then exit 1; fi; "
                 + "mkdir -p /exchange/outcomes; "
-                + "echo BUSINESS_ACCEPTED > /exchange/outcomes/$JOB_NAME; exit 0";
+                + "V=BUSINESS_ACCEPTED; "
+                + "if [ -f /exchange/chaos/outcome-$DCRE_STAGE ]; then V=$(cat /exchange/chaos/outcome-$DCRE_STAGE); fi; "
+                + "echo $V > /exchange/outcomes/$JOB_NAME.tmp && mv /exchange/outcomes/$JOB_NAME.tmp /exchange/outcomes/$JOB_NAME; exit 0";
         return new JobBuilder()
                 .withNewMetadata()
                     .withName(name)

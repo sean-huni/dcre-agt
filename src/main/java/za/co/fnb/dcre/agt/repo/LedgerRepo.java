@@ -33,29 +33,49 @@ public class LedgerRepo {
 
     // ---- file_arrival -----------------------------------------------------
 
-    /** @return arrival id, or empty when the identical (route, name, hash) already exists. */
-    public Optional<UUID> insertArrival(String route, String name, String sha256,
+    /** @return arrival id, or empty when a dedup index already covers this file. */
+    public Optional<UUID> insertArrival(UUID id, String route, String name, String sha256,
                                         String clientToken, String msgIdToken,
-                                        ArrivalStatus status, String quarantineReason) {
+                                        ArrivalStatus status, String quarantineReason,
+                                        String claimedPath) {
         String sql = """
                 INSERT INTO file_arrival
-                  (route_id, physical_filename, payload_sha256, client_token, msg_id_token, status, quarantine_reason)
-                VALUES (?,?,?,?,?,?,?)
-                ON CONFLICT (route_id, physical_filename, payload_sha256) DO NOTHING
+                  (id, route_id, physical_filename, payload_sha256, client_token, msg_id_token, status, quarantine_reason, claimed_path)
+                VALUES (?,?,?,?,?,?,?,?,?)
+                ON CONFLICT DO NOTHING
                 RETURNING id""";
         try (Connection c = ds.getConnection(); PreparedStatement p = c.prepareStatement(sql)) {
-            p.setString(1, route);
-            p.setString(2, name);
-            p.setString(3, sha256);
-            p.setString(4, clientToken);
-            p.setString(5, msgIdToken);
-            p.setString(6, status.name());
-            p.setString(7, quarantineReason);
+            p.setObject(1, id);
+            p.setString(2, route);
+            p.setString(3, name);
+            p.setString(4, sha256);
+            p.setString(5, clientToken);
+            p.setString(6, msgIdToken);
+            p.setString(7, status.name());
+            p.setString(8, quarantineReason);
+            p.setString(9, claimedPath);
             try (ResultSet r = p.executeQuery()) {
                 return r.next() ? Optional.of(r.getObject(1, UUID.class)) : Optional.empty();
             }
         } catch (SQLException e) {
             throw new IllegalStateException("insertArrival failed", e);
+        }
+    }
+
+    /** True when the same CONTENT (route + hash) already exists non-quarantined (Fugu F3). */
+    public boolean sameContentExists(String route, String sha256) {
+        String sql = """
+                SELECT count(*) FROM file_arrival
+                WHERE route_id=? AND payload_sha256=? AND status <> 'QUARANTINED'""";
+        try (Connection c = ds.getConnection(); PreparedStatement p = c.prepareStatement(sql)) {
+            p.setString(1, route);
+            p.setString(2, sha256);
+            try (ResultSet r = p.executeQuery()) {
+                r.next();
+                return r.getLong(1) > 0;
+            }
+        } catch (SQLException e) {
+            throw new IllegalStateException("sameContentExists failed", e);
         }
     }
 
@@ -82,10 +102,12 @@ public class LedgerRepo {
         }
     }
 
-    public void updateArrivalStatus(UUID id, ArrivalStatus status) {
-        exec("UPDATE file_arrival SET status=? WHERE id=?", p -> {
-            p.setString(1, status.name());
+    /** Monotonic CAS transition (Fugu F7): writes only from the expected state. */
+    public void transitionArrival(UUID id, ArrivalStatus from, ArrivalStatus to) {
+        exec("UPDATE file_arrival SET status=? WHERE id=? AND status=?", p -> {
+            p.setString(1, to.name());
             p.setObject(2, id);
+            p.setString(3, from.name());
         });
     }
 
@@ -142,8 +164,36 @@ public class LedgerRepo {
         }
     }
 
-    public void markIntentLaunched(UUID intentId) {
-        exec("UPDATE launch_intent SET status='LAUNCHED' WHERE id=?", p -> p.setObject(1, intentId));
+    public void markIntentLaunched(UUID intentId, String jobUid) {
+        exec("UPDATE launch_intent SET status='LAUNCHED', job_uid=? WHERE id=?", p -> {
+            p.setString(1, jobUid);
+            p.setObject(2, intentId);
+        });
+    }
+
+    public Optional<String> intentJobUid(UUID intentId) {
+        try (Connection c = ds.getConnection();
+             PreparedStatement p = c.prepareStatement("SELECT job_uid FROM launch_intent WHERE id=?")) {
+            p.setObject(1, intentId);
+            try (ResultSet r = p.executeQuery()) {
+                return r.next() ? Optional.ofNullable(r.getString(1)) : Optional.empty();
+            }
+        } catch (SQLException e) {
+            throw new IllegalStateException("intentJobUid failed", e);
+        }
+    }
+
+    public java.time.OffsetDateTime intentCreatedAt(UUID intentId) {
+        try (Connection c = ds.getConnection();
+             PreparedStatement p = c.prepareStatement("SELECT created_at FROM launch_intent WHERE id=?")) {
+            p.setObject(1, intentId);
+            try (ResultSet r = p.executeQuery()) {
+                r.next();
+                return r.getObject(1, java.time.OffsetDateTime.class);
+            }
+        } catch (SQLException e) {
+            throw new IllegalStateException("intentCreatedAt failed", e);
+        }
     }
 
     public List<LaunchIntent> intentsForArrival(UUID arrivalId) {

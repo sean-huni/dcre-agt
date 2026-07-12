@@ -9,8 +9,8 @@ import za.co.fnb.dcre.agt.config.AgtConfig;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Stream;
 
 /**
@@ -32,9 +32,9 @@ public class DirectoryWatcher {
     @Inject
     ArrivalService arrivals;
 
-    private final Map<Path, Long> lastSizes = new HashMap<>();
+    private final Map<Path, Long> lastSizes = new ConcurrentHashMap<>();
 
-    @Scheduled(every = "2s")
+    @Scheduled(every = "2s", concurrentExecution = io.quarkus.scheduler.Scheduled.ConcurrentExecution.SKIP)
     void tick() {
         if (!lease.holdsLease()) {
             return;
@@ -44,7 +44,13 @@ public class DirectoryWatcher {
             return;
         }
         try (Stream<Path> files = Files.list(dir)) {
-            files.filter(Files::isRegularFile).forEach(this::consider);
+            files.filter(Files::isRegularFile).forEach(f -> {
+                try {
+                    consider(f);
+                } catch (Exception e) {
+                    LOG.warnf("consider %s failed: %s", f.getFileName(), e.getMessage());
+                }
+            });
         } catch (IOException e) {
             LOG.warnf("watch tick failed: %s", e.getMessage());
         }
