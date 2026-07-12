@@ -47,6 +47,9 @@ public interface AgtConfig {
     /** M5 AIS endorsements stage image (ENDO route, R-36). */
     java.util.Optional<String> aisImage();
 
+    /** M6 HCS holiday-calendar-sync clock executor image (R-38). */
+    java.util.Optional<String> hcsImage();
+
     /** CRW Process-Date Executor window length (R-37); dev default 60s. */
     @WithDefault("60")
     long crwIntervalSeconds();
@@ -54,6 +57,10 @@ public interface AgtConfig {
     /** PRG clock-window length (R-28); dev default 60s. */
     @WithDefault("60")
     long prgIntervalSeconds();
+
+    /** HCS holiday-sync clock-window length in hours (R-38); Nager re-sync cadence. */
+    @WithDefault("6")
+    int hcsIntervalHours();
 
     /** JDBC url the service Jobs use for dcre_collections (in-cluster). */
     @WithDefault("jdbc:postgresql://crdb:26257/dcre_collections?sslmode=disable")

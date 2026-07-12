@@ -36,8 +36,10 @@ agt:
   pxr-image: ${AGT_PXR_IMAGE:dcre-pxr:m4}
   prg-image: ${AGT_PRG_IMAGE:dcre-prg:m4}
   ais-image: ${AGT_AIS_IMAGE:dcre-ais:m5}
+  hcs-image: ${AGT_HCS_IMAGE:dcre-hcs:m6}
   crw-interval-seconds: ${AGT_CRW_INTERVAL_SECONDS:60}
   prg-interval-seconds: ${AGT_PRG_INTERVAL_SECONDS:60}
+  hcs-interval-hours: ${AGT_HCS_INTERVAL_HOURS:6}
   service-db-url: ${AGT_SERVICE_DB_URL:jdbc:postgresql://crdb:26257/dcre_collections?sslmode=disable}
 
 "%test":

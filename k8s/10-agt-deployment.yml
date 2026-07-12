@@ -53,6 +53,8 @@ spec:
               value: dcre-prg:m4
             - name: AGT_AIS_IMAGE
               value: dcre-ais:m5
+            - name: AGT_HCS_IMAGE
+              value: dcre-hcs:m6
           volumeMounts:
             - name: exchange
               mountPath: /exchange

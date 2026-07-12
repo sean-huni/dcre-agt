@@ -106,6 +106,7 @@ public class JobLauncher {
             case PXR -> config.pxrImage();
             case PRG -> config.prgImage();
             case AIS -> config.aisImage();
+            case HCS -> config.hcsImage();
         };
         return image.orElseThrow(() -> new IllegalStateException(
                 "no image configured for stage " + stage + ": set AGT_" + stage.name() + "_IMAGE"));
