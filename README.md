@@ -1,78 +1,21 @@
 # dcre-agt
 
-This project uses Quarkus, the Supersonic Subatomic Java Framework.
+AGT (Collections Agent): the only long-running DCRE service. Quarkus 3.33 LTS / Java 25. Watches the exchange directories, registers file arrivals (SHA-256 identity, R-31 filename tokens, same-key-different-hash quarantine), launches pipeline stages as ephemeral Kubernetes Jobs with write-ahead intents, records externally observed outcomes (R-33: agt_ops is the sole termination authority), and drives the Collections DAG level-triggered from its ledgers. Survives its own death: DB lease singleton + reconciliation from ledgers, proven by the kill-test.
 
-If you want to learn more about Quarkus, please visit its website: <https://quarkus.io/>.
+## Ledgers (agt_ops, Liquibase-owned)
 
-## Running the application in dev mode
+`file_arrival` (arrival registry + quarantine) - `launch_intent` (write-ahead, UNIQUE(arrival,stage) = non-overlap, UNIQUE(job_name) = deterministic names) - `stage_outcome` (UNIQUE(intent) = idempotent observation) - `agt_lease` (CAS singleton).
 
-You can run your application in dev mode that enables live coding using:
+## M1 state
 
-```shell script
-./gradlew quarkusDev
-```
+DAG `CRR -> CTV -> [CDE, CIR]; CDE -> CRW` runs busybox stub Jobs. The business verdict travels via `/exchange/outcomes/<job>` (SYNTHETIC-CONTRACT seam; M2 services replace it). Absence of an outcome is never success (arbiter clause). TECH_FAILED launches no successors.
 
-> **_NOTE:_**  Quarkus now ships with a Dev UI, which is available in dev mode only at <http://localhost:8080/q/dev/>.
+## Run
 
-## Packaging and running the application
+Local: `./gradlew quarkusDev` against the compose stack (`dcre-infra`). Cluster: `./gradlew build -x test && docker build -f src/main/docker/Dockerfile.jvm -t dcre-agt:m1 . && kind load docker-image dcre-agt:m1 --name dcre-dev && kubectl apply -f k8s/`. Config via env: `AGT_DB_URL`, `DCRE_EXCHANGE_ROOT`, `AGT_NAMESPACE`, `OTEL_EXPORTER_OTLP_ENDPOINT` (12FactorApp; clean clone runs with defaults).
 
-The application can be packaged using:
+## Tests
 
-```shell script
-./gradlew build
-```
+`./gradlew test`: Testcontainers CockroachDB v26.2.3 (ledger constraints, lease CAS/takeover, arrival dup/quarantine) + pure DAG-logic tests. E2E + chaos runs live in the sprint runbook (dcre-infra).
 
-It produces the `quarkus-run.jar` file in the `build/quarkus-app/` directory.
-Be aware that it’s not an _über-jar_ as the dependencies are copied into the `build/quarkus-app/lib/` directory.
-
-The application is now runnable using `java -jar build/quarkus-app/quarkus-run.jar`.
-
-If you want to build an _über-jar_, execute the following command:
-
-```shell script
-./gradlew build -Dquarkus.package.jar.type=uber-jar
-```
-
-The application, packaged as an _über-jar_, is now runnable using `java -jar build/*-runner.jar`.
-
-## Creating a native executable
-
-You can create a native executable using:
-
-```shell script
-./gradlew build -Dquarkus.native.enabled=true
-```
-
-Or, if you don't have GraalVM installed, you can run the native executable build in a container using:
-
-```shell script
-./gradlew build -Dquarkus.native.enabled=true -Dquarkus.native.container-build=true
-```
-
-You can then execute your native executable with: `./build/dcre-agt-1.0.0-SNAPSHOT-runner`
-
-If you want to learn more about building native executables, please consult <https://quarkus.io/guides/gradle-tooling>.
-
-## Related Guides
-
-- Scheduler ([guide](https://quarkus.io/guides/scheduler)): Schedule jobs and tasks
-- Micrometer OpenTelemetry Bridge ([guide](https://quarkus.io/guides/telemetry-micrometer-to-opentelemetry)): Micrometer registry implemented by the OpenTelemetry SDK
-- REST Jackson ([guide](https://quarkus.io/guides/rest#json-serialisation)): Jackson serialization support for Quarkus REST. This extension is not compatible with the quarkus-resteasy extension, or any of the extensions that depend on it
-- SmallRye Health ([guide](https://quarkus.io/guides/smallrye-health)): Monitor service health
-- Kubernetes Client ([guide](https://quarkus.io/guides/kubernetes-client)): Interact with Kubernetes and develop Kubernetes Operators
-- JDBC Driver - PostgreSQL ([guide](https://quarkus.io/guides/datasource)): Connect to the PostgreSQL database via JDBC
-- Liquibase ([guide](https://quarkus.io/guides/liquibase)): Handle your database schema migrations with Liquibase
-
-## Provided Code
-
-### REST
-
-Easily start your REST Web Services
-
-[Related guide section...](https://quarkus.io/guides/getting-started-reactive#reactive-jax-rs-resources)
-
-### SmallRye Health
-
-Monitor your application's health using SmallRye Health
-
-[Related guide section...](https://quarkus.io/guides/smallrye-health)
+Metrics: `agt_lease_held`, `agt_file_arrivals_total{status}`, `agt_launch_intents_total{status}`, `agt_stage_outcomes_total{outcome}` on the `dcre-agt` Grafana dashboard.
