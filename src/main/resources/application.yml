@@ -1,0 +1,41 @@
+# 12FactorApp: committed working dev defaults; env overrides. (yml-only rule, configuration.md p19)
+quarkus:
+  datasource:
+    db-kind: postgresql
+    jdbc:
+      url: ${AGT_DB_URL:jdbc:postgresql://localhost:26257/agt_ops?sslmode=disable}
+    username: ${AGT_DB_USER:root}
+    password: ${AGT_DB_PASSWORD:}
+  liquibase:
+    migrate-at-start: true
+    change-log: db/changelog/db.changelog-master.xml
+  kubernetes-client:
+    namespace: ${AGT_NAMESPACE:dcre}
+    devservices:
+      enabled: false
+  otel:
+    exporter:
+      otlp:
+        endpoint: ${OTEL_EXPORTER_OTLP_ENDPOINT:http://localhost:4317}
+  log:
+    console:
+      format: "%d{HH:mm:ss} %-5p [%c{2.}] %s%e%n"
+
+agt:
+  exchange-root: ${DCRE_EXCHANGE_ROOT:../../../infra/dcre-infra/exchange}
+  namespace: ${AGT_NAMESPACE:dcre}
+  holder-id: ${HOSTNAME:local-agt}
+  stub-image: ${AGT_STUB_IMAGE:busybox:1.37.0}
+  launch-enabled: ${AGT_LAUNCH_ENABLED:true}
+  crr-image: ${AGT_CRR_IMAGE:}
+  ctv-image: ${AGT_CTV_IMAGE:}
+  cir-image: ${AGT_CIR_IMAGE:}
+  service-db-url: ${AGT_SERVICE_DB_URL:jdbc:postgresql://crdb:26257/dcre_collections?sslmode=disable}
+
+"%test":
+  quarkus:
+    scheduler:
+      enabled: false
+  agt:
+    launch-enabled: false
+    exchange-root: build/test-exchange
