@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+        xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+        http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
+
+    <!-- R-37/R-28: clock-triggered jobs (CRW date windows, PRG client windows)
+         are intents WITHOUT an arrival. run_key carries the (date, window) or
+         (client, window) identity; UNIQUE (stage, run_key) = non-overlap. -->
+    <changeSet id="003-clock-intents" author="dcre">
+        <sql>
+            ALTER TABLE launch_intent ALTER COLUMN arrival_id DROP NOT NULL;
+            ALTER TABLE launch_intent ADD COLUMN IF NOT EXISTS run_key VARCHAR(64);
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_intent_stage_run_key
+                ON launch_intent (stage, run_key) WHERE run_key IS NOT NULL;
+        </sql>
+    </changeSet>
+
+</databaseChangeLog>

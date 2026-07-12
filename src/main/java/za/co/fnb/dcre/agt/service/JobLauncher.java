@@ -9,7 +9,8 @@ import jakarta.inject.Inject;
 import org.jboss.logging.Logger;
 import za.co.fnb.dcre.agt.config.AgtConfig;
 import za.co.fnb.dcre.agt.domain.Stage;
-import za.co.fnb.dcre.agt.repo.LedgerRepo;
+import za.co.fnb.dcre.agt.repo.ArrivalRepo;
+import za.co.fnb.dcre.agt.repo.IntentRepo;
 
 import java.util.Map;
 import java.util.Optional;
@@ -30,7 +31,10 @@ public class JobLauncher {
     public static final String LABEL_ARRIVAL = "dcre/arrival";
 
     @Inject
-    LedgerRepo repo;
+    IntentRepo intentRepo;
+
+    @Inject
+    ArrivalRepo arrivalRepo;
 
     @Inject
     AgtConfig config;
@@ -46,7 +50,7 @@ public class JobLauncher {
     /** Launch stage for arrival; no-op when an intent already exists (non-overlap). */
     public void launch(UUID arrivalId, Stage stage) {
         String name = jobName(stage, arrivalId);
-        Optional<UUID> intent = repo.insertIntent(arrivalId, stage, name);
+        Optional<UUID> intent = intentRepo.insertIntent(arrivalId, stage, name);
         if (intent.isEmpty()) {
             return; // already intended/launched by us or a predecessor incarnation
         }
@@ -55,13 +59,25 @@ public class JobLauncher {
 
     /** Create (or re-create after crash) the Job for an existing intent. */
     public void createJob(UUID intentId, UUID arrivalId, Stage stage, String name) {
+        Job job;
+        if (arrivalId == null) {
+            // clock intent (CRW/PRG): reconstruct args from the run key on the name
+            job = clockJob(name, stage, serviceImage(stage).orElseThrow(),
+                    java.util.List.of());
+        } else {
+            job = serviceImage(stage)
+                    .map(image -> serviceJob(name, stage, arrivalId, image))
+                    .orElseGet(() -> stubJob(name, stage, arrivalId));
+        }
+        createFromSpec(intentId, job);
+    }
+
+    private void createFromSpec(UUID intentId, Job job) {
+        String name = job.getMetadata().getName();
         if (!config.launchEnabled()) {
             LOG.debugf("launch disabled; intent %s stays INTENDED", name);
             return;
         }
-        Job job = serviceImage(stage)
-                .map(image -> serviceJob(name, stage, arrivalId, image))
-                .orElseGet(() -> stubJob(name, stage, arrivalId));
         String uid;
         try {
             Job created = k8s.batch().v1().jobs().inNamespace(config.namespace()).resource(job).create();
@@ -75,7 +91,7 @@ public class JobLauncher {
             uid = existing != null && existing.getMetadata() != null ? existing.getMetadata().getUid() : null;
             LOG.infof("Job %s already exists (409, uid %s): treating as launched", name, uid);
         }
-        repo.markIntentLaunched(intentId, uid);
+        intentRepo.markIntentLaunched(intentId, uid);
     }
 
     private java.util.Optional<String> serviceImage(Stage stage) {
@@ -83,14 +99,66 @@ public class JobLauncher {
             case CRR -> config.crrImage();
             case CTV -> config.ctvImage();
             case CIR -> config.cirImage();
-            default -> java.util.Optional.empty();
+            case CDE -> config.cdeImage();
+            case CRW -> config.crwImage();
         };
+    }
+
+    /** Clock-triggered launch (R-37 CRW; R-28 PRG in M4): identity (stage, runKey). */
+    public void launchClock(Stage stage, String runKey, java.util.List<String> args) {
+        String name = ("dcre-" + stage.name().toLowerCase() + "-" + runKey.replaceAll("[^a-z0-9-]", "-"))
+                .toLowerCase();
+        java.util.Optional<UUID> intent = intentRepo.insertClockIntent(stage, runKey, name);
+        if (intent.isEmpty()) {
+            return;
+        }
+        String image = serviceImage(stage).orElseThrow(
+                () -> new IllegalStateException("no image configured for clock stage " + stage));
+        createFromSpec(intent.get(), clockJob(name, stage, image, args));
+    }
+
+    private Job clockJob(String name, Stage stage, String image, java.util.List<String> args) {
+        return new JobBuilder()
+                .withNewMetadata()
+                    .withName(name)
+                    .withNamespace(config.namespace())
+                    .addToLabels(Map.of(LABEL_MANAGED_BY, "agt", LABEL_STAGE, stage.name()))
+                .endMetadata()
+                .withNewSpec()
+                    .withBackoffLimit(0)
+                    .withActiveDeadlineSeconds(900L)
+                    .withTtlSecondsAfterFinished(300)
+                    .withNewTemplate()
+                        .withNewMetadata().addToLabels(LABEL_MANAGED_BY, "agt").endMetadata()
+                        .withNewSpec()
+                            .withRestartPolicy("Never")
+                            .addNewVolume().withName("exchange")
+                                .withNewPersistentVolumeClaim("dcre-exchange", false).endVolume()
+                            .addNewContainer()
+                                .withName("stage")
+                                .withImage(image)
+                                .withImagePullPolicy("IfNotPresent")
+                                .withArgs(args.toArray(String[]::new))
+                                .addNewEnv().withName("JOB_NAME").withValue(name).endEnv()
+                                .addNewEnv().withName("DCRE_DB_URL").withValue(config.serviceDbUrl()).endEnv()
+                                .addNewEnv().withName("DCRE_EXCHANGE_ROOT").withValue("/exchange").endEnv()
+                                .addNewVolumeMount().withName("exchange").withMountPath("/exchange").endVolumeMount()
+                                .withNewResources()
+                                    .addToRequests("cpu", new io.fabric8.kubernetes.api.model.Quantity("250m"))
+                                    .addToRequests("memory", new io.fabric8.kubernetes.api.model.Quantity("512Mi"))
+                                    .addToLimits("memory", new io.fabric8.kubernetes.api.model.Quantity("768Mi"))
+                                .endResources()
+                            .endContainer()
+                        .endSpec()
+                    .endTemplate()
+                .endSpec()
+                .build();
     }
 
     /** M2 real-service Job: Spring Batch app; program args become JobParameters
      *  (arrival.id identifying per R-16; file/name non-identifying). */
     private Job serviceJob(String name, Stage stage, UUID arrivalId, String image) {
-        var arrival = repo.arrivalById(arrivalId).orElseThrow();
+        var arrival = arrivalRepo.arrivalById(arrivalId).orElseThrow();
         java.util.List<String> args = new java.util.ArrayList<>(java.util.List.of(
                 "arrival.id=" + arrivalId));
         if (stage == Stage.CRR) {

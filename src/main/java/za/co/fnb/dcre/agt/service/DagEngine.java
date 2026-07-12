@@ -8,7 +8,9 @@ import za.co.fnb.dcre.agt.domain.ArrivalStatus;
 import za.co.fnb.dcre.agt.domain.FileArrival;
 import za.co.fnb.dcre.agt.domain.Outcome;
 import za.co.fnb.dcre.agt.domain.Stage;
-import za.co.fnb.dcre.agt.repo.LedgerRepo;
+import za.co.fnb.dcre.agt.repo.ArrivalRepo;
+import za.co.fnb.dcre.agt.repo.IntentRepo;
+import za.co.fnb.dcre.agt.repo.OutcomeRepo;
 
 import java.util.EnumMap;
 import java.util.EnumSet;
@@ -27,15 +29,21 @@ public class DagEngine {
 
     private static final Logger LOG = Logger.getLogger(DagEngine.class);
 
+    // R-37: CRW is a clock-driven Process-Date Executor, not a DAG successor.
     static final Map<Stage, Set<Stage>> EDGES = new EnumMap<>(Map.of(
             Stage.CRR, EnumSet.of(Stage.CTV),
-            Stage.CTV, EnumSet.of(Stage.CDE, Stage.CIR),
-            Stage.CDE, EnumSet.of(Stage.CRW)
+            Stage.CTV, EnumSet.of(Stage.CDE, Stage.CIR)
     ));
-    static final Set<Stage> TERMINAL = EnumSet.of(Stage.CRW, Stage.CIR);
+    static final Set<Stage> TERMINAL = EnumSet.of(Stage.CDE, Stage.CIR);
 
     @Inject
-    LedgerRepo repo;
+    ArrivalRepo arrivalRepo;
+
+    @Inject
+    IntentRepo intentRepo;
+
+    @Inject
+    OutcomeRepo outcomeRepo;
 
     @Inject
     LeaseService lease;
@@ -48,23 +56,23 @@ public class DagEngine {
         if (!lease.holdsLease()) {
             return;
         }
-        for (FileArrival arrival : repo.arrivalsByStatus(ArrivalStatus.CLAIMED)) {
+        for (FileArrival arrival : arrivalRepo.arrivalsByStatus(ArrivalStatus.CLAIMED)) {
             try {
                 if (arrival.claimedPath() == null) {
                     LOG.warnf("arrival %s CLAIMED without claimed_path: not launching (F21)", arrival.id());
                     continue;
                 }
                 launcher.launch(arrival.id(), Stage.CRR);
-                repo.transitionArrival(arrival.id(), ArrivalStatus.CLAIMED, ArrivalStatus.DAG_RUNNING);
+                arrivalRepo.transitionArrival(arrival.id(), ArrivalStatus.CLAIMED, ArrivalStatus.DAG_RUNNING);
             } catch (Exception e) {
                 LOG.warnf("start DAG for %s failed: %s", arrival.id(), e.getMessage());
             }
         }
-        for (FileArrival arrival : repo.arrivalsByStatus(ArrivalStatus.DAG_RUNNING)) {
+        for (FileArrival arrival : arrivalRepo.arrivalsByStatus(ArrivalStatus.DAG_RUNNING)) {
             try {
-                Map<Stage, Outcome> outcomes = repo.outcomesForArrival(arrival.id());
+                Map<Stage, Outcome> outcomes = outcomeRepo.outcomesForArrival(arrival.id());
                 Set<Stage> intended = EnumSet.noneOf(Stage.class);
-                repo.intentsForArrival(arrival.id()).forEach(i -> intended.add(i.stage()));
+                intentRepo.intentsForArrival(arrival.id()).forEach(i -> intended.add(i.stage()));
 
                 if (!lease.holdsLease()) {
                     return; // re-check before side effects (F7)
@@ -73,7 +81,7 @@ public class DagEngine {
                     launcher.launch(arrival.id(), next);
                 }
                 terminalState(outcomes).ifPresent(
-                        s -> repo.transitionArrival(arrival.id(), ArrivalStatus.DAG_RUNNING, s));
+                        s -> arrivalRepo.transitionArrival(arrival.id(), ArrivalStatus.DAG_RUNNING, s));
             } catch (Exception e) {
                 LOG.warnf("advance DAG for %s failed: %s", arrival.id(), e.getMessage()); // one poisoned arrival never wedges the loop (F10)
             }

@@ -7,7 +7,9 @@ import org.junit.jupiter.api.Test;
 import za.co.fnb.dcre.agt.domain.ArrivalStatus;
 import za.co.fnb.dcre.agt.domain.Outcome;
 import za.co.fnb.dcre.agt.domain.Stage;
-import za.co.fnb.dcre.agt.repo.LedgerRepo;
+import za.co.fnb.dcre.agt.repo.ArrivalRepo;
+import za.co.fnb.dcre.agt.repo.IntentRepo;
+import za.co.fnb.dcre.agt.repo.OutcomeRepo;
 import za.co.fnb.dcre.agt.service.LeaseService;
 
 import java.util.Optional;
@@ -22,7 +24,13 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class LedgerAndLeaseTest {
 
     @Inject
-    LedgerRepo repo;
+    ArrivalRepo arrivalRepo;
+
+    @Inject
+    IntentRepo intentRepo;
+
+    @Inject
+    OutcomeRepo outcomeRepo;
 
     @Inject
     LeaseService lease;
@@ -30,27 +38,27 @@ class LedgerAndLeaseTest {
     @Test
     void arrivalIdentityIsUniqueAndRedeliveryIsNoOp() {
         String name = "FNBRF01_TEST" + UUID.randomUUID().toString().substring(0, 6) + ".txt";
-        Optional<UUID> first = repo.insertArrival(UUID.randomUUID(), "onhost-req", name, "hash-a", "FNBRF01", "MSG1",
+        Optional<UUID> first = arrivalRepo.insertArrival(UUID.randomUUID(), "onhost-req", name, "hash-a", "FNBRF01", "MSG1",
                 ArrivalStatus.CLAIMED, null, null);
         assertTrue(first.isPresent());
-        Optional<UUID> replay = repo.insertArrival(UUID.randomUUID(), "onhost-req", name, "hash-a", "FNBRF01", "MSG1",
+        Optional<UUID> replay = arrivalRepo.insertArrival(UUID.randomUUID(), "onhost-req", name, "hash-a", "FNBRF01", "MSG1",
                 ArrivalStatus.CLAIMED, null, null);
         assertTrue(replay.isEmpty(), "same (route,name,hash) must be a no-op");
     }
 
     @Test
     void intentIsWriteAheadAndNonOverlapping() {
-        UUID arrival = repo.insertArrival(UUID.randomUUID(), "onhost-req", "FNBCC01_M" + UUID.randomUUID(), "h",
+        UUID arrival = arrivalRepo.insertArrival(UUID.randomUUID(), "onhost-req", "FNBCC01_M" + UUID.randomUUID(), "h",
                 "FNBCC01", "M1", ArrivalStatus.CLAIMED, null, null).orElseThrow();
-        Optional<UUID> intent = repo.insertIntent(arrival, Stage.CRR, "dcre-crr-" + arrival.toString().substring(0, 8));
+        Optional<UUID> intent = intentRepo.insertIntent(arrival, Stage.CRR, "dcre-crr-" + arrival.toString().substring(0, 8));
         assertTrue(intent.isPresent());
-        assertTrue(repo.insertIntent(arrival, Stage.CRR, "other-name").isEmpty(),
+        assertTrue(intentRepo.insertIntent(arrival, Stage.CRR, "other-name").isEmpty(),
                 "second intent for same (arrival, stage) must be refused");
 
-        assertTrue(repo.insertOutcome(intent.get(), Outcome.BUSINESS_ACCEPTED, 0, "Complete"));
-        assertFalse(repo.insertOutcome(intent.get(), Outcome.TECH_FAILED, 1, "Failed"),
+        assertTrue(outcomeRepo.insertOutcome(intent.get(), Outcome.BUSINESS_ACCEPTED, 0, "Complete"));
+        assertFalse(outcomeRepo.insertOutcome(intent.get(), Outcome.TECH_FAILED, 1, "Failed"),
                 "duplicate outcome observation must be a no-op");
-        assertEquals(Outcome.BUSINESS_ACCEPTED, repo.outcomesForArrival(arrival).get(Stage.CRR),
+        assertEquals(Outcome.BUSINESS_ACCEPTED, outcomeRepo.outcomesForArrival(arrival).get(Stage.CRR),
                 "first observation wins");
     }
 

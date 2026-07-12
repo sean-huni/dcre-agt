@@ -9,13 +9,13 @@ import org.jboss.logging.Logger;
 import za.co.fnb.dcre.agt.config.AgtConfig;
 import za.co.fnb.dcre.agt.domain.LaunchIntent;
 import za.co.fnb.dcre.agt.domain.Outcome;
-import za.co.fnb.dcre.agt.repo.LedgerRepo;
+import za.co.fnb.dcre.agt.repo.IntentRepo;
+import za.co.fnb.dcre.agt.repo.OutcomeRepo;
 import io.fabric8.kubernetes.client.KubernetesClient;
 
 import java.nio.file.Files;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
-import java.util.List;
 import java.util.Optional;
 
 /**
@@ -32,7 +32,10 @@ public class OutcomeWatcher {
     private static final Logger LOG = Logger.getLogger(OutcomeWatcher.class);
 
     @Inject
-    LedgerRepo repo;
+    IntentRepo intentRepo;
+
+    @Inject
+    OutcomeRepo outcomeRepo;
 
     @Inject
     AgtConfig config;
@@ -48,7 +51,7 @@ public class OutcomeWatcher {
         if (!lease.holdsLease() || !config.observeEnabled()) {
             return;
         }
-        for (LaunchIntent intent : repo.intentsWithoutOutcome()) {
+        for (LaunchIntent intent : intentRepo.intentsWithoutOutcome()) {
             try {
                 observe(intent);
             } catch (Exception e) {
@@ -66,7 +69,7 @@ public class OutcomeWatcher {
         if (job == null) {
             return; // TTL-reaped or not yet visible: reconciler resolves via the durable seam (F1)
         }
-        String expectedUid = repo.intentJobUid(intent.id()).orElse(null);
+        String expectedUid = intentRepo.intentJobUid(intent.id()).orElse(null);
         String actualUid = job.getMetadata() != null ? job.getMetadata().getUid() : null;
         if (expectedUid != null && actualUid != null && !expectedUid.equals(actualUid)) {
             LOG.warnf("Job %s uid mismatch (expected %s, saw %s): ignoring foreign object",
@@ -92,7 +95,7 @@ public class OutcomeWatcher {
             }
             outcome = business.get();
         }
-        if (repo.insertOutcome(intent.id(), outcome, exitCode, condition)) {
+        if (outcomeRepo.insertOutcome(intent.id(), outcome, exitCode, condition)) {
             LOG.infof("Outcome %s = %s (%s, exit=%s)", intent.jobName(), outcome, condition, exitCode);
         }
     }

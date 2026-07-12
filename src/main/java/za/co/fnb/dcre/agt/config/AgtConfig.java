@@ -32,6 +32,14 @@ public interface AgtConfig {
 
     java.util.Optional<String> cirImage();
 
+    java.util.Optional<String> cdeImage();
+
+    java.util.Optional<String> crwImage();
+
+    /** CRW Process-Date Executor window length (R-37); dev default 60s. */
+    @WithDefault("60")
+    long crwIntervalSeconds();
+
     /** JDBC url the service Jobs use for dcre_collections (in-cluster). */
     @WithDefault("jdbc:postgresql://crdb:26257/dcre_collections?sslmode=disable")
     String serviceDbUrl();

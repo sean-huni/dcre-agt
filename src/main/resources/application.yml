@@ -30,6 +30,9 @@ agt:
   crr-image: ${AGT_CRR_IMAGE:}
   ctv-image: ${AGT_CTV_IMAGE:}
   cir-image: ${AGT_CIR_IMAGE:}
+  cde-image: ${AGT_CDE_IMAGE:}
+  crw-image: ${AGT_CRW_IMAGE:}
+  crw-interval-seconds: ${AGT_CRW_INTERVAL_SECONDS:60}
   service-db-url: ${AGT_SERVICE_DB_URL:jdbc:postgresql://crdb:26257/dcre_collections?sslmode=disable}
 
 "%test":

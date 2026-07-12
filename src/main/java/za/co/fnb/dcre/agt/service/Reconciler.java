@@ -8,14 +8,14 @@ import org.jboss.logging.Logger;
 import za.co.fnb.dcre.agt.config.AgtConfig;
 import za.co.fnb.dcre.agt.domain.LaunchIntent;
 import za.co.fnb.dcre.agt.domain.Outcome;
-import za.co.fnb.dcre.agt.repo.LedgerRepo;
+import za.co.fnb.dcre.agt.repo.IntentRepo;
+import za.co.fnb.dcre.agt.repo.OutcomeRepo;
 import io.fabric8.kubernetes.client.KubernetesClient;
 
 import java.time.Duration;
 import java.time.OffsetDateTime;
 import java.util.HashMap;
 import java.util.HashSet;
-import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -36,7 +36,10 @@ public class Reconciler {
     static final Duration REAP_GRACE = Duration.ofMinutes(2);
 
     @Inject
-    LedgerRepo repo;
+    IntentRepo intentRepo;
+
+    @Inject
+    OutcomeRepo outcomeRepo;
 
     @Inject
     AgtConfig config;
@@ -64,7 +67,7 @@ public class Reconciler {
             live.put(j.getMetadata().getName(), j);
         }
 
-        for (LaunchIntent intent : repo.intentsWithoutOutcome()) {
+        for (LaunchIntent intent : intentRepo.intentsWithoutOutcome()) {
             try {
                 reconcile(intent, live.get(intent.jobName()));
             } catch (Exception e) {
@@ -72,7 +75,7 @@ public class Reconciler {
             }
         }
 
-        Set<String> known = new HashSet<>(repo.allIntentJobNames());
+        Set<String> known = new HashSet<>(intentRepo.allIntentJobNames());
         for (String name : live.keySet()) {
             if (!known.contains(name)) {
                 LOG.errorf("ORPHAN managed Job with no intent: %s (out-of-band launch)", name);
@@ -86,7 +89,7 @@ public class Reconciler {
             if (liveJob != null) {
                 // Create happened, mark did not: promote, never re-create (F1b).
                 String uid = liveJob.getMetadata() != null ? liveJob.getMetadata().getUid() : null;
-                repo.markIntentLaunched(intent.id(), uid);
+                intentRepo.markIntentLaunched(intent.id(), uid);
             } else {
                 LOG.warnf("Reconcile: INTENDED intent %s has no Job; creating", intent.jobName());
                 launcher.createJob(intent.id(), intent.arrivalId(), intent.stage(), intent.jobName());
@@ -99,15 +102,15 @@ public class Reconciler {
         // LAUNCHED and reaped/vanished: resolve from the durable seam, NEVER rerun (F1).
         Optional<Outcome> business = outcomes.readBusinessOutcome(intent.jobName());
         if (business.isPresent()) {
-            if (repo.insertOutcome(intent.id(), business.get(), null, "ReapedBeforeObservation")) {
+            if (outcomeRepo.insertOutcome(intent.id(), business.get(), null, "ReapedBeforeObservation")) {
                 LOG.infof("Reconcile: recovered outcome %s = %s from seam after reap",
                         intent.jobName(), business.get());
             }
             return;
         }
-        OffsetDateTime created = repo.intentCreatedAt(intent.id());
+        OffsetDateTime created = intentRepo.intentCreatedAt(intent.id());
         if (created.plus(REAP_GRACE).isBefore(OffsetDateTime.now())) {
-            if (repo.insertOutcome(intent.id(), Outcome.TECH_FAILED, null, "VanishedNoSeam")) {
+            if (outcomeRepo.insertOutcome(intent.id(), Outcome.TECH_FAILED, null, "VanishedNoSeam")) {
                 LOG.errorf("Reconcile: LAUNCHED %s vanished with no outcome seam after grace: TECH_FAILED "
                         + "(absence is never success)", intent.jobName());
             }

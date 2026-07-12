@@ -5,7 +5,7 @@ import jakarta.inject.Inject;
 import org.jboss.logging.Logger;
 import za.co.fnb.dcre.agt.config.AgtConfig;
 import za.co.fnb.dcre.agt.domain.ArrivalStatus;
-import za.co.fnb.dcre.agt.repo.LedgerRepo;
+import za.co.fnb.dcre.agt.repo.ArrivalRepo;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -37,7 +37,7 @@ public class ArrivalService {
     public static final String ROUTE_ONHOST_REQ = "onhost-req";
 
     @Inject
-    LedgerRepo repo;
+    ArrivalRepo repo;
 
     @Inject
     AgtConfig config;
