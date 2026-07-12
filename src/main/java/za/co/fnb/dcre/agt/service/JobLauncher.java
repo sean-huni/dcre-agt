@@ -59,7 +59,9 @@ public class JobLauncher {
             LOG.debugf("launch disabled; intent %s stays INTENDED", name);
             return;
         }
-        Job job = stubJob(name, stage, arrivalId);
+        Job job = serviceImage(stage)
+                .map(image -> serviceJob(name, stage, arrivalId, image))
+                .orElseGet(() -> stubJob(name, stage, arrivalId));
         String uid;
         try {
             Job created = k8s.batch().v1().jobs().inNamespace(config.namespace()).resource(job).create();
@@ -74,6 +76,66 @@ public class JobLauncher {
             LOG.infof("Job %s already exists (409, uid %s): treating as launched", name, uid);
         }
         repo.markIntentLaunched(intentId, uid);
+    }
+
+    private java.util.Optional<String> serviceImage(Stage stage) {
+        return switch (stage) {
+            case CRR -> config.crrImage();
+            case CTV -> config.ctvImage();
+            case CIR -> config.cirImage();
+            default -> java.util.Optional.empty();
+        };
+    }
+
+    /** M2 real-service Job: Spring Batch app; program args become JobParameters
+     *  (arrival.id identifying per R-16; file/name non-identifying). */
+    private Job serviceJob(String name, Stage stage, UUID arrivalId, String image) {
+        var arrival = repo.arrivalById(arrivalId).orElseThrow();
+        java.util.List<String> args = new java.util.ArrayList<>(java.util.List.of(
+                "arrival.id=" + arrivalId));
+        if (stage == Stage.CRR) {
+            args.add("input.file=" + arrival.claimedPath() + ",java.lang.String,false");
+            args.add("original.name=" + arrival.physicalFilename() + ",java.lang.String,false");
+        }
+        return new JobBuilder()
+                .withNewMetadata()
+                    .withName(name)
+                    .withNamespace(config.namespace())
+                    .addToLabels(Map.of(LABEL_MANAGED_BY, "agt",
+                            LABEL_STAGE, stage.name(),
+                            LABEL_ARRIVAL, arrivalId.toString()))
+                .endMetadata()
+                .withNewSpec()
+                    .withBackoffLimit(0)
+                    .withActiveDeadlineSeconds(900L)
+                    .withTtlSecondsAfterFinished(300)
+                    .withNewTemplate()
+                        .withNewMetadata().addToLabels(LABEL_MANAGED_BY, "agt").endMetadata()
+                        .withNewSpec()
+                            .withRestartPolicy("Never")
+                            .addNewVolume()
+                                .withName("exchange")
+                                .withNewPersistentVolumeClaim("dcre-exchange", false)
+                            .endVolume()
+                            .addNewContainer()
+                                .withName("stage")
+                                .withImage(image)
+                                .withImagePullPolicy("IfNotPresent")
+                                .withArgs(args.toArray(String[]::new))
+                                .addNewEnv().withName("JOB_NAME").withValue(name).endEnv()
+                                .addNewEnv().withName("DCRE_DB_URL").withValue(config.serviceDbUrl()).endEnv()
+                                .addNewEnv().withName("DCRE_EXCHANGE_ROOT").withValue("/exchange").endEnv()
+                                .addNewVolumeMount().withName("exchange").withMountPath("/exchange").endVolumeMount()
+                                .withNewResources()
+                                    .addToRequests("cpu", new io.fabric8.kubernetes.api.model.Quantity("250m"))
+                                    .addToRequests("memory", new io.fabric8.kubernetes.api.model.Quantity("512Mi"))
+                                    .addToLimits("memory", new io.fabric8.kubernetes.api.model.Quantity("768Mi"))
+                                .endResources()
+                            .endContainer()
+                        .endSpec()
+                    .endTemplate()
+                .endSpec()
+                .build();
     }
 
     private Job stubJob(String name, Stage stage, UUID arrivalId) {

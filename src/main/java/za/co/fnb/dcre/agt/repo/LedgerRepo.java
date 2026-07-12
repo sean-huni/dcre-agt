@@ -143,6 +143,24 @@ public class LedgerRepo {
         }
     }
 
+    public Optional<FileArrival> arrivalById(UUID id) {
+        String sql = "SELECT id, route_id, physical_filename, payload_sha256, client_token, msg_id_token,"
+                + " status, quarantine_reason, claimed_path FROM file_arrival WHERE id=?";
+        try (Connection c = ds.getConnection(); PreparedStatement p = c.prepareStatement(sql)) {
+            p.setObject(1, id);
+            try (ResultSet r = p.executeQuery()) {
+                if (!r.next()) {
+                    return Optional.empty();
+                }
+                return Optional.of(new FileArrival(r.getObject(1, UUID.class), r.getString(2), r.getString(3),
+                        r.getString(4), r.getString(5), r.getString(6),
+                        ArrivalStatus.valueOf(r.getString(7)), r.getString(8), r.getString(9)));
+            }
+        } catch (SQLException e) {
+            throw new IllegalStateException("arrivalById failed", e);
+        }
+    }
+
     // ---- launch_intent ----------------------------------------------------
 
     /** Write-ahead intent. @return intent id, or empty when (arrival, stage) already intended. */

@@ -24,4 +24,15 @@ public interface AgtConfig {
     /** Observation stays on even when launching is paused (Fugu F1a). */
     @WithDefault("true")
     boolean observeEnabled();
+
+    /** M2 service images per stage; absent stages run the busybox stub. */
+    java.util.Optional<String> crrImage();
+
+    java.util.Optional<String> ctvImage();
+
+    java.util.Optional<String> cirImage();
+
+    /** JDBC url the service Jobs use for dcre_collections (in-cluster). */
+    @WithDefault("jdbc:postgresql://crdb:26257/dcre_collections?sslmode=disable")
+    String serviceDbUrl();
 }
