@@ -136,11 +136,12 @@ public class ArrivalRepo {
         }
     }
 
-    /** Known clients for the PRG clock windows (R-28): tokens seen on onhost-req. */
+    /** Known clients for the PRG clock windows (R-28): tokens seen on the
+     *  request routes (onhost-req; onhost-req-endo since M5). */
     public List<String> distinctClientTokens() {
         String sql = """
                 SELECT DISTINCT client_token FROM file_arrival
-                WHERE client_token IS NOT NULL AND route_id='onhost-req'""";
+                WHERE client_token IS NOT NULL AND route_id IN ('onhost-req','onhost-req-endo')""";
         try (Connection c = ds.getConnection(); PreparedStatement p = c.prepareStatement(sql);
              ResultSet r = p.executeQuery()) {
             List<String> out = new ArrayList<>();

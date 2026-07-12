@@ -19,10 +19,11 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * Level-triggered DAG engine over the ledgers. Static Collections DAG (M1):
- * CRR -> CTV -> [CDE, CIR]; CDE -> CRW. A BUSINESS_FILE_FATAL predecessor
- * routes to CIR only (whole-file NACK path, R-19/SPEC-DAG section 3).
+ * Level-triggered DAG engine over the ledgers. DC route (M1):
+ * CRR -> CTV -> [CDE, CIR]. A BUSINESS_FILE_FATAL predecessor routes to CIR
+ * only (whole-file NACK path, R-19/SPEC-DAG section 3).
  * M4 adds the fint-resp route: a single reader stage picked by filename token.
+ * M5 adds the ENDO route: CRR -> CTV -> AIS -> [CDE, CIR].
  * Pure decision logic lives in computeLaunches() for unit testing.
  */
 @ApplicationScoped
@@ -30,12 +31,28 @@ public class DagEngine {
 
     private static final Logger LOG = Logger.getLogger(DagEngine.class);
 
+    /** A request route's DAG shape: successor edges plus the terminal fork. */
+    record RouteDag(Map<Stage, Set<Stage>> edges, Set<Stage> terminal) { }
+
     // R-37: CRW is a clock-driven Process-Date Executor, not a DAG successor.
-    static final Map<Stage, Set<Stage>> EDGES = new EnumMap<>(Map.of(
-            Stage.CRR, EnumSet.of(Stage.CTV),
-            Stage.CTV, EnumSet.of(Stage.CDE, Stage.CIR)
-    ));
-    static final Set<Stage> TERMINAL = EnumSet.of(Stage.CDE, Stage.CIR);
+    static final RouteDag DC_DAG = new RouteDag(
+            new EnumMap<>(Map.of(
+                    Stage.CRR, EnumSet.of(Stage.CTV),
+                    Stage.CTV, EnumSet.of(Stage.CDE, Stage.CIR))),
+            EnumSet.of(Stage.CDE, Stage.CIR));
+
+    static final RouteDag ENDO_DAG = new RouteDag(
+            new EnumMap<>(Map.of(
+                    Stage.CRR, EnumSet.of(Stage.CTV),
+                    Stage.CTV, EnumSet.of(Stage.AIS),
+                    Stage.AIS, EnumSet.of(Stage.CDE, Stage.CIR))),
+            EnumSet.of(Stage.CDE, Stage.CIR));
+
+    /** R-36 route-based DAG registry: the route -> shape mapping is data, not
+     *  code; new request routes add an entry here, never a new code path. */
+    static final Map<String, RouteDag> DAGS = Map.of(
+            ArrivalService.ROUTE_ONHOST_REQ, DC_DAG,
+            ArrivalService.ROUTE_ONHOST_REQ_ENDO, ENDO_DAG);
 
     /** fint-resp filename token -> reader stage; empty = unknown token (fail closed). */
     public static java.util.Optional<Stage> fintRespStage(String filename) {
@@ -118,12 +135,13 @@ public class DagEngine {
         }
     }
 
-    /** Route dispatch: onhost-req keeps the static M1 DAG; fint-resp is the
-     *  single token-picked reader (re-seeded level-triggered, intents dedupe). */
+    /** Route dispatch: request routes resolve their DAG from the R-36 registry;
+     *  fint-resp is the single token-picked reader (re-seeded level-triggered,
+     *  intents dedupe). Unknown routes fall back to the DC shape (as before). */
     public static Set<Stage> computeLaunches(String route, String filename,
                                              Map<Stage, Outcome> outcomes, Set<Stage> intended) {
         if (!ArrivalService.ROUTE_FINT_RESP.equals(route)) {
-            return computeLaunches(outcomes, intended);
+            return computeLaunches(DAGS.getOrDefault(route, DC_DAG), outcomes, intended);
         }
         Set<Stage> launches = EnumSet.noneOf(Stage.class);
         fintRespStage(filename)
@@ -134,11 +152,15 @@ public class DagEngine {
 
     /** Successor stages to launch now, given recorded outcomes and existing intents (onhost-req). */
     public static Set<Stage> computeLaunches(Map<Stage, Outcome> outcomes, Set<Stage> intended) {
+        return computeLaunches(DC_DAG, outcomes, intended);
+    }
+
+    private static Set<Stage> computeLaunches(RouteDag dag, Map<Stage, Outcome> outcomes, Set<Stage> intended) {
         Set<Stage> launches = EnumSet.noneOf(Stage.class);
         for (Map.Entry<Stage, Outcome> done : outcomes.entrySet()) {
             switch (done.getValue()) {
                 case BUSINESS_ACCEPTED -> {
-                    for (Stage next : EDGES.getOrDefault(done.getKey(), Set.of())) {
+                    for (Stage next : dag.edges().getOrDefault(done.getKey(), Set.of())) {
                         if (!intended.contains(next)) {
                             launches.add(next);
                         }
@@ -170,7 +192,7 @@ public class DagEngine {
      *  the DAG; anything else stays open for the reconciler (fail closed). */
     public static java.util.Optional<ArrivalStatus> terminalState(String route, Map<Stage, Outcome> outcomes) {
         if (!ArrivalService.ROUTE_FINT_RESP.equals(route)) {
-            return terminalState(outcomes);
+            return terminalState(DAGS.getOrDefault(route, DC_DAG), outcomes);
         }
         boolean readerAccepted = outcomes.values().stream().anyMatch(o -> o == Outcome.BUSINESS_ACCEPTED);
         return readerAccepted ? java.util.Optional.of(ArrivalStatus.DAG_COMPLETE) : java.util.Optional.empty();
@@ -180,6 +202,10 @@ public class DagEngine {
      *  business-done before any terminal verdict (Fugu F6: a tech-failed CIR
      *  means the NACK never left; the arrival stays open for the reconciler). */
     public static java.util.Optional<ArrivalStatus> terminalState(Map<Stage, Outcome> outcomes) {
+        return terminalState(DC_DAG, outcomes);
+    }
+
+    private static java.util.Optional<ArrivalStatus> terminalState(RouteDag dag, Map<Stage, Outcome> outcomes) {
         boolean cirDone = isBusinessDone(outcomes.get(Stage.CIR));
         boolean anyFatal = outcomes.values().stream().anyMatch(o -> o == Outcome.BUSINESS_FILE_FATAL);
         boolean anyPartial = outcomes.values().stream().anyMatch(o -> o == Outcome.BUSINESS_PARTIAL);
@@ -191,7 +217,7 @@ public class DagEngine {
             // partial verdict completes the arrival.
             return cirDone ? java.util.Optional.of(ArrivalStatus.DAG_COMPLETE) : java.util.Optional.empty();
         }
-        boolean allTerminalDone = TERMINAL.stream()
+        boolean allTerminalDone = dag.terminal().stream()
                 .allMatch(s -> isBusinessDone(outcomes.get(s)));
         return allTerminalDone ? java.util.Optional.of(ArrivalStatus.DAG_COMPLETE) : java.util.Optional.empty();
     }

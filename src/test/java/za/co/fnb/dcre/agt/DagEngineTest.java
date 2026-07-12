@@ -116,6 +116,54 @@ class DagEngineTest {
     }
 
     @Test
+    void endoCrrAcceptedLaunchesCtv() {
+        Set<Stage> launches = DagEngine.computeLaunches(ArrivalService.ROUTE_ONHOST_REQ_ENDO,
+                "FNBRF01_MSG1.txt", Map.of(Stage.CRR, Outcome.BUSINESS_ACCEPTED), EnumSet.of(Stage.CRR));
+        assertEquals(EnumSet.of(Stage.CTV), launches);
+    }
+
+    @Test
+    void endoCtvAcceptedLaunchesAisOnly() {
+        Set<Stage> launches = DagEngine.computeLaunches(ArrivalService.ROUTE_ONHOST_REQ_ENDO,
+                "FNBRF01_MSG1.txt",
+                Map.of(Stage.CRR, Outcome.BUSINESS_ACCEPTED, Stage.CTV, Outcome.BUSINESS_ACCEPTED),
+                EnumSet.of(Stage.CRR, Stage.CTV));
+        assertEquals(EnumSet.of(Stage.AIS), launches, "ENDO inserts AIS between CTV and the fork");
+    }
+
+    @Test
+    void endoAisAcceptedForksCdeAndCirTogether() {
+        Set<Stage> launches = DagEngine.computeLaunches(ArrivalService.ROUTE_ONHOST_REQ_ENDO,
+                "FNBRF01_MSG1.txt",
+                Map.of(Stage.CRR, Outcome.BUSINESS_ACCEPTED, Stage.CTV, Outcome.BUSINESS_ACCEPTED,
+                        Stage.AIS, Outcome.BUSINESS_ACCEPTED),
+                EnumSet.of(Stage.CRR, Stage.CTV, Stage.AIS));
+        assertEquals(EnumSet.of(Stage.CDE, Stage.CIR), launches);
+    }
+
+    @Test
+    void endoCompletesWhenBothTerminalsAreBusinessDone() {
+        assertEquals(ArrivalStatus.DAG_COMPLETE, DagEngine.terminalState(ArrivalService.ROUTE_ONHOST_REQ_ENDO,
+                Map.of(Stage.CRR, Outcome.BUSINESS_ACCEPTED, Stage.CTV, Outcome.BUSINESS_ACCEPTED,
+                        Stage.AIS, Outcome.BUSINESS_ACCEPTED, Stage.CDE, Outcome.BUSINESS_ACCEPTED,
+                        Stage.CIR, Outcome.BUSINESS_ACCEPTED)).orElseThrow());
+        assertTrue(DagEngine.terminalState(ArrivalService.ROUTE_ONHOST_REQ_ENDO,
+                        Map.of(Stage.CRR, Outcome.BUSINESS_ACCEPTED, Stage.CTV, Outcome.BUSINESS_ACCEPTED,
+                                Stage.AIS, Outcome.BUSINESS_ACCEPTED)).isEmpty(),
+                "mid-flight ENDO arrival has no terminal state");
+    }
+
+    @Test
+    void endoPartialRoutesToCirOnlySkippingAisAndCde() {
+        // Same A-16 fail-closed rule as DC (F12): partial acceptance never debits.
+        Set<Stage> launches = DagEngine.computeLaunches(ArrivalService.ROUTE_ONHOST_REQ_ENDO,
+                "FNBRF01_MSG1.txt",
+                Map.of(Stage.CRR, Outcome.BUSINESS_ACCEPTED, Stage.CTV, Outcome.BUSINESS_PARTIAL),
+                EnumSet.of(Stage.CRR, Stage.CTV));
+        assertEquals(EnumSet.of(Stage.CIR), launches, "ENDO partial: CIR only, never AIS/CDE");
+    }
+
+    @Test
     void terminalStates() {
         assertEquals(ArrivalStatus.DAG_COMPLETE, DagEngine.terminalState(Map.of(
                 Stage.CRR, Outcome.BUSINESS_ACCEPTED, Stage.CTV, Outcome.BUSINESS_ACCEPTED,

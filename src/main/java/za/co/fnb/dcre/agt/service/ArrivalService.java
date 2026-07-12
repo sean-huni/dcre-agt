@@ -35,6 +35,7 @@ public class ArrivalService {
 
     private static final Logger LOG = Logger.getLogger(ArrivalService.class);
     public static final String ROUTE_ONHOST_REQ = "onhost-req";
+    public static final String ROUTE_ONHOST_REQ_ENDO = "onhost-req-endo";
     public static final String ROUTE_FINT_RESP = "fint-resp";
 
     @Inject

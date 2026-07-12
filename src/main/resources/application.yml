@@ -25,7 +25,6 @@ agt:
   exchange-root: ${DCRE_EXCHANGE_ROOT:../../../infra/dcre-infra/exchange}
   namespace: ${AGT_NAMESPACE:dcre}
   holder-id: ${HOSTNAME:local-agt}
-  stub-image: ${AGT_STUB_IMAGE:busybox:1.37.0}
   launch-enabled: ${AGT_LAUNCH_ENABLED:true}
   crr-image: ${AGT_CRR_IMAGE:}
   ctv-image: ${AGT_CTV_IMAGE:}
@@ -36,6 +35,7 @@ agt:
   sxr-image: ${AGT_SXR_IMAGE:dcre-sxr:m4}
   pxr-image: ${AGT_PXR_IMAGE:dcre-pxr:m4}
   prg-image: ${AGT_PRG_IMAGE:dcre-prg:m4}
+  ais-image: ${AGT_AIS_IMAGE:dcre-ais:m5}
   crw-interval-seconds: ${AGT_CRW_INTERVAL_SECONDS:60}
   prg-interval-seconds: ${AGT_PRG_INTERVAL_SECONDS:60}
   service-db-url: ${AGT_SERVICE_DB_URL:jdbc:postgresql://crdb:26257/dcre_collections?sslmode=disable}

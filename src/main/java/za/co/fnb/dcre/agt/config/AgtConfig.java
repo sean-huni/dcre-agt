@@ -14,9 +14,6 @@ public interface AgtConfig {
     /** Unique holder id for the DB lease (pod hostname). */
     String holderId();
 
-    /** Image used for M1 stub jobs. */
-    String stubImage();
-
     /** Gate for K8s launches; disabled in unit tests. */
     @WithDefault("true")
     boolean launchEnabled();
@@ -25,7 +22,8 @@ public interface AgtConfig {
     @WithDefault("true")
     boolean observeEnabled();
 
-    /** M2 service images per stage; absent stages run the busybox stub. */
+    /** Service images per stage (SCRUM-33: no stub fallback; a missing image
+     *  fails the launch fast). */
     java.util.Optional<String> crrImage();
 
     java.util.Optional<String> ctvImage();
@@ -45,6 +43,9 @@ public interface AgtConfig {
 
     /** M4 PRG clock-window executor image (R-28). */
     java.util.Optional<String> prgImage();
+
+    /** M5 AIS endorsements stage image (ENDO route, R-36). */
+    java.util.Optional<String> aisImage();
 
     /** CRW Process-Date Executor window length (R-37); dev default 60s. */
     @WithDefault("60")

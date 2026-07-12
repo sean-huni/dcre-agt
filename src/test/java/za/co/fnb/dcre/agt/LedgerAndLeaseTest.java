@@ -63,16 +63,20 @@ class LedgerAndLeaseTest {
     }
 
     @Test
-    void distinctClientTokensComeFromOnhostReqOnly() {
+    void distinctClientTokensComeFromRequestRoutesOnly() {
         String reqClient = "FNBPR" + UUID.randomUUID().toString().substring(0, 5).toUpperCase();
+        String endoClient = "FNBEN" + UUID.randomUUID().toString().substring(0, 5).toUpperCase();
         String respClient = "FNBRS" + UUID.randomUUID().toString().substring(0, 5).toUpperCase();
         arrivalRepo.insertArrival(UUID.randomUUID(), "onhost-req", reqClient + "_M1.txt", "h-" + reqClient,
                 reqClient, "M1", ArrivalStatus.CLAIMED, null, null).orElseThrow();
+        arrivalRepo.insertArrival(UUID.randomUUID(), "onhost-req-endo", endoClient + "_M1.txt", "h-" + endoClient,
+                endoClient, "M1", ArrivalStatus.CLAIMED, null, null).orElseThrow();
         arrivalRepo.insertArrival(UUID.randomUUID(), "fint-resp", respClient + "_PBSR.txt", "h-" + respClient,
                 respClient, "PBSR", ArrivalStatus.CLAIMED, null, null).orElseThrow();
 
         var tokens = arrivalRepo.distinctClientTokens();
         assertTrue(tokens.contains(reqClient), "onhost-req client is a PRG window client");
+        assertTrue(tokens.contains(endoClient), "onhost-req-endo client gets PSR windows too (M5)");
         assertFalse(tokens.contains(respClient), "fint-resp clients never seed PRG windows");
     }
 

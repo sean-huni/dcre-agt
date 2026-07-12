@@ -22,7 +22,7 @@ spec:
       serviceAccountName: dcre-agt
       containers:
         - name: agt
-          image: dcre-agt:m4
+          image: dcre-agt:m5
           imagePullPolicy: IfNotPresent
           env:
             - name: AGT_DB_URL
@@ -36,7 +36,7 @@ spec:
             - name: AGT_CRR_IMAGE
               value: dcre-crr:m4
             - name: AGT_CTV_IMAGE
-              value: dcre-ctv:m4
+              value: dcre-ctv:m5
             - name: AGT_CIR_IMAGE
               value: dcre-cir:m4
             - name: AGT_CDE_IMAGE
@@ -51,6 +51,8 @@ spec:
               value: dcre-pxr:m4
             - name: AGT_PRG_IMAGE
               value: dcre-prg:m4
+            - name: AGT_AIS_IMAGE
+              value: dcre-ais:m5
           volumeMounts:
             - name: exchange
               mountPath: /exchange

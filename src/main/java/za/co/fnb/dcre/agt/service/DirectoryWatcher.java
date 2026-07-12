@@ -14,9 +14,10 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Stream;
 
 /**
- * Polls the routed exchange directories (onhost-req; fint-resp in M4). A file
- * is READY only when its size is stable across two consecutive ticks and it is
- * not a .tmp (producer-ready protocol, SPEC-DAG section 3). Lease-gated.
+ * Polls the routed exchange directories (onhost-req; fint-resp in M4;
+ * onhost-req-endo in M5). A file is READY only when its size is stable across
+ * two consecutive ticks and it is not a .tmp (producer-ready protocol,
+ * SPEC-DAG section 3). Lease-gated.
  * The directory name IS the route id (R-30 contract).
  */
 @ApplicationScoped
@@ -24,8 +25,10 @@ public class DirectoryWatcher {
 
     private static final Logger LOG = Logger.getLogger(DirectoryWatcher.class);
 
-    static final java.util.List<String> ROUTES =
-            java.util.List.of(ArrivalService.ROUTE_ONHOST_REQ, ArrivalService.ROUTE_FINT_RESP);
+    static final java.util.List<String> ROUTES = java.util.List.of(
+            ArrivalService.ROUTE_ONHOST_REQ,
+            ArrivalService.ROUTE_FINT_RESP,
+            ArrivalService.ROUTE_ONHOST_REQ_ENDO);
 
     @Inject
     AgtConfig config;

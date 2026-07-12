@@ -63,16 +63,10 @@ public class JobLauncher {
 
     /** Create (or re-create after crash) the Job for an existing intent. */
     public void createJob(UUID intentId, UUID arrivalId, Stage stage, String name) {
-        Job job;
-        if (arrivalId == null) {
-            // clock intent (CRW/PRG): reconstruct args from the run key on the name
-            job = clockJob(name, stage, serviceImage(stage).orElseThrow(),
-                    java.util.List.of());
-        } else {
-            job = serviceImage(stage)
-                    .map(image -> serviceJob(name, stage, arrivalId, image))
-                    .orElseGet(() -> stubJob(name, stage, arrivalId));
-        }
+        // arrivalId == null is a clock intent (CRW/PRG): args live on the run key name.
+        Job job = arrivalId == null
+                ? clockJob(name, stage, serviceImage(stage), java.util.List.of())
+                : serviceJob(name, stage, arrivalId, serviceImage(stage));
         createFromSpec(intentId, job);
     }
 
@@ -98,8 +92,10 @@ public class JobLauncher {
         intentRepo.markIntentLaunched(intentId, uid);
     }
 
-    private java.util.Optional<String> serviceImage(Stage stage) {
-        return switch (stage) {
+    /** Image for a stage; every stage is a real service since M5 (SCRUM-33:
+     *  stub deleted), so a missing image is a misconfiguration, never a fallback. */
+    private String serviceImage(Stage stage) {
+        java.util.Optional<String> image = switch (stage) {
             case CRR -> config.crrImage();
             case CTV -> config.ctvImage();
             case CIR -> config.cirImage();
@@ -109,20 +105,24 @@ public class JobLauncher {
             case SXR -> config.sxrImage();
             case PXR -> config.pxrImage();
             case PRG -> config.prgImage();
+            case AIS -> config.aisImage();
         };
+        return image.orElseThrow(() -> new IllegalStateException(
+                "no image configured for stage " + stage + ": set AGT_" + stage.name() + "_IMAGE"));
     }
 
     /** Clock-triggered launch (R-37 CRW; R-28 PRG in M4): identity (stage, runKey). */
     public void launchClock(Stage stage, String runKey, java.util.List<String> args) {
-        String name = ("dcre-" + stage.name().toLowerCase() + "-" + runKey.replaceAll("[^a-z0-9-]", "-"))
-                .toLowerCase();
+        // Lowercase BEFORE sanitizing: sanitize-first collapsed every uppercase
+        // char to '-', so FNBRF01 and FNBCC01 mapped to the SAME Job name and one
+        // client's clock job silently never ran (seen live in M5 e2e).
+        String name = "dcre-" + stage.name().toLowerCase() + "-"
+                + runKey.toLowerCase().replaceAll("[^a-z0-9-]", "-");
         java.util.Optional<UUID> intent = intentRepo.insertClockIntent(stage, runKey, name);
         if (intent.isEmpty()) {
             return;
         }
-        String image = serviceImage(stage).orElseThrow(
-                () -> new IllegalStateException("no image configured for clock stage " + stage));
-        createFromSpec(intent.get(), clockJob(name, stage, image, args));
+        createFromSpec(intent.get(), clockJob(name, stage, serviceImage(stage), args));
     }
 
     private Job clockJob(String name, Stage stage, String image, java.util.List<String> args) {
@@ -173,6 +173,12 @@ public class JobLauncher {
             args.add("input.file=" + arrival.claimedPath() + ",java.lang.String,false");
             args.add("original.name=" + arrival.physicalFilename() + ",java.lang.String,false");
         }
+        // ENDO reuses the DC CTV image with the DC flow switched off (M5, R-36):
+        // only the extra env differs; DC arrivals keep the yml default (flow-dc true).
+        java.util.List<io.fabric8.kubernetes.api.model.EnvVar> extraEnv =
+                stage == Stage.CTV && ArrivalService.ROUTE_ONHOST_REQ_ENDO.equals(arrival.routeId())
+                        ? java.util.List.of(new io.fabric8.kubernetes.api.model.EnvVar("DCRE_FLOW_DC", "false", null))
+                        : java.util.List.of();
         return new JobBuilder()
                 .withNewMetadata()
                     .withName(name)
@@ -201,64 +207,12 @@ public class JobLauncher {
                                 .addNewEnv().withName("JOB_NAME").withValue(name).endEnv()
                                 .addNewEnv().withName("DCRE_DB_URL").withValue(config.serviceDbUrl()).endEnv()
                                 .addNewEnv().withName("DCRE_EXCHANGE_ROOT").withValue("/exchange").endEnv()
+                                .addAllToEnv(extraEnv)
                                 .addNewVolumeMount().withName("exchange").withMountPath("/exchange").endVolumeMount()
                                 .withNewResources()
                                     .addToRequests("cpu", new io.fabric8.kubernetes.api.model.Quantity("250m"))
                                     .addToRequests("memory", new io.fabric8.kubernetes.api.model.Quantity("512Mi"))
                                     .addToLimits("memory", new io.fabric8.kubernetes.api.model.Quantity("768Mi"))
-                                .endResources()
-                            .endContainer()
-                        .endSpec()
-                    .endTemplate()
-                .endSpec()
-                .build();
-    }
-
-    private Job stubJob(String name, Stage stage, UUID arrivalId) {
-        // M1 stub: exercises TECH (chaos file -> exit 1) and BUSINESS outcomes
-        // (outcome file seam, SYNTHETIC-CONTRACT until M2 services land).
-        String script = "echo run $DCRE_STAGE for $DCRE_ARRIVAL; sleep 2; "
-                + "if [ -f /exchange/chaos/fail-$DCRE_STAGE ]; then exit 1; fi; "
-                + "mkdir -p /exchange/outcomes; "
-                + "V=BUSINESS_ACCEPTED; "
-                + "if [ -f /exchange/chaos/outcome-$DCRE_STAGE ]; then V=$(cat /exchange/chaos/outcome-$DCRE_STAGE); fi; "
-                + "echo $V > /exchange/outcomes/$JOB_NAME.tmp && mv /exchange/outcomes/$JOB_NAME.tmp /exchange/outcomes/$JOB_NAME; exit 0";
-        return new JobBuilder()
-                .withNewMetadata()
-                    .withName(name)
-                    .withNamespace(config.namespace())
-                    .addToLabels(Map.of(LABEL_MANAGED_BY, "agt",
-                            LABEL_STAGE, stage.name(),
-                            LABEL_ARRIVAL, arrivalId.toString()))
-                .endMetadata()
-                .withNewSpec()
-                    .withBackoffLimit(0)
-                    .withActiveDeadlineSeconds(900L)
-                    .withTtlSecondsAfterFinished(300)
-                    .withNewTemplate()
-                        .withNewMetadata()
-                            .addToLabels(LABEL_MANAGED_BY, "agt")
-                        .endMetadata()
-                        .withNewSpec()
-                            .withRestartPolicy("Never")
-                            .addNewVolume()
-                                .withName("exchange")
-                                .withNewPersistentVolumeClaim("dcre-exchange", false)
-                            .endVolume()
-                            .addNewContainer()
-                                .withName("stage")
-                                .withImage(config.stubImage())
-                                .withCommand("sh", "-c", script)
-                                .addNewEnv().withName("DCRE_STAGE").withValue(stage.name()).endEnv()
-                                .addNewEnv().withName("DCRE_ARRIVAL").withValue(arrivalId.toString()).endEnv()
-                                .addNewEnv().withName("JOB_NAME").withValue(name).endEnv()
-                                .addNewVolumeMount()
-                                    .withName("exchange").withMountPath("/exchange")
-                                .endVolumeMount()
-                                .withNewResources()
-                                    .addToRequests("cpu", new io.fabric8.kubernetes.api.model.Quantity("50m"))
-                                    .addToRequests("memory", new io.fabric8.kubernetes.api.model.Quantity("32Mi"))
-                                    .addToLimits("memory", new io.fabric8.kubernetes.api.model.Quantity("64Mi"))
                                 .endResources()
                             .endContainer()
                         .endSpec()
