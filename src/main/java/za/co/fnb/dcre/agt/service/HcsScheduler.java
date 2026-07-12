@@ -34,7 +34,8 @@ public class HcsScheduler {
             return;
         }
         long window = window(Instant.now().getEpochSecond(), config.hcsIntervalHours());
-        launcher.launchClock(Stage.HCS, "hcs-w" + window, List.of(
+        // Run key carries NO stage token: clockJobName owns the dcre-hcs- prefix.
+        launcher.launchClock(Stage.HCS, "w" + window, List.of(
                 "sync.date=" + LocalDate.now(),
                 "window=w" + window,
                 "countries=ZA,java.lang.String,false"));

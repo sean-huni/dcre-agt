@@ -112,13 +112,25 @@ public class JobLauncher {
                 "no image configured for stage " + stage + ": set AGT_" + stage.name() + "_IMAGE"));
     }
 
+    /**
+     * Clock Job name from (stage, runKey). Lowercase BEFORE sanitizing (M5: a
+     * sanitize-first bug collapsed FNBRF01/FNBCC01 to one name), and a LEADING
+     * stage token in the run key is stripped once (M6: HcsScheduler's runKey
+     * "hcs-w<n>" produced "dcre-hcs-hcs-w<n>"): the name owns the prefix, the
+     * run key never contributes it.
+     */
+    public static String clockJobName(Stage stage, String runKey) {
+        String svc = stage.name().toLowerCase();
+        String key = runKey.toLowerCase().replaceAll("[^a-z0-9-]", "-");
+        if (key.startsWith(svc + "-")) {
+            key = key.substring(svc.length() + 1);
+        }
+        return "dcre-" + svc + "-" + key;
+    }
+
     /** Clock-triggered launch (R-37 CRW; R-28 PRG in M4): identity (stage, runKey). */
     public void launchClock(Stage stage, String runKey, java.util.List<String> args) {
-        // Lowercase BEFORE sanitizing: sanitize-first collapsed every uppercase
-        // char to '-', so FNBRF01 and FNBCC01 mapped to the SAME Job name and one
-        // client's clock job silently never ran (seen live in M5 e2e).
-        String name = "dcre-" + stage.name().toLowerCase() + "-"
-                + runKey.toLowerCase().replaceAll("[^a-z0-9-]", "-");
+        String name = clockJobName(stage, runKey);
         java.util.Optional<UUID> intent = intentRepo.insertClockIntent(stage, runKey, name);
         if (intent.isEmpty()) {
             return;
