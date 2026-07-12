@@ -63,6 +63,20 @@ class LedgerAndLeaseTest {
     }
 
     @Test
+    void distinctClientTokensComeFromOnhostReqOnly() {
+        String reqClient = "FNBPR" + UUID.randomUUID().toString().substring(0, 5).toUpperCase();
+        String respClient = "FNBRS" + UUID.randomUUID().toString().substring(0, 5).toUpperCase();
+        arrivalRepo.insertArrival(UUID.randomUUID(), "onhost-req", reqClient + "_M1.txt", "h-" + reqClient,
+                reqClient, "M1", ArrivalStatus.CLAIMED, null, null).orElseThrow();
+        arrivalRepo.insertArrival(UUID.randomUUID(), "fint-resp", respClient + "_PBSR.txt", "h-" + respClient,
+                respClient, "PBSR", ArrivalStatus.CLAIMED, null, null).orElseThrow();
+
+        var tokens = arrivalRepo.distinctClientTokens();
+        assertTrue(tokens.contains(reqClient), "onhost-req client is a PRG window client");
+        assertFalse(tokens.contains(respClient), "fint-resp clients never seed PRG windows");
+    }
+
+    @Test
     void leaseIsSingletonWithTakeoverOnlyAfterExpiry() {
         assertTrue(lease.tryAcquire("holder-a"));
         assertFalse(lease.tryAcquire("holder-b"), "live lease must not be stolen");

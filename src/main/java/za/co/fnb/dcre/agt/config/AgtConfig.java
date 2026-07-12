@@ -36,9 +36,23 @@ public interface AgtConfig {
 
     java.util.Optional<String> crwImage();
 
+    /** M4 fint-resp reader images (single-stage response DAGs). */
+    java.util.Optional<String> ixrImage();
+
+    java.util.Optional<String> sxrImage();
+
+    java.util.Optional<String> pxrImage();
+
+    /** M4 PRG clock-window executor image (R-28). */
+    java.util.Optional<String> prgImage();
+
     /** CRW Process-Date Executor window length (R-37); dev default 60s. */
     @WithDefault("60")
     long crwIntervalSeconds();
+
+    /** PRG clock-window length (R-28); dev default 60s. */
+    @WithDefault("60")
+    long prgIntervalSeconds();
 
     /** JDBC url the service Jobs use for dcre_collections (in-cluster). */
     @WithDefault("jdbc:postgresql://crdb:26257/dcre_collections?sslmode=disable")

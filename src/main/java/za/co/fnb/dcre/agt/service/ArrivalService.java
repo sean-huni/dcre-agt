@@ -35,6 +35,7 @@ public class ArrivalService {
 
     private static final Logger LOG = Logger.getLogger(ArrivalService.class);
     public static final String ROUTE_ONHOST_REQ = "onhost-req";
+    public static final String ROUTE_FINT_RESP = "fint-resp";
 
     @Inject
     ArrivalRepo repo;
@@ -49,6 +50,10 @@ public class ArrivalService {
     }
 
     public Result register(Path file) {
+        return register(file, ROUTE_ONHOST_REQ);
+    }
+
+    public Result register(Path file, String route) {
         String name = file.getFileName().toString();
 
         // R-31 tokens; unparseable names fail closed (F13).
@@ -58,7 +63,10 @@ public class ArrivalService {
         String msgId = null;
         if (tokens.length >= 2 && tokens[0].startsWith("FNB")) {
             client = tokens[0];
-            msgId = tokens[1];
+            // Logical identity is the WHOLE stem after the client token: response
+            // legs suffix the MsgId with a reply type (_ISR/_SBSR/_PBSR), and those
+            // are distinct logical files, not conflicting re-sends of one key.
+            msgId = stem.substring(client.length() + 1);
         }
 
         // Claim first: uuid-prefixed ATOMIC_MOVE into inflight (same filesystem).
@@ -73,37 +81,37 @@ public class ArrivalService {
         String sha256 = sha256(claimed);
 
         if (client == null) {
-            repo.insertArrival(UUID.randomUUID(), ROUTE_ONHOST_REQ, name, sha256, null, null,
+            repo.insertArrival(UUID.randomUUID(), route, name, sha256, null, null,
                     ArrivalStatus.QUARANTINED, "UNPARSEABLE_FILENAME", null);
             moveToError(claimed, arrivalId, name);
             LOG.warnf("QUARANTINED %s: filename lacks R-31 tokens", name);
             return new Result.Quarantined("UNPARSEABLE_FILENAME");
         }
 
-        if (repo.sameContentExists(ROUTE_ONHOST_REQ, sha256)) {
+        if (repo.sameContentExists(route, sha256)) {
             // Identical bytes already registered under ANY name: no-op (F3).
             moveToDuplicates(claimed, arrivalId, name);
             LOG.infof("Duplicate content re-delivery ignored: %s", name);
             return new Result.DuplicateSameHash();
         }
 
-        if (repo.sameKeyDifferentHashExists(ROUTE_ONHOST_REQ, client, msgId, sha256)) {
-            repo.insertArrival(UUID.randomUUID(), ROUTE_ONHOST_REQ, name, sha256, client, msgId,
+        if (repo.sameKeyDifferentHashExists(route, client, msgId, sha256)) {
+            repo.insertArrival(UUID.randomUUID(), route, name, sha256, client, msgId,
                     ArrivalStatus.QUARANTINED, "SAME_KEY_DIFFERENT_HASH", null);
             moveToError(claimed, arrivalId, name);
             LOG.warnf("QUARANTINED %s: same logical key, different hash", name);
             return new Result.Quarantined("SAME_KEY_DIFFERENT_HASH");
         }
 
-        Optional<UUID> id = repo.insertArrival(arrivalId, ROUTE_ONHOST_REQ, name, sha256, client, msgId,
+        Optional<UUID> id = repo.insertArrival(arrivalId, route, name, sha256, client, msgId,
                 ArrivalStatus.CLAIMED, null, claimed.toString());
         if (id.isEmpty()) {
             // Raced another writer on a dedup index: classify by what exists now.
-            if (repo.sameContentExists(ROUTE_ONHOST_REQ, sha256)) {
+            if (repo.sameContentExists(route, sha256)) {
                 moveToDuplicates(claimed, arrivalId, name);
                 return new Result.DuplicateSameHash();
             }
-            repo.insertArrival(UUID.randomUUID(), ROUTE_ONHOST_REQ, name, sha256, client, msgId,
+            repo.insertArrival(UUID.randomUUID(), route, name, sha256, client, msgId,
                     ArrivalStatus.QUARANTINED, "SAME_KEY_DIFFERENT_HASH", null);
             moveToError(claimed, arrivalId, name);
             return new Result.Quarantined("SAME_KEY_DIFFERENT_HASH");

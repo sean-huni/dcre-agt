@@ -14,14 +14,18 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Stream;
 
 /**
- * Polls the onhost-req exchange directory. A file is READY only when its size
- * is stable across two consecutive ticks and it is not a .tmp (producer-ready
- * protocol, SPEC-DAG section 3). Lease-gated.
+ * Polls the routed exchange directories (onhost-req; fint-resp in M4). A file
+ * is READY only when its size is stable across two consecutive ticks and it is
+ * not a .tmp (producer-ready protocol, SPEC-DAG section 3). Lease-gated.
+ * The directory name IS the route id (R-30 contract).
  */
 @ApplicationScoped
 public class DirectoryWatcher {
 
     private static final Logger LOG = Logger.getLogger(DirectoryWatcher.class);
+
+    static final java.util.List<String> ROUTES =
+            java.util.List.of(ArrivalService.ROUTE_ONHOST_REQ, ArrivalService.ROUTE_FINT_RESP);
 
     @Inject
     AgtConfig config;
@@ -39,25 +43,29 @@ public class DirectoryWatcher {
         if (!lease.holdsLease()) {
             return;
         }
-        Path dir = Path.of(config.exchangeRoot(), "onhost-req");
+        ROUTES.forEach(this::scan);
+        lastSizes.keySet().removeIf(p -> !Files.exists(p));
+    }
+
+    private void scan(String route) {
+        Path dir = Path.of(config.exchangeRoot(), route);
         if (!Files.isDirectory(dir)) {
             return;
         }
         try (Stream<Path> files = Files.list(dir)) {
             files.filter(Files::isRegularFile).forEach(f -> {
                 try {
-                    consider(f);
+                    consider(f, route);
                 } catch (Exception e) {
                     LOG.warnf("consider %s failed: %s", f.getFileName(), e.getMessage());
                 }
             });
         } catch (IOException e) {
-            LOG.warnf("watch tick failed: %s", e.getMessage());
+            LOG.warnf("watch tick failed for %s: %s", route, e.getMessage());
         }
-        lastSizes.keySet().removeIf(p -> !Files.exists(p));
     }
 
-    void consider(Path file) {
+    void consider(Path file, String route) {
         String name = file.getFileName().toString();
         if (name.endsWith(".tmp") || name.startsWith(".")) {
             return;
@@ -73,6 +81,6 @@ public class DirectoryWatcher {
             return; // not yet stable
         }
         lastSizes.remove(file);
-        arrivals.register(file);
+        arrivals.register(file, route);
     }
 }

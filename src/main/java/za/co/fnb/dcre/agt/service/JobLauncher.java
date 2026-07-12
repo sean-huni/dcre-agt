@@ -30,6 +30,10 @@ public class JobLauncher {
     public static final String LABEL_STAGE = "dcre/stage";
     public static final String LABEL_ARRIVAL = "dcre/arrival";
 
+    /** Boundary stages that read the claimed payload file (CRR; M4 fint-resp readers). */
+    static final java.util.Set<Stage> BOUNDARY_READERS =
+            java.util.EnumSet.of(Stage.CRR, Stage.IXR, Stage.SXR, Stage.PXR);
+
     @Inject
     IntentRepo intentRepo;
 
@@ -101,6 +105,10 @@ public class JobLauncher {
             case CIR -> config.cirImage();
             case CDE -> config.cdeImage();
             case CRW -> config.crwImage();
+            case IXR -> config.ixrImage();
+            case SXR -> config.sxrImage();
+            case PXR -> config.pxrImage();
+            case PRG -> config.prgImage();
         };
     }
 
@@ -161,7 +169,7 @@ public class JobLauncher {
         var arrival = arrivalRepo.arrivalById(arrivalId).orElseThrow();
         java.util.List<String> args = new java.util.ArrayList<>(java.util.List.of(
                 "arrival.id=" + arrivalId));
-        if (stage == Stage.CRR) {
+        if (BOUNDARY_READERS.contains(stage)) {
             args.add("input.file=" + arrival.claimedPath() + ",java.lang.String,false");
             args.add("original.name=" + arrival.physicalFilename() + ",java.lang.String,false");
         }

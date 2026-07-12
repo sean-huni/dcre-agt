@@ -22,7 +22,7 @@ spec:
       serviceAccountName: dcre-agt
       containers:
         - name: agt
-          image: dcre-agt:m3
+          image: dcre-agt:m4
           imagePullPolicy: IfNotPresent
           env:
             - name: AGT_DB_URL
@@ -34,15 +34,23 @@ spec:
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
               value: http://host.docker.internal:4317
             - name: AGT_CRR_IMAGE
-              value: dcre-crr:m3
+              value: dcre-crr:m4
             - name: AGT_CTV_IMAGE
-              value: dcre-ctv:m3
+              value: dcre-ctv:m4
             - name: AGT_CIR_IMAGE
-              value: dcre-cir:m3
+              value: dcre-cir:m4
             - name: AGT_CDE_IMAGE
-              value: dcre-cde:m3
+              value: dcre-cde:m4
             - name: AGT_CRW_IMAGE
-              value: dcre-crw:m3
+              value: dcre-crw:m4
+            - name: AGT_IXR_IMAGE
+              value: dcre-ixr:m4
+            - name: AGT_SXR_IMAGE
+              value: dcre-sxr:m4
+            - name: AGT_PXR_IMAGE
+              value: dcre-pxr:m4
+            - name: AGT_PRG_IMAGE
+              value: dcre-prg:m4
           volumeMounts:
             - name: exchange
               mountPath: /exchange

@@ -47,4 +47,17 @@ class ArrivalServiceTest {
                         .anyMatch(p -> p.getFileName().toString().startsWith(id.toString())),
                 "claimed file moved to archive/inflight");
     }
+
+    @Test
+    void replyTypeSuffixesAreDistinctLogicalFiles() throws Exception {
+        String stem = "FNBRF01_DCRERF" + UUID.randomUUID().toString().substring(0, 8);
+
+        var isr = arrivals.register(drop(stem + "_ISR.xml", "isr-body"), ArrivalService.ROUTE_FINT_RESP);
+        var sbsr = arrivals.register(drop(stem + "_SBSR.xml", "sbsr-body"), ArrivalService.ROUTE_FINT_RESP);
+        var pbsr = arrivals.register(drop(stem + "_PBSR.xml", "pbsr-body"), ArrivalService.ROUTE_FINT_RESP);
+        assertInstanceOf(ArrivalService.Result.NewArrival.class, isr, "ISR registers");
+        assertInstanceOf(ArrivalService.Result.NewArrival.class, sbsr,
+                "SBSR shares client+msgId but is a distinct logical file, never a key clash");
+        assertInstanceOf(ArrivalService.Result.NewArrival.class, pbsr, "PBSR likewise");
+    }
 }

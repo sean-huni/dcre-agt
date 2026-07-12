@@ -4,6 +4,7 @@ import org.junit.jupiter.api.Test;
 import za.co.fnb.dcre.agt.domain.ArrivalStatus;
 import za.co.fnb.dcre.agt.domain.Outcome;
 import za.co.fnb.dcre.agt.domain.Stage;
+import za.co.fnb.dcre.agt.service.ArrivalService;
 import za.co.fnb.dcre.agt.service.DagEngine;
 
 import java.util.EnumSet;
@@ -78,6 +79,40 @@ class DagEngineTest {
                 Map.of(Stage.CTV, Outcome.BUSINESS_ACCEPTED),
                 EnumSet.of(Stage.CRR, Stage.CTV, Stage.CDE, Stage.CIR));
         assertTrue(launches.isEmpty(), "non-overlap: existing intents suppress relaunch");
+    }
+
+    @Test
+    void fintRespTokenPicksSingleReaderStage() {
+        assertEquals(Stage.IXR, DagEngine.fintRespStage("FNBRF01_ISR_20260712.txt").orElseThrow());
+        assertEquals(Stage.SXR, DagEngine.fintRespStage("FNBRF01_SBSR_20260712.txt").orElseThrow());
+        assertEquals(Stage.PXR, DagEngine.fintRespStage("FNBRF01_PBSR_20260712.txt").orElseThrow());
+        assertTrue(DagEngine.fintRespStage("FNBRF01_XXXX_20260712.txt").isEmpty(),
+                "unknown token fails closed");
+    }
+
+    @Test
+    void fintRespLaunchesOnlyTheTokenStage() {
+        Set<Stage> launches = DagEngine.computeLaunches(ArrivalService.ROUTE_FINT_RESP,
+                "FNBRF01_PBSR_20260712.txt", Map.of(), EnumSet.noneOf(Stage.class));
+        assertEquals(EnumSet.of(Stage.PXR), launches);
+        assertTrue(DagEngine.computeLaunches(ArrivalService.ROUTE_FINT_RESP,
+                        "FNBRF01_PBSR_20260712.txt", Map.of(), EnumSet.of(Stage.PXR)).isEmpty(),
+                "non-overlap: existing intent suppresses relaunch");
+    }
+
+    @Test
+    void fintRespCompletesOnReaderAcceptanceOnly() {
+        assertEquals(ArrivalStatus.DAG_COMPLETE, DagEngine.terminalState(ArrivalService.ROUTE_FINT_RESP,
+                Map.of(Stage.PXR, Outcome.BUSINESS_ACCEPTED)).orElseThrow());
+        assertTrue(DagEngine.terminalState(ArrivalService.ROUTE_FINT_RESP,
+                        Map.of(Stage.PXR, Outcome.TECH_FAILED)).isEmpty(),
+                "tech failure keeps the arrival open for the reconciler");
+    }
+
+    @Test
+    void onhostRouteDispatchKeepsTheStaticDag() {
+        assertEquals(EnumSet.of(Stage.CTV), DagEngine.computeLaunches(ArrivalService.ROUTE_ONHOST_REQ,
+                "FNBRF01_MSG1.txt", Map.of(Stage.CRR, Outcome.BUSINESS_ACCEPTED), EnumSet.of(Stage.CRR)));
     }
 
     @Test

@@ -32,7 +32,12 @@ agt:
   cir-image: ${AGT_CIR_IMAGE:}
   cde-image: ${AGT_CDE_IMAGE:}
   crw-image: ${AGT_CRW_IMAGE:}
+  ixr-image: ${AGT_IXR_IMAGE:dcre-ixr:m4}
+  sxr-image: ${AGT_SXR_IMAGE:dcre-sxr:m4}
+  pxr-image: ${AGT_PXR_IMAGE:dcre-pxr:m4}
+  prg-image: ${AGT_PRG_IMAGE:dcre-prg:m4}
   crw-interval-seconds: ${AGT_CRW_INTERVAL_SECONDS:60}
+  prg-interval-seconds: ${AGT_PRG_INTERVAL_SECONDS:60}
   service-db-url: ${AGT_SERVICE_DB_URL:jdbc:postgresql://crdb:26257/dcre_collections?sslmode=disable}
 
 "%test":

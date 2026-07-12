@@ -22,6 +22,7 @@ import java.util.Set;
  * Level-triggered DAG engine over the ledgers. Static Collections DAG (M1):
  * CRR -> CTV -> [CDE, CIR]; CDE -> CRW. A BUSINESS_FILE_FATAL predecessor
  * routes to CIR only (whole-file NACK path, R-19/SPEC-DAG section 3).
+ * M4 adds the fint-resp route: a single reader stage picked by filename token.
  * Pure decision logic lives in computeLaunches() for unit testing.
  */
 @ApplicationScoped
@@ -35,6 +36,27 @@ public class DagEngine {
             Stage.CTV, EnumSet.of(Stage.CDE, Stage.CIR)
     ));
     static final Set<Stage> TERMINAL = EnumSet.of(Stage.CDE, Stage.CIR);
+
+    /** fint-resp filename token -> reader stage; empty = unknown token (fail closed). */
+    public static java.util.Optional<Stage> fintRespStage(String filename) {
+        if (filename.contains("_ISR")) {
+            return java.util.Optional.of(Stage.IXR);
+        }
+        if (filename.contains("_SBSR")) {
+            return java.util.Optional.of(Stage.SXR);
+        }
+        if (filename.contains("_PBSR")) {
+            return java.util.Optional.of(Stage.PXR);
+        }
+        return java.util.Optional.empty();
+    }
+
+    /** First stage for a CLAIMED arrival; empty = quarantine (fail closed). */
+    static java.util.Optional<Stage> initialStage(String route, String filename) {
+        return ArrivalService.ROUTE_FINT_RESP.equals(route)
+                ? fintRespStage(filename)
+                : java.util.Optional.of(Stage.CRR);
+    }
 
     @Inject
     ArrivalRepo arrivalRepo;
@@ -62,7 +84,15 @@ public class DagEngine {
                     LOG.warnf("arrival %s CLAIMED without claimed_path: not launching (F21)", arrival.id());
                     continue;
                 }
-                launcher.launch(arrival.id(), Stage.CRR);
+                java.util.Optional<Stage> first = initialStage(arrival.routeId(), arrival.physicalFilename());
+                if (first.isEmpty()) {
+                    // Unknown fint-resp token never launches (fail closed, F13).
+                    arrivalRepo.transitionArrival(arrival.id(), ArrivalStatus.CLAIMED, ArrivalStatus.QUARANTINED);
+                    LOG.warnf("QUARANTINED %s: no stage for %s on route %s",
+                            arrival.id(), arrival.physicalFilename(), arrival.routeId());
+                    continue;
+                }
+                launcher.launch(arrival.id(), first.get());
                 arrivalRepo.transitionArrival(arrival.id(), ArrivalStatus.CLAIMED, ArrivalStatus.DAG_RUNNING);
             } catch (Exception e) {
                 LOG.warnf("start DAG for %s failed: %s", arrival.id(), e.getMessage());
@@ -77,10 +107,10 @@ public class DagEngine {
                 if (!lease.holdsLease()) {
                     return; // re-check before side effects (F7)
                 }
-                for (Stage next : computeLaunches(outcomes, intended)) {
+                for (Stage next : computeLaunches(arrival.routeId(), arrival.physicalFilename(), outcomes, intended)) {
                     launcher.launch(arrival.id(), next);
                 }
-                terminalState(outcomes).ifPresent(
+                terminalState(arrival.routeId(), outcomes).ifPresent(
                         s -> arrivalRepo.transitionArrival(arrival.id(), ArrivalStatus.DAG_RUNNING, s));
             } catch (Exception e) {
                 LOG.warnf("advance DAG for %s failed: %s", arrival.id(), e.getMessage()); // one poisoned arrival never wedges the loop (F10)
@@ -88,7 +118,21 @@ public class DagEngine {
         }
     }
 
-    /** Successor stages to launch now, given recorded outcomes and existing intents. */
+    /** Route dispatch: onhost-req keeps the static M1 DAG; fint-resp is the
+     *  single token-picked reader (re-seeded level-triggered, intents dedupe). */
+    public static Set<Stage> computeLaunches(String route, String filename,
+                                             Map<Stage, Outcome> outcomes, Set<Stage> intended) {
+        if (!ArrivalService.ROUTE_FINT_RESP.equals(route)) {
+            return computeLaunches(outcomes, intended);
+        }
+        Set<Stage> launches = EnumSet.noneOf(Stage.class);
+        fintRespStage(filename)
+                .filter(stage -> !intended.contains(stage) && !outcomes.containsKey(stage))
+                .ifPresent(launches::add);
+        return launches;
+    }
+
+    /** Successor stages to launch now, given recorded outcomes and existing intents (onhost-req). */
     public static Set<Stage> computeLaunches(Map<Stage, Outcome> outcomes, Set<Stage> intended) {
         Set<Stage> launches = EnumSet.noneOf(Stage.class);
         for (Map.Entry<Stage, Outcome> done : outcomes.entrySet()) {
@@ -122,7 +166,17 @@ public class DagEngine {
         return launches;
     }
 
-    /** Terminal arrival state, when reached. The responder (CIR) must itself be
+    /** fint-resp terminal: the single reader stage BUSINESS_ACCEPTED completes
+     *  the DAG; anything else stays open for the reconciler (fail closed). */
+    public static java.util.Optional<ArrivalStatus> terminalState(String route, Map<Stage, Outcome> outcomes) {
+        if (!ArrivalService.ROUTE_FINT_RESP.equals(route)) {
+            return terminalState(outcomes);
+        }
+        boolean readerAccepted = outcomes.values().stream().anyMatch(o -> o == Outcome.BUSINESS_ACCEPTED);
+        return readerAccepted ? java.util.Optional.of(ArrivalStatus.DAG_COMPLETE) : java.util.Optional.empty();
+    }
+
+    /** Terminal arrival state, when reached (onhost-req). The responder (CIR) must itself be
      *  business-done before any terminal verdict (Fugu F6: a tech-failed CIR
      *  means the NACK never left; the arrival stays open for the reconciler). */
     public static java.util.Optional<ArrivalStatus> terminalState(Map<Stage, Outcome> outcomes) {

@@ -136,6 +136,23 @@ public class ArrivalRepo {
         }
     }
 
+    /** Known clients for the PRG clock windows (R-28): tokens seen on onhost-req. */
+    public List<String> distinctClientTokens() {
+        String sql = """
+                SELECT DISTINCT client_token FROM file_arrival
+                WHERE client_token IS NOT NULL AND route_id='onhost-req'""";
+        try (Connection c = ds.getConnection(); PreparedStatement p = c.prepareStatement(sql);
+             ResultSet r = p.executeQuery()) {
+            List<String> out = new ArrayList<>();
+            while (r.next()) {
+                out.add(r.getString(1));
+            }
+            return out;
+        } catch (SQLException e) {
+            throw new IllegalStateException("distinctClientTokens failed", e);
+        }
+    }
+
     public Optional<FileArrival> arrivalById(UUID id) {
         String sql = "SELECT id, route_id, physical_filename, payload_sha256, client_token, msg_id_token,"
                 + " status, quarantine_reason, claimed_path FROM file_arrival WHERE id=?";
