@@ -1,0 +1,105 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+        xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+        http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
+
+    <!-- agt_ops core ledgers (R-16 arrival registry, SPEC-DAG launch-intent +
+         stage-outcome ledgers, SPEC-DAG 6a lease). AGT is the single writer
+         of every table here (R-04, R-33). -->
+    <changeSet id="001-file-arrival" author="dcre">
+        <createTable tableName="file_arrival">
+            <column name="id" type="UUID" defaultValueComputed="gen_random_uuid()">
+                <constraints primaryKey="true" nullable="false"/>
+            </column>
+            <column name="route_id" type="VARCHAR(64)">
+                <constraints nullable="false"/>
+            </column>
+            <column name="physical_filename" type="VARCHAR(512)">
+                <constraints nullable="false"/>
+            </column>
+            <column name="payload_sha256" type="VARCHAR(64)">
+                <constraints nullable="false"/>
+            </column>
+            <column name="client_token" type="VARCHAR(64)"/>
+            <column name="msg_id_token" type="VARCHAR(64)"/>
+            <column name="status" type="VARCHAR(32)">
+                <constraints nullable="false"/>
+            </column>
+            <column name="quarantine_reason" type="VARCHAR(128)"/>
+            <column name="claimed_path" type="VARCHAR(1024)"/>
+            <column name="arrived_at" type="TIMESTAMP WITH TIME ZONE" defaultValueComputed="now()">
+                <constraints nullable="false"/>
+            </column>
+        </createTable>
+        <addUniqueConstraint tableName="file_arrival"
+                             columnNames="route_id, physical_filename, payload_sha256"
+                             constraintName="uq_arrival_identity"/>
+    </changeSet>
+
+    <changeSet id="001-launch-intent" author="dcre">
+        <createTable tableName="launch_intent">
+            <column name="id" type="UUID" defaultValueComputed="gen_random_uuid()">
+                <constraints primaryKey="true" nullable="false"/>
+            </column>
+            <column name="arrival_id" type="UUID">
+                <constraints nullable="false"
+                             foreignKeyName="fk_intent_arrival"
+                             references="file_arrival(id)"/>
+            </column>
+            <column name="stage" type="VARCHAR(16)">
+                <constraints nullable="false"/>
+            </column>
+            <column name="job_name" type="VARCHAR(63)">
+                <constraints nullable="false" unique="true" uniqueConstraintName="uq_intent_job_name"/>
+            </column>
+            <column name="status" type="VARCHAR(16)">
+                <constraints nullable="false"/>
+            </column>
+            <column name="created_at" type="TIMESTAMP WITH TIME ZONE" defaultValueComputed="now()">
+                <constraints nullable="false"/>
+            </column>
+        </createTable>
+        <addUniqueConstraint tableName="launch_intent"
+                             columnNames="arrival_id, stage"
+                             constraintName="uq_intent_arrival_stage"/>
+    </changeSet>
+
+    <changeSet id="001-stage-outcome" author="dcre">
+        <createTable tableName="stage_outcome">
+            <column name="id" type="UUID" defaultValueComputed="gen_random_uuid()">
+                <constraints primaryKey="true" nullable="false"/>
+            </column>
+            <column name="intent_id" type="UUID">
+                <constraints nullable="false" unique="true" uniqueConstraintName="uq_outcome_intent"
+                             foreignKeyName="fk_outcome_intent"
+                             references="launch_intent(id)"/>
+            </column>
+            <column name="outcome" type="VARCHAR(32)">
+                <constraints nullable="false"/>
+            </column>
+            <column name="exit_code" type="INT"/>
+            <column name="k8s_condition" type="VARCHAR(16)"/>
+            <column name="observed_at" type="TIMESTAMP WITH TIME ZONE" defaultValueComputed="now()">
+                <constraints nullable="false"/>
+            </column>
+        </createTable>
+    </changeSet>
+
+    <changeSet id="001-agt-lease" author="dcre">
+        <createTable tableName="agt_lease">
+            <column name="singleton" type="BOOLEAN" defaultValueBoolean="true">
+                <constraints primaryKey="true" nullable="false"/>
+            </column>
+            <column name="holder" type="VARCHAR(128)">
+                <constraints nullable="false"/>
+            </column>
+            <column name="expires_at" type="TIMESTAMP WITH TIME ZONE">
+                <constraints nullable="false"/>
+            </column>
+        </createTable>
+        <sql>ALTER TABLE agt_lease ADD CONSTRAINT ck_lease_singleton CHECK (singleton)</sql>
+    </changeSet>
+
+</databaseChangeLog>
