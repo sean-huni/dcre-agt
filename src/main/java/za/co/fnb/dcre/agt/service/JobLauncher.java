@@ -212,13 +212,28 @@ public class JobLauncher {
             args.add("original.name=" + arrival.physicalFilename() + ",java.lang.String,false");
         }
         if (stage == Stage.CIR) {
-            args.add("route.id=" + arrival.routeId() + ",java.lang.String,false");
-            args.add("client.token=" + arrival.clientToken() + ",java.lang.String,false");
-            args.add("msg.id=" + arrival.msgIdToken() + ",java.lang.String,false");
+            args.add("route.id=" + cirIdentity(arrival.routeId(), "route.id", arrival) + ",java.lang.String,false");
+            args.add("client.token=" + cirIdentity(arrival.clientToken(), "client.token", arrival) + ",java.lang.String,false");
+            args.add("msg.id=" + cirIdentity(arrival.msgIdToken(), "msg.id", arrival) + ",java.lang.String,false");
             rejectionHint(outcomes).ifPresent(o ->
                     args.add("outcome.hint=" + o.name() + ",java.lang.String,false"));
         }
         return args;
+    }
+
+    /**
+     * Fail-closed guard for the CIR identity params (A-45): a null field would
+     * otherwise render as the literal "null", pass CIR's has-text check, and
+     * re-create the cross-route collision class under the token "null". Today
+     * only the DB NOT NULL constraints prevent that; the launcher must not
+     * depend on them.
+     */
+    private static String cirIdentity(String value, String field, FileArrival arrival) {
+        if (value == null || value.isBlank()) {
+            throw new IllegalStateException("arrival " + arrival.id() + " has no " + field
+                    + ": CIR identity params are fail-closed (A-45)");
+        }
+        return value;
     }
 
     /**

@@ -13,6 +13,7 @@ import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -80,6 +81,33 @@ class JobLauncherArgsTest {
         List<String> args = JobLauncher.serviceArgs(Stage.CDE, arrival(),
                 Map.of(Stage.CTV, Outcome.BUSINESS_PARTIAL));
         assertEquals(List.of("arrival.id=" + ARRIVAL_ID), args);
+    }
+
+    @Test
+    void cirFailsClosedOnNullOrBlankIdentityFields() {
+        // FileArrival is a plain record (no constructor validation): a null
+        // routeId would otherwise render as the literal "null", pass CIR's
+        // has-text check, and re-create the A-45 collision class under the
+        // token "null". Same latent hole for clientToken and msgIdToken.
+        FileArrival nullRoute = new FileArrival(ARRIVAL_ID, null, "FNBRF01_MSG1.txt",
+                "sha", "FNBRF01", "DCRERF2026071313500102",
+                ArrivalStatus.DAG_RUNNING, null, "/exchange/claimed/FNBRF01_MSG1.txt");
+        IllegalStateException e = assertThrows(IllegalStateException.class,
+                () -> JobLauncher.serviceArgs(Stage.CIR, nullRoute, Map.of()));
+        assertTrue(e.getMessage().contains("route.id"), "got: " + e.getMessage());
+        assertTrue(e.getMessage().contains(ARRIVAL_ID.toString()), "got: " + e.getMessage());
+
+        FileArrival blankClient = new FileArrival(ARRIVAL_ID, "onhost-req", "FNBRF01_MSG1.txt",
+                "sha", " ", "DCRERF2026071313500102",
+                ArrivalStatus.DAG_RUNNING, null, "/exchange/claimed/FNBRF01_MSG1.txt");
+        assertThrows(IllegalStateException.class,
+                () -> JobLauncher.serviceArgs(Stage.CIR, blankClient, Map.of()));
+
+        FileArrival nullMsgId = new FileArrival(ARRIVAL_ID, "onhost-req", "FNBRF01_MSG1.txt",
+                "sha", "FNBRF01", null,
+                ArrivalStatus.DAG_RUNNING, null, "/exchange/claimed/FNBRF01_MSG1.txt");
+        assertThrows(IllegalStateException.class,
+                () -> JobLauncher.serviceArgs(Stage.CIR, nullMsgId, Map.of()));
     }
 
     @Test
