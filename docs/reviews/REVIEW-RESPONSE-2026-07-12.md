@@ -15,7 +15,7 @@ Verdict was NEEDS-FIXES. Ship gate (F1-F9 + F10/F11/F12/F15) fully closed this s
 | F9 | HIGH | FIXED: terminality from Job conditions (type/status), real condition+reason persisted, best-effort pod exit code, Job UID stored at create/409 and verified before recording |
 | F10 | MED | FIXED: all five loops SKIP concurrent execution; ConcurrentHashMap; per-item try/catch in watcher/engine/observer/reconciler |
 | F11 | MED | FIXED: uq_arrival_logical_key partial unique index; insert-conflict fallback classifies duplicate-vs-quarantine |
-| F12 | MED | FIXED: BUSINESS_PARTIAL fail-closed (CIR only, CDE/CRW suppressed) per A-16 default; completes via CIR |
+| F12 | MED | FIXED: BUSINESS_PARTIAL fail-closed (CIR only, CDE/CRW suppressed) per A-16 default; completes via CIR. Superseded by R-41 (2026-07-13): acceptance mode moved into CTV; PARTIAL continues to all successors. |
 | F13 | MED | FIXED: unparseable filename => QUARANTINED(UNPARSEABLE_FILENAME), fail closed |
 | F15 | MED | FIXED (lease path): 40001 retry-with-backoff around the CAS; ledger-wide retry helper is a follow-up |
 | F14 | MED | Follow-up (M2): rename/ready-marker as primary readiness; size-stability stays secondary |

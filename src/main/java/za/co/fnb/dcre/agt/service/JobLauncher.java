@@ -195,11 +195,11 @@ public class JobLauncher {
 
     /**
      * Program args for a service Job (arrival.id identifying per R-16; everything
-     * else non-identifying). CIR carries the arrival identity and the predecessor
-     * CTV verdict so it can NACK a headerless spine (R-41/A-42). All inputs come
-     * from durable rows (file_arrival, stage_outcome), so a reconciled re-create
-     * rebuilds identical args; nothing lives only in memory (same durability
-     * property clock intents get from persisted launch args).
+     * else non-identifying). CIR carries the arrival identity and the rejecting
+     * validator's verdict so it can NACK a headerless spine (R-41/A-42). All
+     * inputs come from durable rows (file_arrival, stage_outcome), so a
+     * reconciled re-create rebuilds identical args; nothing lives only in memory
+     * (same durability property clock intents get from persisted launch args).
      */
     public static java.util.List<String> serviceArgs(Stage stage, FileArrival arrival, Map<Stage, Outcome> outcomes) {
         java.util.List<String> args = new java.util.ArrayList<>(java.util.List.of(
@@ -211,12 +211,33 @@ public class JobLauncher {
         if (stage == Stage.CIR) {
             args.add("client.token=" + arrival.clientToken() + ",java.lang.String,false");
             args.add("msg.id=" + arrival.msgIdToken() + ",java.lang.String,false");
-            Outcome ctv = outcomes.get(Stage.CTV);
-            if (ctv != null) {
-                args.add("outcome.hint=" + ctv.name() + ",java.lang.String,false");
-            }
+            rejectionHint(outcomes).ifPresent(o ->
+                    args.add("outcome.hint=" + o.name() + ",java.lang.String,false"));
         }
         return args;
+    }
+
+    /**
+     * The verdict that routed this arrival to CIR: the rejecting validator
+     * stage's BUSINESS_FILE_REJECTED/BUSINESS_FILE_FATAL, whichever stage it
+     * came from (on ENDO that can be AIS; never hardcode CTV). Boundary readers
+     * are excluded: their fatals mean no spine/verdicts exist and CIR NACKs
+     * from fatal.reason instead. Empty on the ACK path (ACCEPTED/PARTIAL only).
+     */
+    static Optional<Outcome> rejectionHint(Map<Stage, Outcome> outcomes) {
+        Outcome hint = null;
+        for (Map.Entry<Stage, Outcome> entry : outcomes.entrySet()) {
+            if (BOUNDARY_READERS.contains(entry.getKey())) {
+                continue;
+            }
+            if (entry.getValue() == Outcome.BUSINESS_FILE_REJECTED) {
+                return Optional.of(entry.getValue()); // R-41 policy rejection wins
+            }
+            if (entry.getValue() == Outcome.BUSINESS_FILE_FATAL) {
+                hint = entry.getValue();
+            }
+        }
+        return Optional.ofNullable(hint);
     }
 
     /** M2 real-service Job: Spring Batch app; program args become JobParameters. */

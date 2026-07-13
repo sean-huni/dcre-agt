@@ -6,9 +6,9 @@ AGT (Collections Agent): the only long-running DCRE service. Quarkus 3.33 LTS / 
 
 `file_arrival` (arrival registry + quarantine) - `launch_intent` (write-ahead, UNIQUE(arrival,stage) = non-overlap, UNIQUE(job_name) = deterministic names) - `stage_outcome` (UNIQUE(intent) = idempotent observation) - `agt_lease` (CAS singleton).
 
-## M1 state
+## DAG
 
-DAG `CRR -> CTV -> [CDE, CIR]; CDE -> CRW` runs busybox stub Jobs. The business verdict travels via `/exchange/outcomes/<job>` (SYNTHETIC-CONTRACT seam; M2 services replace it). Absence of an outcome is never success (arbiter clause). TECH_FAILED launches no successors.
+Real service Jobs (busybox stubs retired in M5). Routes: DC `CRR -> CTV -> [CDE, CIR]`, ENDO `CRR -> CTV -> AIS -> [CDE, CIR]`, fint-resp single reader by filename token (`IXR`/`SXR`/`PXR`). CRW is NOT a DAG successor: it is the clock-driven Process-Date Executor (R-37), launched by schedule alongside PRG and HCS. The business verdict travels via `/exchange/outcomes/<job>` with literals `BUSINESS_ACCEPTED`, `BUSINESS_PARTIAL`, `BUSINESS_FILE_REJECTED`, `BUSINESS_FILE_FATAL` (absence is never success; invalid text = TECH_FAILED, arbiter clause). Routing (R-41): ACCEPTED and PARTIAL fan out to all successors (PARTIAL continues PASS rows); FILE_REJECTED and FILE_FATAL route to CIR only (whole-file NACK, CIR launches carry `client.token`, `msg.id`, and `outcome.hint` from the rejecting validator). TECH_FAILED launches no successors.
 
 ## Run
 

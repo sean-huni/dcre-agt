@@ -17,8 +17,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Pure args-shaping tests for service Job launches (R-41): CIR carries the
- * arrival identity (client.token, msg.id) and the predecessor CTV verdict as
- * outcome.hint so it can NACK without a spine header (A-42 consumer contract).
+ * arrival identity (client.token, msg.id) and, when a validator rejected the
+ * file, that rejecting stage's verdict as outcome.hint so it can NACK without
+ * a spine header (A-42 consumer contract).
  */
 class JobLauncherArgsTest {
 
@@ -41,13 +42,35 @@ class JobLauncherArgsTest {
     }
 
     @Test
-    void cirOmitsOutcomeHintWhenNoCtvOutcomeRecorded() {
+    void cirOmitsHintWhenOnlyBoundaryReaderFailed() {
+        // CRR fatal: no spine/verdicts exist; CIR NACKs from fatal.reason, so no hint.
         List<String> args = JobLauncher.serviceArgs(Stage.CIR, arrival(),
                 Map.of(Stage.CRR, Outcome.BUSINESS_FILE_FATAL));
         assertTrue(args.contains("client.token=FNBRF01,java.lang.String,false"));
         assertTrue(args.contains("msg.id=DCRERF2026071313500102,java.lang.String,false"));
         assertFalse(args.stream().anyMatch(a -> a.startsWith("outcome.hint=")),
-                "no CTV verdict recorded: hint omitted, CIR falls back to fatal.reason");
+                "boundary-reader fatal: hint omitted, CIR falls back to fatal.reason");
+    }
+
+    @Test
+    void cirHintComesFromTheRejectingStageNotHardcodedCtv() {
+        // ENDO shape: CTV accepted, AIS killed the file. The hint must carry the
+        // rejecting stage's outcome, never CTV's misleading BUSINESS_ACCEPTED.
+        List<String> args = JobLauncher.serviceArgs(Stage.CIR, arrival(),
+                Map.of(Stage.CRR, Outcome.BUSINESS_ACCEPTED,
+                        Stage.CTV, Outcome.BUSINESS_ACCEPTED,
+                        Stage.AIS, Outcome.BUSINESS_FILE_FATAL));
+        assertTrue(args.contains("outcome.hint=BUSINESS_FILE_FATAL,java.lang.String,false"),
+                "got " + args);
+    }
+
+    @Test
+    void cirOmitsHintOnPartialAck() {
+        // PARTIAL is an ACK-with-partials launch: no rejecting stage, no hint.
+        List<String> args = JobLauncher.serviceArgs(Stage.CIR, arrival(),
+                Map.of(Stage.CRR, Outcome.BUSINESS_ACCEPTED, Stage.CTV, Outcome.BUSINESS_PARTIAL));
+        assertFalse(args.stream().anyMatch(a -> a.startsWith("outcome.hint=")),
+                "got " + args);
     }
 
     @Test

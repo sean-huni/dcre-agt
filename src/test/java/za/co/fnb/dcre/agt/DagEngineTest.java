@@ -96,6 +96,10 @@ class DagEngineTest {
         assertTrue(DagEngine.terminalState(Map.of(
                 Stage.CRR, Outcome.BUSINESS_ACCEPTED, Stage.CTV, Outcome.BUSINESS_FILE_REJECTED,
                 Stage.CIR, Outcome.TECH_FAILED)).isEmpty());
+        assertTrue(DagEngine.terminalState(Map.of(
+                        Stage.CRR, Outcome.BUSINESS_ACCEPTED, Stage.CTV, Outcome.BUSINESS_FILE_REJECTED))
+                        .isEmpty(),
+                "mid-flight rejection (no CIR row yet) has no terminal state");
     }
 
     @Test
