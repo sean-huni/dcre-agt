@@ -2,6 +2,7 @@ package za.co.fnb.dcre.agt.service;
 
 import io.fabric8.kubernetes.api.model.batch.v1.Job;
 import io.quarkus.scheduler.Scheduled;
+import io.smallrye.common.annotation.RunOnVirtualThread;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import org.jboss.logging.Logger;
@@ -56,6 +57,7 @@ public class Reconciler {
     @Inject
     KubernetesClient k8s;
 
+    @RunOnVirtualThread
     @Scheduled(every = "10s", concurrentExecution = io.quarkus.scheduler.Scheduled.ConcurrentExecution.SKIP)
     void tick() {
         if (!lease.holdsLease() || !config.launchEnabled()) {

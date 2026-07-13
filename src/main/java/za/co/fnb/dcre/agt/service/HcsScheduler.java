@@ -1,6 +1,7 @@
 package za.co.fnb.dcre.agt.service;
 
 import io.quarkus.scheduler.Scheduled;
+import io.smallrye.common.annotation.RunOnVirtualThread;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import za.co.fnb.dcre.agt.config.AgtConfig;
@@ -28,6 +29,7 @@ public class HcsScheduler {
     @Inject
     JobLauncher launcher;
 
+    @RunOnVirtualThread
     @Scheduled(every = "10s", concurrentExecution = io.quarkus.scheduler.Scheduled.ConcurrentExecution.SKIP)
     void tick() {
         if (!lease.holdsLease() || !config.launchEnabled() || config.hcsImage().isEmpty()) {
