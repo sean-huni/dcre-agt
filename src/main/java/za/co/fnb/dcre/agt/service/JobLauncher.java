@@ -63,11 +63,21 @@ public class JobLauncher {
 
     /** Create (or re-create after crash) the Job for an existing intent. */
     public void createJob(UUID intentId, UUID arrivalId, Stage stage, String name) {
-        // arrivalId == null is a clock intent (CRW/PRG): args live on the run key name.
+        // arrivalId == null is a clock intent: its launch args are durable on the
+        // intent row (a reconciled recreate with empty args crashed every clock
+        // job with missing identifying params; caught live 2026-07-13).
         Job job = arrivalId == null
-                ? clockJob(name, stage, serviceImage(stage), java.util.List.of())
+                ? clockJob(name, stage, serviceImage(stage), clockArgs(intentId))
                 : serviceJob(name, stage, arrivalId, serviceImage(stage));
         createFromSpec(intentId, job);
+    }
+
+    private java.util.List<String> clockArgs(UUID intentId) {
+        return intentRepo.intentLaunchArgs(intentId)
+                .filter(a -> !a.isBlank())
+                .map(a -> java.util.List.of(a.split("\\n")))
+                .orElseThrow(() -> new IllegalStateException(
+                        "clock intent " + intentId + " has no durable launch args"));
     }
 
     private void createFromSpec(UUID intentId, Job job) {
@@ -131,7 +141,8 @@ public class JobLauncher {
     /** Clock-triggered launch (R-37 CRW; R-28 PRG in M4): identity (stage, runKey). */
     public void launchClock(Stage stage, String runKey, java.util.List<String> args) {
         String name = clockJobName(stage, runKey);
-        java.util.Optional<UUID> intent = intentRepo.insertClockIntent(stage, runKey, name);
+        java.util.Optional<UUID> intent =
+                intentRepo.insertClockIntent(stage, runKey, name, String.join("\n", args));
         if (intent.isEmpty()) {
             return;
         }

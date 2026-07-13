@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+        xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+        http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
+
+    <!-- Clock intents carry their launch args durably: the Reconciler recreates
+         Jobs from the intent row alone, and recreating a clock Job with empty
+         args crashed every reconciled CRW/PRG/HCS window (caught in the M7
+         straight-cycle e2e, 2026-07-13). -->
+    <changeSet id="004-intent-args" author="dcre">
+        <preConditions onFail="MARK_RAN">
+            <not><columnExists tableName="launch_intent" columnName="launch_args"/></not>
+        </preConditions>
+        <addColumn tableName="launch_intent">
+            <column name="launch_args" type="VARCHAR(512)"/>
+        </addColumn>
+    </changeSet>
+
+</databaseChangeLog>

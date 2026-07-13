@@ -46,16 +46,17 @@ public class IntentRepo {
     }
 
     /** Write-ahead clock intent (no arrival). @return id, or empty when (stage, run_key) exists. */
-    public Optional<UUID> insertClockIntent(Stage stage, String runKey, String jobName) {
+    public Optional<UUID> insertClockIntent(Stage stage, String runKey, String jobName, String launchArgs) {
         String sql = """
-                INSERT INTO launch_intent (stage, run_key, job_name, status)
-                VALUES (?,?,?,'INTENDED')
+                INSERT INTO launch_intent (stage, run_key, job_name, status, launch_args)
+                VALUES (?,?,?,'INTENDED',?)
                 ON CONFLICT DO NOTHING
                 RETURNING id""";
         try (Connection c = ds.getConnection(); PreparedStatement p = c.prepareStatement(sql)) {
             p.setString(1, stage.name());
             p.setString(2, runKey);
             p.setString(3, jobName);
+            p.setString(4, launchArgs);
             try (ResultSet r = p.executeQuery()) {
                 return r.next() ? Optional.of(r.getObject(1, UUID.class)) : Optional.empty();
             }
@@ -69,6 +70,19 @@ public class IntentRepo {
             p.setString(1, jobUid);
             p.setObject(2, intentId);
         });
+    }
+
+    /** Durable launch args of a clock intent; the Reconciler recreates from these. */
+    public Optional<String> intentLaunchArgs(UUID intentId) {
+        try (Connection c = ds.getConnection();
+             PreparedStatement p = c.prepareStatement("SELECT launch_args FROM launch_intent WHERE id=?")) {
+            p.setObject(1, intentId);
+            try (ResultSet r = p.executeQuery()) {
+                return r.next() ? Optional.ofNullable(r.getString(1)) : Optional.empty();
+            }
+        } catch (SQLException e) {
+            throw new IllegalStateException("intentLaunchArgs failed", e);
+        }
     }
 
     public Optional<String> intentJobUid(UUID intentId) {
