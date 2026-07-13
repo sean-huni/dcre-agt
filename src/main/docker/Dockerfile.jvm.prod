@@ -1,0 +1,17 @@
+# Alpine JVM image for dcre-agt (Sean standing rule 2026-07-13: prefer Alpine
+# over the Quarkus-generated ubi9 Dockerfile.jvm). Build the fast-jar first:
+#   ./gradlew build
+#   docker build -f src/main/docker/Dockerfile.jvm.prod -t dcre-agt:<tag> .
+FROM eclipse-temurin:25-jre-alpine
+
+RUN addgroup -S app && adduser -S app -G app
+WORKDIR /deployments
+
+COPY --chown=app:app build/quarkus-app/lib/ /deployments/lib/
+COPY --chown=app:app build/quarkus-app/*.jar /deployments/
+COPY --chown=app:app build/quarkus-app/app/ /deployments/app/
+COPY --chown=app:app build/quarkus-app/quarkus/ /deployments/quarkus/
+
+USER app
+EXPOSE 8080
+ENTRYPOINT ["java", "-jar", "/deployments/quarkus-run.jar"]
