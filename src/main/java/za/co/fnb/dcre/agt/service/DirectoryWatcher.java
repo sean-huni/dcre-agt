@@ -6,33 +6,52 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import org.jboss.logging.Logger;
 import za.co.fnb.dcre.agt.config.AgtConfig;
+import za.co.fnb.dcre.agt.config.AgtExchangeConfig;
+import za.co.fnb.dcre.agt.config.AgtExchangeConfig.ChannelDirs;
+import za.co.fnb.dcre.agt.config.AgtExchangeConfig.InboundChannels;
 
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Function;
 import java.util.stream.Stream;
 
 /**
- * Polls the routed exchange directories (onhost-req; fint-resp in M4;
- * onhost-req-endo in M5). A file is READY only when its size is stable across
- * two consecutive ticks and it is not a .tmp (producer-ready protocol,
- * SPEC-DAG section 3). Lease-gated.
- * The directory name IS the route id (R-30 contract).
+ * Polls the per-client inbound exchange drop zones and registers stable files
+ * (SPEC-DAG section 3; R-30 amendment, SCRUM-42).
+ *
+ * <p>The layout is client-first: every configured client owns three inbound
+ * channels, each watched under {@code <root>/<clientbase>/<route>/in}. The
+ * {@code <route>} segment still equals the AGT {@code route_id}
+ * ({@code onhost-req}, {@code onhost-req-endo}, {@code fint-resp}); the
+ * {@code <clientbase>} segment above it names the client, so the client is now
+ * path-derived and handed to {@link ArrivalService} as {@code pathClient} for a
+ * cross-check against the filename FNB token.
+ *
+ * <p>A file is READY only when its size is stable across two consecutive ticks
+ * and it is not a {@code .tmp}/dotfile (producer-ready protocol). Lease-gated.
  */
 @ApplicationScoped
 public class DirectoryWatcher {
 
     private static final Logger LOG = Logger.getLogger(DirectoryWatcher.class);
 
-    static final java.util.List<String> ROUTES = java.util.List.of(
-            ArrivalService.ROUTE_ONHOST_REQ,
-            ArrivalService.ROUTE_FINT_RESP,
-            ArrivalService.ROUTE_ONHOST_REQ_ENDO);
+    /** (route id, accessor into a client's dirs) for each of the three AGT inbound channels. */
+    private static final List<InboundChannel> INBOUND = List.of(
+            new InboundChannel(ArrivalService.ROUTE_ONHOST_REQ, InboundChannels::onhostReq),
+            new InboundChannel(ArrivalService.ROUTE_ONHOST_REQ_ENDO, InboundChannels::onhostReqEndo),
+            new InboundChannel(ArrivalService.ROUTE_FINT_RESP, InboundChannels::fintResp));
+
+    private record InboundChannel(String route, Function<InboundChannels, ChannelDirs> dirs) { }
 
     @Inject
     AgtConfig config;
+
+    @Inject
+    AgtExchangeConfig exchange;
 
     @Inject
     LeaseService lease;
@@ -48,44 +67,50 @@ public class DirectoryWatcher {
         if (!lease.holdsLease()) {
             return;
         }
-        ROUTES.forEach(this::scan);
+        scanOnce();
+    }
+
+    /** One discovery sweep over every (client, inbound-channel) drop zone. */
+    public void scanOnce() {
+        exchange.clients().forEach((client, channels) ->
+                INBOUND.forEach(ch -> scan(client, ch.route(), ch.dirs().apply(channels))));
         lastSizes.keySet().removeIf(p -> !Files.exists(p));
     }
 
-    private void scan(String route) {
-        Path dir = Path.of(config.exchangeRoot(), route);
+    private void scan(final String client, final String route, final ChannelDirs dirs) {
+        final Path dir = Path.of(config.exchangeRoot(), dirs.in());
         if (!Files.isDirectory(dir)) {
             return;
         }
         try (Stream<Path> files = Files.list(dir)) {
             files.filter(Files::isRegularFile).forEach(f -> {
                 try {
-                    consider(f, route);
+                    consider(f, route, client);
                 } catch (Exception e) {
                     LOG.warnf("consider %s failed: %s", f.getFileName(), e.getMessage());
                 }
             });
         } catch (IOException e) {
-            LOG.warnf("watch tick failed for %s: %s", route, e.getMessage());
+            LOG.warnf("watch tick failed for %s/%s: %s", client, route, e.getMessage());
         }
     }
 
-    void consider(Path file, String route) {
-        String name = file.getFileName().toString();
+    void consider(final Path file, final String route, final String pathClient) {
+        final String name = file.getFileName().toString();
         if (name.endsWith(".tmp") || name.startsWith(".")) {
             return;
         }
-        long size;
+        final long size;
         try {
             size = Files.size(file);
         } catch (IOException e) {
             return; // vanished between list and stat; next tick decides
         }
-        Long previous = lastSizes.put(file, size);
+        final Long previous = lastSizes.put(file, size);
         if (previous == null || previous != size) {
             return; // not yet stable
         }
         lastSizes.remove(file);
-        arrivals.register(file, route);
+        arrivals.register(file, route, pathClient);
     }
 }
