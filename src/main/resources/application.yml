@@ -22,7 +22,7 @@ quarkus:
       format: "%d{HH:mm:ss} %-5p [%c{2.}] %s%e%n"
 
 agt:
-  exchange-root: ${DCRE_EXCHANGE_ROOT:../../../infra/dcre-infra/exchange}
+  exchange-root: ${DCRE_EXCHANGE_ROOT:../../../../../infra/dcre-infra/exchange}
   namespace: ${AGT_NAMESPACE:dcre}
   holder-id: ${HOSTNAME:local-agt}
   launch-enabled: ${AGT_LAUNCH_ENABLED:true}
