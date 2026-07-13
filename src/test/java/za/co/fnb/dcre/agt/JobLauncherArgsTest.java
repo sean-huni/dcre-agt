@@ -1,0 +1,68 @@
+package za.co.fnb.dcre.agt;
+
+import org.junit.jupiter.api.Test;
+import za.co.fnb.dcre.agt.domain.ArrivalStatus;
+import za.co.fnb.dcre.agt.domain.FileArrival;
+import za.co.fnb.dcre.agt.domain.Outcome;
+import za.co.fnb.dcre.agt.domain.Stage;
+import za.co.fnb.dcre.agt.service.JobLauncher;
+
+import java.util.List;
+import java.util.Map;
+import java.util.UUID;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+/**
+ * Pure args-shaping tests for service Job launches (R-41): CIR carries the
+ * arrival identity (client.token, msg.id) and the predecessor CTV verdict as
+ * outcome.hint so it can NACK without a spine header (A-42 consumer contract).
+ */
+class JobLauncherArgsTest {
+
+    private static final UUID ARRIVAL_ID = UUID.fromString("6a1f0a8e-0000-4000-8000-000000000042");
+
+    private static FileArrival arrival() {
+        return new FileArrival(ARRIVAL_ID, "onhost-req", "FNBRF01_MSG1.txt",
+                "sha", "FNBRF01", "DCRERF2026071313500102",
+                ArrivalStatus.DAG_RUNNING, null, "/exchange/claimed/FNBRF01_MSG1.txt");
+    }
+
+    @Test
+    void cirCarriesClientTokenMsgIdAndOutcomeHint() {
+        List<String> args = JobLauncher.serviceArgs(Stage.CIR, arrival(),
+                Map.of(Stage.CRR, Outcome.BUSINESS_ACCEPTED, Stage.CTV, Outcome.BUSINESS_FILE_REJECTED));
+        assertTrue(args.contains("arrival.id=" + ARRIVAL_ID));
+        assertTrue(args.contains("client.token=FNBRF01,java.lang.String,false"));
+        assertTrue(args.contains("msg.id=DCRERF2026071313500102,java.lang.String,false"));
+        assertTrue(args.contains("outcome.hint=BUSINESS_FILE_REJECTED,java.lang.String,false"));
+    }
+
+    @Test
+    void cirOmitsOutcomeHintWhenNoCtvOutcomeRecorded() {
+        List<String> args = JobLauncher.serviceArgs(Stage.CIR, arrival(),
+                Map.of(Stage.CRR, Outcome.BUSINESS_FILE_FATAL));
+        assertTrue(args.contains("client.token=FNBRF01,java.lang.String,false"));
+        assertTrue(args.contains("msg.id=DCRERF2026071313500102,java.lang.String,false"));
+        assertFalse(args.stream().anyMatch(a -> a.startsWith("outcome.hint=")),
+                "no CTV verdict recorded: hint omitted, CIR falls back to fatal.reason");
+    }
+
+    @Test
+    void nonCirStagesCarryNoIdentityParams() {
+        List<String> args = JobLauncher.serviceArgs(Stage.CDE, arrival(),
+                Map.of(Stage.CTV, Outcome.BUSINESS_PARTIAL));
+        assertEquals(List.of("arrival.id=" + ARRIVAL_ID), args);
+    }
+
+    @Test
+    void boundaryReaderArgsUnchanged() {
+        List<String> args = JobLauncher.serviceArgs(Stage.CRR, arrival(), Map.of());
+        assertEquals(List.of(
+                "arrival.id=" + ARRIVAL_ID,
+                "input.file=/exchange/claimed/FNBRF01_MSG1.txt,java.lang.String,false",
+                "original.name=FNBRF01_MSG1.txt,java.lang.String,false"), args);
+    }
+}

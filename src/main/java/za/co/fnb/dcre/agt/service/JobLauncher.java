@@ -8,9 +8,12 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import org.jboss.logging.Logger;
 import za.co.fnb.dcre.agt.config.AgtConfig;
+import za.co.fnb.dcre.agt.domain.FileArrival;
+import za.co.fnb.dcre.agt.domain.Outcome;
 import za.co.fnb.dcre.agt.domain.Stage;
 import za.co.fnb.dcre.agt.repo.ArrivalRepo;
 import za.co.fnb.dcre.agt.repo.IntentRepo;
+import za.co.fnb.dcre.agt.repo.OutcomeRepo;
 
 import java.util.Map;
 import java.util.Optional;
@@ -39,6 +42,9 @@ public class JobLauncher {
 
     @Inject
     ArrivalRepo arrivalRepo;
+
+    @Inject
+    OutcomeRepo outcomeRepo;
 
     @Inject
     AgtConfig config;
@@ -187,16 +193,39 @@ public class JobLauncher {
                 .build();
     }
 
-    /** M2 real-service Job: Spring Batch app; program args become JobParameters
-     *  (arrival.id identifying per R-16; file/name non-identifying). */
-    private Job serviceJob(String name, Stage stage, UUID arrivalId, String image) {
-        var arrival = arrivalRepo.arrivalById(arrivalId).orElseThrow();
+    /**
+     * Program args for a service Job (arrival.id identifying per R-16; everything
+     * else non-identifying). CIR carries the arrival identity and the predecessor
+     * CTV verdict so it can NACK a headerless spine (R-41/A-42). All inputs come
+     * from durable rows (file_arrival, stage_outcome), so a reconciled re-create
+     * rebuilds identical args; nothing lives only in memory (same durability
+     * property clock intents get from persisted launch args).
+     */
+    public static java.util.List<String> serviceArgs(Stage stage, FileArrival arrival, Map<Stage, Outcome> outcomes) {
         java.util.List<String> args = new java.util.ArrayList<>(java.util.List.of(
-                "arrival.id=" + arrivalId));
+                "arrival.id=" + arrival.id()));
         if (BOUNDARY_READERS.contains(stage)) {
             args.add("input.file=" + arrival.claimedPath() + ",java.lang.String,false");
             args.add("original.name=" + arrival.physicalFilename() + ",java.lang.String,false");
         }
+        if (stage == Stage.CIR) {
+            args.add("client.token=" + arrival.clientToken() + ",java.lang.String,false");
+            args.add("msg.id=" + arrival.msgIdToken() + ",java.lang.String,false");
+            Outcome ctv = outcomes.get(Stage.CTV);
+            if (ctv != null) {
+                args.add("outcome.hint=" + ctv.name() + ",java.lang.String,false");
+            }
+        }
+        return args;
+    }
+
+    /** M2 real-service Job: Spring Batch app; program args become JobParameters. */
+    private Job serviceJob(String name, Stage stage, UUID arrivalId, String image) {
+        var arrival = arrivalRepo.arrivalById(arrivalId).orElseThrow();
+        Map<Stage, Outcome> outcomes = stage == Stage.CIR
+                ? outcomeRepo.outcomesForArrival(arrivalId)
+                : Map.of();
+        java.util.List<String> args = serviceArgs(stage, arrival, outcomes);
         // ENDO reuses the DC CTV image with the DC flow switched off (M5, R-36):
         // only the extra env differs; DC arrivals keep the yml default (flow-dc true).
         java.util.List<io.fabric8.kubernetes.api.model.EnvVar> extraEnv =

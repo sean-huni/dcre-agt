@@ -21,8 +21,9 @@ import java.util.Set;
 
 /**
  * Level-triggered DAG engine over the ledgers. DC route (M1):
- * CRR -> CTV -> [CDE, CIR]. A BUSINESS_FILE_FATAL predecessor routes to CIR
- * only (whole-file NACK path, R-19/SPEC-DAG section 3).
+ * CRR -> CTV -> [CDE, CIR]. A BUSINESS_FILE_FATAL or BUSINESS_FILE_REJECTED
+ * predecessor routes to CIR only (whole-file NACK path, R-19/R-41/SPEC-DAG
+ * section 3); BUSINESS_PARTIAL fans out like ACCEPTED (R-41: PASS rows continue).
  * M4 adds the fint-resp route: a single reader stage picked by filename token.
  * M5 adds the ENDO route: CRR -> CTV -> AIS -> [CDE, CIR].
  * Pure decision logic lives in computeLaunches() for unit testing.
@@ -161,22 +162,18 @@ public class DagEngine {
         Set<Stage> launches = EnumSet.noneOf(Stage.class);
         for (Map.Entry<Stage, Outcome> done : outcomes.entrySet()) {
             switch (done.getValue()) {
-                case BUSINESS_ACCEPTED -> {
+                case BUSINESS_PARTIAL, BUSINESS_ACCEPTED -> {
+                    // R-41: PARTIAL continues PASS rows (acceptance mode is CTV's
+                    // call now); both fan out to all successors.
                     for (Stage next : dag.edges().getOrDefault(done.getKey(), Set.of())) {
                         if (!intended.contains(next)) {
                             launches.add(next);
                         }
                     }
                 }
-                case BUSINESS_PARTIAL -> {
-                    // A-16 fail-closed default (ALL_OR_NOTHING): partial acceptance
-                    // suppresses CDE/CRW; only the initial responder proceeds (Fugu F12).
-                    if (!intended.contains(Stage.CIR)) {
-                        launches.add(Stage.CIR);
-                    }
-                }
-                case BUSINESS_FILE_FATAL -> {
-                    // Whole-file NACK: the initial responder still runs; nothing else does.
+                case BUSINESS_FILE_REJECTED, BUSINESS_FILE_FATAL -> {
+                    // Whole-file NACK (fatal or R-41 policy rejection): the initial
+                    // responder still runs; nothing else does.
                     if (!intended.contains(Stage.CIR)) {
                         launches.add(Stage.CIR);
                     }
@@ -209,16 +206,15 @@ public class DagEngine {
 
     private static java.util.Optional<ArrivalStatus> terminalState(RouteDag dag, Map<Stage, Outcome> outcomes) {
         boolean cirDone = isBusinessDone(outcomes.get(Stage.CIR));
-        boolean anyFatal = outcomes.values().stream().anyMatch(o -> o == Outcome.BUSINESS_FILE_FATAL);
-        boolean anyPartial = outcomes.values().stream().anyMatch(o -> o == Outcome.BUSINESS_PARTIAL);
+        // R-41: BUSINESS_FILE_REJECTED terminates exactly like BUSINESS_FILE_FATAL
+        // (CIR acceptance closes the DAG; whole file never debits).
+        boolean anyFatal = outcomes.values().stream()
+                .anyMatch(o -> o == Outcome.BUSINESS_FILE_FATAL || o == Outcome.BUSINESS_FILE_REJECTED);
         if (anyFatal) {
             return cirDone ? java.util.Optional.of(ArrivalStatus.DAG_FAILED) : java.util.Optional.empty();
         }
-        if (anyPartial) {
-            // Fail-closed partial (F12): CDE/CRW suppressed; CIR reporting the
-            // partial verdict completes the arrival.
-            return cirDone ? java.util.Optional.of(ArrivalStatus.DAG_COMPLETE) : java.util.Optional.empty();
-        }
+        // R-41: PARTIAL continues PASS rows, so it completes like ACCEPTED: all
+        // terminal stages business-done (isBusinessDone admits PARTIAL).
         boolean allTerminalDone = dag.terminal().stream()
                 .allMatch(s -> isBusinessDone(outcomes.get(s)));
         return allTerminalDone ? java.util.Optional.of(ArrivalStatus.DAG_COMPLETE) : java.util.Optional.empty();

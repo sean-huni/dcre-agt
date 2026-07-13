@@ -34,12 +34,35 @@ class DagEngineTest {
     }
 
     @Test
-    void partialSuppressesCdeAndCrwFailClosed() {
-        // A-16 fail-closed default (Fugu F12): partial acceptance never debits.
+    void partialForksCdeAndCirLikeAccepted() {
+        // R-41: acceptance mode moved into CTV; PARTIAL here means ACK-with-partials,
+        // so PASS rows continue (old A-16 suppression retired).
         Set<Stage> launches = DagEngine.computeLaunches(
                 Map.of(Stage.CRR, Outcome.BUSINESS_ACCEPTED, Stage.CTV, Outcome.BUSINESS_PARTIAL),
                 EnumSet.of(Stage.CRR, Stage.CTV));
-        assertEquals(EnumSet.of(Stage.CIR), launches);
+        assertEquals(EnumSet.of(Stage.CDE, Stage.CIR), launches);
+    }
+
+    @Test
+    void fileRejectedRoutesToCirOnly() {
+        Map<Stage, Outcome> outcomes = Map.of(Stage.CTV, Outcome.BUSINESS_FILE_REJECTED);
+        Set<Stage> launches = DagEngine.computeLaunches(outcomes, Set.of());
+        assertEquals(Set.of(Stage.CIR), launches);
+    }
+
+    @Test
+    void partialNowContinuesPassRows() {
+        // R-41: PARTIAL means ACK-with-partials; CDE must launch alongside CIR
+        Map<Stage, Outcome> outcomes = Map.of(Stage.CTV, Outcome.BUSINESS_PARTIAL);
+        Set<Stage> launches = DagEngine.computeLaunches(outcomes, Set.of());
+        assertEquals(Set.of(Stage.CDE, Stage.CIR), launches);
+    }
+
+    @Test
+    void seamLiteralMapsToEnum() {
+        // OutcomeWatcher maps seam text via Outcome.valueOf: the CTV exit string
+        // BUSINESS_FILE_REJECTED must resolve, never hit the arbiter clause.
+        assertEquals(Outcome.BUSINESS_FILE_REJECTED, Outcome.valueOf("BUSINESS_FILE_REJECTED"));
     }
 
     @Test
@@ -51,10 +74,28 @@ class DagEngineTest {
     }
 
     @Test
-    void partialCompletesOnceResponderReports() {
+    void partialCompletesOnlyWhenAllTerminalsReport() {
+        // R-41: PARTIAL continues PASS rows, so CDE is in flight; CIR alone no
+        // longer completes the arrival.
+        assertTrue(DagEngine.terminalState(Map.of(
+                Stage.CRR, Outcome.BUSINESS_ACCEPTED, Stage.CTV, Outcome.BUSINESS_PARTIAL,
+                Stage.CIR, Outcome.BUSINESS_ACCEPTED)).isEmpty());
         assertEquals(ArrivalStatus.DAG_COMPLETE, DagEngine.terminalState(Map.of(
                 Stage.CRR, Outcome.BUSINESS_ACCEPTED, Stage.CTV, Outcome.BUSINESS_PARTIAL,
+                Stage.CDE, Outcome.BUSINESS_ACCEPTED,
                 Stage.CIR, Outcome.BUSINESS_ACCEPTED)).orElseThrow());
+    }
+
+    @Test
+    void fileRejectedTerminalMirrorsFatal() {
+        // R-41: whole-file policy rejection terminates like FILE_FATAL once the
+        // responder has reported; a tech-failed responder keeps the arrival open.
+        assertEquals(ArrivalStatus.DAG_FAILED, DagEngine.terminalState(Map.of(
+                Stage.CRR, Outcome.BUSINESS_ACCEPTED, Stage.CTV, Outcome.BUSINESS_FILE_REJECTED,
+                Stage.CIR, Outcome.BUSINESS_ACCEPTED)).orElseThrow());
+        assertTrue(DagEngine.terminalState(Map.of(
+                Stage.CRR, Outcome.BUSINESS_ACCEPTED, Stage.CTV, Outcome.BUSINESS_FILE_REJECTED,
+                Stage.CIR, Outcome.TECH_FAILED)).isEmpty());
     }
 
     @Test
@@ -154,13 +195,23 @@ class DagEngineTest {
     }
 
     @Test
-    void endoPartialRoutesToCirOnlySkippingAisAndCde() {
-        // Same A-16 fail-closed rule as DC (F12): partial acceptance never debits.
+    void endoPartialContinuesToAis() {
+        // R-41: PARTIAL fans out to successors like ACCEPTED; on ENDO the CTV
+        // successor is AIS (old A-16 CIR-only suppression retired).
         Set<Stage> launches = DagEngine.computeLaunches(ArrivalService.ROUTE_ONHOST_REQ_ENDO,
                 "FNBRF01_MSG1.txt",
                 Map.of(Stage.CRR, Outcome.BUSINESS_ACCEPTED, Stage.CTV, Outcome.BUSINESS_PARTIAL),
                 EnumSet.of(Stage.CRR, Stage.CTV));
-        assertEquals(EnumSet.of(Stage.CIR), launches, "ENDO partial: CIR only, never AIS/CDE");
+        assertEquals(EnumSet.of(Stage.AIS), launches, "ENDO partial continues to AIS");
+    }
+
+    @Test
+    void endoFileRejectedRoutesToCirOnly() {
+        Set<Stage> launches = DagEngine.computeLaunches(ArrivalService.ROUTE_ONHOST_REQ_ENDO,
+                "FNBRF01_MSG1.txt",
+                Map.of(Stage.CRR, Outcome.BUSINESS_ACCEPTED, Stage.CTV, Outcome.BUSINESS_FILE_REJECTED),
+                EnumSet.of(Stage.CRR, Stage.CTV));
+        assertEquals(EnumSet.of(Stage.CIR), launches, "policy rejection: CIR only, never AIS/CDE");
     }
 
     @Test
