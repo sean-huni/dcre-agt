@@ -27,7 +27,7 @@ dependencies {
 }
 
 group = 'za.co.fnb.dcre'
-version = '1.0.0-SNAPSHOT'
+version = '2.0.1'
 
 java {
     sourceCompatibility = JavaVersion.VERSION_25

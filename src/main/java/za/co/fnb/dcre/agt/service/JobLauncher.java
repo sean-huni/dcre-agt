@@ -195,8 +195,11 @@ public class JobLauncher {
 
     /**
      * Program args for a service Job (arrival.id identifying per R-16; everything
-     * else non-identifying). CIR carries the arrival identity and the rejecting
-     * validator's verdict so it can NACK a headerless spine (R-41/A-42). All
+     * else non-identifying). CIR carries the arrival identity, with route.id
+     * carrying the route dimension of the R-16 arrival identity (A-45: CIR 2.0.1
+     * requires it to keep cross-route twin arrivals from colliding on the
+     * response file), and the rejecting validator's verdict so it can NACK a
+     * headerless spine (R-41/A-42). All
      * inputs come from durable rows (file_arrival, stage_outcome), so a
      * reconciled re-create rebuilds identical args; nothing lives only in memory
      * (same durability property clock intents get from persisted launch args).
@@ -209,6 +212,7 @@ public class JobLauncher {
             args.add("original.name=" + arrival.physicalFilename() + ",java.lang.String,false");
         }
         if (stage == Stage.CIR) {
+            args.add("route.id=" + arrival.routeId() + ",java.lang.String,false");
             args.add("client.token=" + arrival.clientToken() + ",java.lang.String,false");
             args.add("msg.id=" + arrival.msgIdToken() + ",java.lang.String,false");
             rejectionHint(outcomes).ifPresent(o ->

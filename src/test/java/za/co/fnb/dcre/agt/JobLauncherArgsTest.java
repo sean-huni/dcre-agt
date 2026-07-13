@@ -17,7 +17,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Pure args-shaping tests for service Job launches (R-41): CIR carries the
- * arrival identity (client.token, msg.id) and, when a validator rejected the
+ * arrival identity (route.id, client.token, msg.id per R-16/A-45) and, when a validator rejected the
  * file, that rejecting stage's verdict as outcome.hint so it can NACK without
  * a spine header (A-42 consumer contract).
  */
@@ -36,6 +36,8 @@ class JobLauncherArgsTest {
         List<String> args = JobLauncher.serviceArgs(Stage.CIR, arrival(),
                 Map.of(Stage.CRR, Outcome.BUSINESS_ACCEPTED, Stage.CTV, Outcome.BUSINESS_FILE_REJECTED));
         assertTrue(args.contains("arrival.id=" + ARRIVAL_ID));
+        assertTrue(args.contains("route.id=onhost-req,java.lang.String,false"),
+                "A-45: CIR 2.0.1 fails closed without the route dimension; got " + args);
         assertTrue(args.contains("client.token=FNBRF01,java.lang.String,false"));
         assertTrue(args.contains("msg.id=DCRERF2026071313500102,java.lang.String,false"));
         assertTrue(args.contains("outcome.hint=BUSINESS_FILE_REJECTED,java.lang.String,false"));
