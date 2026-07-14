@@ -110,8 +110,58 @@ public class IntentRepo {
         }
     }
 
+    /** New attempt number after bump; stamps last_attempt_at (OrphanSweeper bookkeeping). */
+    public int beginRelaunchAttempt(final UUID intentId) {
+        String sql = "UPDATE launch_intent SET attempt = attempt + 1, last_attempt_at = now() "
+                + "WHERE id=? RETURNING attempt";
+        try (Connection c = ds.getConnection(); PreparedStatement p = c.prepareStatement(sql)) {
+            p.setObject(1, intentId);
+            try (ResultSet r = p.executeQuery()) {
+                r.next();
+                return r.getInt(1);
+            }
+        } catch (SQLException e) {
+            throw new IllegalStateException("beginRelaunchAttempt failed", e);
+        }
+    }
+
+    public Optional<java.time.OffsetDateTime> lastAttemptAt(final UUID intentId) {
+        try (Connection c = ds.getConnection();
+             PreparedStatement p = c.prepareStatement("SELECT last_attempt_at FROM launch_intent WHERE id=?")) {
+            p.setObject(1, intentId);
+            try (ResultSet r = p.executeQuery()) {
+                return r.next()
+                        ? Optional.ofNullable(r.getObject(1, java.time.OffsetDateTime.class))
+                        : Optional.empty();
+            }
+        } catch (SQLException e) {
+            throw new IllegalStateException("lastAttemptAt failed", e);
+        }
+    }
+
+    /** Arrival intents whose CURRENT attempt ended TECH-class: the orphan-sweep worklist. */
+    public List<LaunchIntent> launchedArrivalIntentsWithTechCurrentAttempt() {
+        String sql = """
+                SELECT i.id, i.arrival_id, i.stage, i.job_name, i.status, i.run_key, i.attempt
+                FROM launch_intent i JOIN stage_outcome o
+                  ON o.intent_id = i.id AND o.attempt = i.attempt
+                WHERE i.status='LAUNCHED' AND i.arrival_id IS NOT NULL
+                  AND o.outcome IN ('TECH_FAILED')""";
+        try (Connection c = ds.getConnection(); PreparedStatement p = c.prepareStatement(sql);
+             ResultSet r = p.executeQuery()) {
+            List<LaunchIntent> out = new ArrayList<>();
+            while (r.next()) {
+                out.add(map(r));
+            }
+            return out;
+        } catch (SQLException e) {
+            throw new IllegalStateException("launchedArrivalIntentsWithTechCurrentAttempt failed", e);
+        }
+    }
+
     public List<LaunchIntent> intentsForArrival(UUID arrivalId) {
-        String sql = "SELECT id, arrival_id, stage, job_name, status, run_key FROM launch_intent WHERE arrival_id=?";
+        String sql = "SELECT id, arrival_id, stage, job_name, status, run_key, attempt "
+                + "FROM launch_intent WHERE arrival_id=?";
         try (Connection c = ds.getConnection(); PreparedStatement p = c.prepareStatement(sql)) {
             p.setObject(1, arrivalId);
             try (ResultSet r = p.executeQuery()) {
@@ -126,10 +176,12 @@ public class IntentRepo {
         }
     }
 
+    /** Intents whose CURRENT attempt has no outcome yet (earlier attempts' rows do not count). */
     public List<LaunchIntent> intentsWithoutOutcome() {
         String sql = """
-                SELECT i.id, i.arrival_id, i.stage, i.job_name, i.status, i.run_key
-                FROM launch_intent i LEFT JOIN stage_outcome o ON o.intent_id = i.id
+                SELECT i.id, i.arrival_id, i.stage, i.job_name, i.status, i.run_key, i.attempt
+                FROM launch_intent i LEFT JOIN stage_outcome o
+                  ON o.intent_id = i.id AND o.attempt = i.attempt
                 WHERE o.id IS NULL""";
         try (Connection c = ds.getConnection(); PreparedStatement p = c.prepareStatement(sql);
              ResultSet r = p.executeQuery()) {
@@ -160,6 +212,6 @@ public class IntentRepo {
     private static LaunchIntent map(ResultSet r) throws SQLException {
         return new LaunchIntent(r.getObject(1, UUID.class), r.getObject(2, UUID.class),
                 Stage.valueOf(r.getString(3)), r.getString(4), r.getString(5), r.getString(6),
-                0); // Task 2 wires real attempt (SELECT lists gain i.attempt, map gains r.getInt(7))
+                r.getInt(7));
     }
 }

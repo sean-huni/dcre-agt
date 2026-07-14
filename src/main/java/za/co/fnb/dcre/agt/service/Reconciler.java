@@ -104,7 +104,8 @@ public class Reconciler {
         // LAUNCHED and reaped/vanished: resolve from the durable seam, NEVER rerun (F1).
         Optional<Outcome> business = outcomes.readBusinessOutcome(intent.jobName());
         if (business.isPresent()) {
-            if (outcomeRepo.insertOutcome(intent.id(), business.get(), null, "ReapedBeforeObservation")) {
+            if (outcomeRepo.insertOutcome(intent.id(), intent.attempt(), business.get(), null,
+                    "ReapedBeforeObservation")) {
                 LOG.infof("Reconcile: recovered outcome %s = %s from seam after reap",
                         intent.jobName(), business.get());
             }
@@ -112,7 +113,8 @@ public class Reconciler {
         }
         OffsetDateTime created = intentRepo.intentCreatedAt(intent.id());
         if (created.plus(REAP_GRACE).isBefore(OffsetDateTime.now())) {
-            if (outcomeRepo.insertOutcome(intent.id(), Outcome.TECH_FAILED, null, "VanishedNoSeam")) {
+            if (outcomeRepo.insertOutcome(intent.id(), intent.attempt(), Outcome.TECH_FAILED, null,
+                    "VanishedNoSeam")) {
                 LOG.errorf("Reconcile: LAUNCHED %s vanished with no outcome seam after grace: TECH_FAILED "
                         + "(absence is never success)", intent.jobName());
             }

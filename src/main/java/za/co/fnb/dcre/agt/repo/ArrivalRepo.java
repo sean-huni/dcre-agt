@@ -104,6 +104,12 @@ public class ArrivalRepo {
         });
     }
 
+    /** OrphanSweeper exhaustion: terminal only from DAG_RUNNING (guard keeps terminal states immutable). */
+    public void markDagFailed(final UUID arrivalId) {
+        JdbcSupport.exec(ds, "UPDATE file_arrival SET status='DAG_FAILED' WHERE id=? AND status='DAG_RUNNING'",
+                p -> p.setObject(1, arrivalId));
+    }
+
     public void updateArrivalClaimedPath(UUID id, String claimedPath) {
         JdbcSupport.exec(ds, "UPDATE file_arrival SET claimed_path=? WHERE id=?", p -> {
             p.setString(1, claimedPath);

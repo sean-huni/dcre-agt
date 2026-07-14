@@ -97,7 +97,7 @@ public class OutcomeWatcher {
             }
             outcome = business.get();
         }
-        if (outcomeRepo.insertOutcome(intent.id(), outcome, exitCode, condition)) {
+        if (outcomeRepo.insertOutcome(intent.id(), intent.attempt(), outcome, exitCode, condition)) {
             LOG.infof("Outcome %s = %s (%s, exit=%s)", intent.jobName(), outcome, condition, exitCode);
         }
     }
