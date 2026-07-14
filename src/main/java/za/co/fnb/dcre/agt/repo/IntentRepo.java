@@ -159,6 +159,7 @@ public class IntentRepo {
 
     private static LaunchIntent map(ResultSet r) throws SQLException {
         return new LaunchIntent(r.getObject(1, UUID.class), r.getObject(2, UUID.class),
-                Stage.valueOf(r.getString(3)), r.getString(4), r.getString(5), r.getString(6));
+                Stage.valueOf(r.getString(3)), r.getString(4), r.getString(5), r.getString(6),
+                0); // Task 2 wires real attempt (SELECT lists gain i.attempt, map gains r.getInt(7))
     }
 }

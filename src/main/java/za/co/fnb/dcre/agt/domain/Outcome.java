@@ -5,5 +5,7 @@ public enum Outcome {
     TECH_FAILED, BUSINESS_FILE_FATAL,
     /** R-41: ALL_OR_NOTHING whole-file business rejection; CIR-only successor. */
     BUSINESS_FILE_REJECTED,
-    BUSINESS_PARTIAL, BUSINESS_ACCEPTED
+    BUSINESS_PARTIAL, BUSINESS_ACCEPTED,
+    /** OrphanSweeper: relaunch budget exhausted; arrival goes DAG_FAILED (terminal). */
+    TECH_EXHAUSTED
 }

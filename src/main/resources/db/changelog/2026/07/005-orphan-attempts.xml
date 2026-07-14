@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+        xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+        http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
+
+    <!-- OrphanSweeper (R-05 amendment, spec 2026-07-14-stuck-job-recovery-design.md):
+         per-attempt outcome rows + attempt bookkeeping on the intent. -->
+    <changeSet id="005-orphan-attempts" author="dcre">
+        <addColumn tableName="launch_intent">
+            <column name="attempt" type="INT" defaultValueNumeric="0">
+                <constraints nullable="false"/>
+            </column>
+            <column name="last_attempt_at" type="TIMESTAMPTZ"/>
+        </addColumn>
+        <addColumn tableName="stage_outcome">
+            <column name="attempt" type="INT" defaultValueNumeric="0">
+                <constraints nullable="false"/>
+            </column>
+        </addColumn>
+        <dropUniqueConstraint tableName="stage_outcome" constraintName="uq_outcome_intent"/>
+        <addUniqueConstraint tableName="stage_outcome" columnNames="intent_id, attempt"
+                             constraintName="uq_outcome_intent_attempt"/>
+        <rollback>
+            <dropUniqueConstraint tableName="stage_outcome" constraintName="uq_outcome_intent_attempt"/>
+            <addUniqueConstraint tableName="stage_outcome" columnNames="intent_id"
+                                 constraintName="uq_outcome_intent"/>
+            <dropColumn tableName="stage_outcome" columnName="attempt"/>
+            <dropColumn tableName="launch_intent" columnName="last_attempt_at"/>
+            <dropColumn tableName="launch_intent" columnName="attempt"/>
+        </rollback>
+    </changeSet>
+</databaseChangeLog>
