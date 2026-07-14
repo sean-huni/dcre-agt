@@ -23,6 +23,23 @@ quarkus:
 
 agt:
   exchange-root: ${DCRE_EXCHANGE_ROOT:../../../../../infra/dcre-infra/exchange}
+  # Per-client inbound exchange layout (SCRUM-42, R-30 amendment). AGT owns only
+  # the three inbound channels; relative paths resolve against exchange-root.
+  # Base config (dev/prod parity); %test inherits this and only overrides exchange-root.
+  exchange:
+    clients:
+      FNBCC01:
+        onhost-req:      { in: fnbcc01/onhost-req/in,      error: fnbcc01/onhost-req/error,      archive: fnbcc01/onhost-req/archive }
+        onhost-req-endo: { in: fnbcc01/onhost-req-endo/in, error: fnbcc01/onhost-req-endo/error, archive: fnbcc01/onhost-req-endo/archive }
+        fint-resp:       { in: fnbcc01/fint-resp/in,       error: fnbcc01/fint-resp/error,       archive: fnbcc01/fint-resp/archive }
+      FNBCC02:
+        onhost-req:      { in: fnbcc02/onhost-req/in,      error: fnbcc02/onhost-req/error,      archive: fnbcc02/onhost-req/archive }
+        onhost-req-endo: { in: fnbcc02/onhost-req-endo/in, error: fnbcc02/onhost-req-endo/error, archive: fnbcc02/onhost-req-endo/archive }
+        fint-resp:       { in: fnbcc02/fint-resp/in,       error: fnbcc02/fint-resp/error,       archive: fnbcc02/fint-resp/archive }
+      FNBRF01:
+        onhost-req:      { in: fnbrf01/onhost-req/in,      error: fnbrf01/onhost-req/error,      archive: fnbrf01/onhost-req/archive }
+        onhost-req-endo: { in: fnbrf01/onhost-req-endo/in, error: fnbrf01/onhost-req-endo/error, archive: fnbrf01/onhost-req-endo/archive }
+        fint-resp:       { in: fnbrf01/fint-resp/in,       error: fnbrf01/fint-resp/error,       archive: fnbrf01/fint-resp/archive }
   namespace: ${AGT_NAMESPACE:dcre}
   holder-id: ${HOSTNAME:local-agt}
   launch-enabled: ${AGT_LAUNCH_ENABLED:true}
@@ -41,6 +58,9 @@ agt:
   prg-interval-seconds: ${AGT_PRG_INTERVAL_SECONDS:60}
   hcs-interval-hours: ${AGT_HCS_INTERVAL_HOURS:6}
   service-db-url: ${AGT_SERVICE_DB_URL:jdbc:postgresql://crdb:26257/dcre_collections?sslmode=disable}
+  stage-memory-request: ${AGT_STAGE_MEMORY_REQUEST:512Mi}
+  stage-memory-limit: ${AGT_STAGE_MEMORY_LIMIT:768Mi}
+  stage-deadline-seconds: ${AGT_STAGE_DEADLINE_SECONDS:900}
 
 "%test":
   quarkus:
