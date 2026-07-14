@@ -55,8 +55,8 @@ class LedgerAndLeaseTest {
         assertTrue(intentRepo.insertIntent(arrival, Stage.CRR, "other-name").isEmpty(),
                 "second intent for same (arrival, stage) must be refused");
 
-        assertTrue(outcomeRepo.insertOutcome(intent.get(), Outcome.BUSINESS_ACCEPTED, 0, "Complete"));
-        assertFalse(outcomeRepo.insertOutcome(intent.get(), Outcome.TECH_FAILED, 1, "Failed"),
+        assertTrue(outcomeRepo.insertOutcome(intent.get(), 0, Outcome.BUSINESS_ACCEPTED, 0, "Complete"));
+        assertFalse(outcomeRepo.insertOutcome(intent.get(), 0, Outcome.TECH_FAILED, 1, "Failed"),
                 "duplicate outcome observation must be a no-op");
         assertEquals(Outcome.BUSINESS_ACCEPTED, outcomeRepo.outcomesForArrival(arrival).get(Stage.CRR),
                 "first observation wins");

@@ -22,12 +22,16 @@ import java.util.Optional;
 import java.util.Set;
 
 /**
- * Level-triggered reconciliation BY INTENT STATUS (Fugu F1: a LAUNCHED intent
- * is NEVER recreated):
- *   INTENDED + no live Job  -> create (the only safe recreate: unconfirmed create)
+ * Level-triggered reconciliation BY INTENT STATUS (Fugu F1, amended by R-05 /
+ * spec 2026-07-14-stuck-job-recovery-design.md: a LAUNCHED intent is recreated
+ * ONLY via the OrphanRelauncher: same identity, TECH-class only, bounded attempts):
+ *   INTENDED + no live Job  -> create (the safe recreate: unconfirmed create)
  *   INTENDED + live Job     -> promote to LAUNCHED (crash between create and mark)
  *   LAUNCHED + no live Job  -> resolve from the durable outcome seam; absent
- *                              after the grace window -> TECH_FAILED (never rerun)
+ *                              after the grace window -> bounded same-identity
+ *                              relaunch (OrphanRelauncher), TECH_EXHAUSTED when
+ *                              the budget runs out
+ * A second pass sweeps intents whose CURRENT attempt ended TECH-class.
  * Managed Jobs without an intent row are flagged as out-of-band orphans.
  */
 @ApplicationScoped
@@ -55,10 +59,13 @@ public class Reconciler {
     OutcomeWatcher outcomes;
 
     @Inject
+    OrphanRelauncher orphans;
+
+    @Inject
     KubernetesClient k8s;
 
     @RunOnVirtualThread
-    @Scheduled(every = "10s", concurrentExecution = io.quarkus.scheduler.Scheduled.ConcurrentExecution.SKIP)
+    @Scheduled(every = "5s", concurrentExecution = io.quarkus.scheduler.Scheduled.ConcurrentExecution.SKIP)
     void tick() {
         if (!lease.holdsLease() || !config.launchEnabled()) {
             return;
@@ -76,6 +83,8 @@ public class Reconciler {
                 LOG.warnf("reconcile %s failed: %s", intent.jobName(), e.getMessage());
             }
         }
+
+        orphans.sweepTechOrphans(live);
 
         Set<String> known = new HashSet<>(intentRepo.allIntentJobNames());
         for (String name : live.keySet()) {
@@ -101,10 +110,11 @@ public class Reconciler {
         if (liveJob != null) {
             return; // OutcomeWatcher owns live observation
         }
-        // LAUNCHED and reaped/vanished: resolve from the durable seam, NEVER rerun (F1).
+        // LAUNCHED and reaped/vanished: resolve from the durable seam first.
         Optional<Outcome> business = outcomes.readBusinessOutcome(intent.jobName());
         if (business.isPresent()) {
-            if (outcomeRepo.insertOutcome(intent.id(), business.get(), null, "ReapedBeforeObservation")) {
+            if (outcomeRepo.insertOutcome(intent.id(), intent.attempt(), business.get(), null,
+                    "ReapedBeforeObservation")) {
                 LOG.infof("Reconcile: recovered outcome %s = %s from seam after reap",
                         intent.jobName(), business.get());
             }
@@ -112,10 +122,7 @@ public class Reconciler {
         }
         OffsetDateTime created = intentRepo.intentCreatedAt(intent.id());
         if (created.plus(REAP_GRACE).isBefore(OffsetDateTime.now())) {
-            if (outcomeRepo.insertOutcome(intent.id(), Outcome.TECH_FAILED, null, "VanishedNoSeam")) {
-                LOG.errorf("Reconcile: LAUNCHED %s vanished with no outcome seam after grace: TECH_FAILED "
-                        + "(absence is never success)", intent.jobName());
-            }
+            orphans.relaunchOrExhaust(intent, null); // R-05 amendment: bounded same-identity resume
         }
     }
 }

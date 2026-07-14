@@ -80,4 +80,12 @@ public interface AgtConfig {
      *  300k-tx runs need more (AIS DeadlineExceeded live 2026-07-14). */
     @WithDefault("900")
     long stageDeadlineSeconds();
+
+    /** OrphanSweeper: bounded same-identity relaunch attempts for died arrival Jobs. */
+    @WithDefault("3")
+    int orphanMaxAttempts();
+
+    /** Minimum seconds between relaunch attempts of one intent. */
+    @WithDefault("60")
+    long orphanBackoffSeconds();
 }
