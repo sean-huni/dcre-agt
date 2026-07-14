@@ -65,4 +65,14 @@ public interface AgtConfig {
     /** JDBC url the service Jobs use for dcre_collections (in-cluster). */
     @WithDefault("jdbc:postgresql://crdb:26257/dcre_collections?sslmode=disable")
     String serviceDbUrl();
+
+    /** Stage-pod memory request. Default matches the pre-load-test sizing;
+     *  large-copybook runs (300k tx) need more (found live 2026-07-14: CTV OOM
+     *  at 768Mi across partition workers). */
+    @WithDefault("512Mi")
+    String stageMemoryRequest();
+
+    /** Stage-pod memory limit (see stageMemoryRequest). */
+    @WithDefault("768Mi")
+    String stageMemoryLimit();
 }
