@@ -137,6 +137,21 @@ class OrphanSweepTest {
     }
 
     @Test
+    void dagAdvancesOnBusinessOutcomeOfLaterAttempt() {
+        final UUID arrivalId = insertArrival("OSW7");
+        final UUID intentId = launchedIntent(arrivalId, "osw7");
+        assertTrue(outcomeRepo.insertOutcome(intentId, 0, Outcome.TECH_FAILED, 137, "Failed/PodKill"));
+
+        assertEquals(1, intentRepo.beginRelaunchAttempt(intentId));
+        assertTrue(outcomeRepo.insertOutcome(intentId, 1, Outcome.BUSINESS_ACCEPTED, 0, "Complete"));
+
+        assertEquals(Outcome.BUSINESS_ACCEPTED, outcomeRepo.outcomesForArrival(arrivalId).get(Stage.CRR),
+                "DagEngine's read sees the CURRENT attempt's outcome, not the dead attempt's TECH row");
+        assertEquals(2, outcomeCount(intentId),
+                "both attempts stay in the ledger as their own immutable rows (audit trail)");
+    }
+
+    @Test
     void clockIntentIgnored() {
         final String key = "osw6-" + suffix();
         final UUID clockId = intentRepo.insertClockIntent(Stage.PRG, key, "dcre-prg-" + key, "{}")
