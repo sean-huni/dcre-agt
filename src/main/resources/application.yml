@@ -61,6 +61,8 @@ agt:
   stage-memory-request: ${AGT_STAGE_MEMORY_REQUEST:512Mi}
   stage-memory-limit: ${AGT_STAGE_MEMORY_LIMIT:768Mi}
   stage-deadline-seconds: ${AGT_STAGE_DEADLINE_SECONDS:900}
+  orphan-max-attempts: ${AGT_ORPHAN_MAX_ATTEMPTS:3}
+  orphan-backoff-seconds: ${AGT_ORPHAN_BACKOFF_SECONDS:60}
 
 "%test":
   quarkus:
