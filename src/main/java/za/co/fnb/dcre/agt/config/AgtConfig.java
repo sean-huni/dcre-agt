@@ -75,4 +75,9 @@ public interface AgtConfig {
     /** Stage-pod memory limit (see stageMemoryRequest). */
     @WithDefault("768Mi")
     String stageMemoryLimit();
+
+    /** Stage Job activeDeadlineSeconds. Default matches pre-load-test sizing;
+     *  300k-tx runs need more (AIS DeadlineExceeded live 2026-07-14). */
+    @WithDefault("900")
+    long stageDeadlineSeconds();
 }

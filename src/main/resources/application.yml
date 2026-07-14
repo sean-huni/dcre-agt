@@ -60,6 +60,7 @@ agt:
   service-db-url: ${AGT_SERVICE_DB_URL:jdbc:postgresql://crdb:26257/dcre_collections?sslmode=disable}
   stage-memory-request: ${AGT_STAGE_MEMORY_REQUEST:512Mi}
   stage-memory-limit: ${AGT_STAGE_MEMORY_LIMIT:768Mi}
+  stage-deadline-seconds: ${AGT_STAGE_DEADLINE_SECONDS:900}
 
 "%test":
   quarkus:
