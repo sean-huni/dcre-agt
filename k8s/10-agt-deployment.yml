@@ -32,7 +32,7 @@ spec:
             - name: AGT_NAMESPACE
               value: dcre
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
-              value: http://host.docker.internal:4317
+              value: http://lgtm:4317
             - name: AGT_CRR_IMAGE
               value: dcre-crr:m7
             - name: AGT_CTV_IMAGE
