@@ -5,6 +5,7 @@ import jakarta.inject.Inject;
 import org.jboss.logging.Logger;
 import za.co.fnb.dcre.agt.domain.ArrivalStatus;
 import za.co.fnb.dcre.agt.repo.ArrivalRepo;
+import za.co.fnb.dcre.agt.repo.DuplicateRepo;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -52,6 +53,9 @@ public class ArrivalService {
 
     @Inject
     ArrivalRepo repo;
+
+    @Inject
+    DuplicateRepo duplicates;
 
     @Inject
     ExchangeSinks sinks;
@@ -114,9 +118,11 @@ public class ArrivalService {
             return new Result.Quarantined("CLIENT_PATH_MISMATCH");
         }
 
-        if (repo.sameContentExists(route, sha256)) {
-            // Identical bytes already registered under ANY name: no-op (F3).
-            moveToDuplicates(claimed, arrivalId, name, pathClient, route);
+        final Optional<UUID> twin = repo.findContentTwin(route, sha256);
+        if (twin.isPresent()) {
+            // Identical bytes already registered under ANY name: record the
+            // re-delivery write-ahead, then no-op (F3, spec 1.1).
+            recordDuplicate(claimed, twin.get(), name, pathClient, route, sha256);
             LOG.infof("Duplicate content re-delivery ignored: %s", name);
             return new Result.DuplicateSameHash();
         }
@@ -133,8 +139,9 @@ public class ArrivalService {
                 ArrivalStatus.CLAIMED, null, claimed.toString());
         if (id.isEmpty()) {
             // Raced another writer on a dedup index: classify by what exists now.
-            if (repo.sameContentExists(route, sha256)) {
-                moveToDuplicates(claimed, arrivalId, name, pathClient, route);
+            final Optional<UUID> raceTwin = repo.findContentTwin(route, sha256);
+            if (raceTwin.isPresent()) {
+                recordDuplicate(claimed, raceTwin.get(), name, pathClient, route, sha256);
                 return new Result.DuplicateSameHash();
             }
             repo.insertArrival(UUID.randomUUID(), route, name, sha256, pathClient, msgId,
@@ -151,9 +158,24 @@ public class ArrivalService {
         move(claimed, sinks.error(client, route).resolve(id + "_" + name)); // unique: never clobbers evidence (F5)
     }
 
-    private void moveToDuplicates(final Path claimed, final UUID id, final String name,
-                                  final String client, final String route) {
-        move(claimed, sinks.duplicates(client, route).resolve(id + "_" + name)); // kept, not deleted (F4)
+    /**
+     * Records the re-delivery in duplicate_delivery write-ahead (spec 1.1) BEFORE
+     * sinking the file, keyed by the claim_id parsed from the inflight
+     * {@code <claimUuid>_} prefix so an orphan-sweep resume that re-parses the
+     * same claim id is an ON CONFLICT no-op. sunk_path commits before the move.
+     */
+    private void recordDuplicate(final Path claimed, final UUID originalArrivalId, final String name,
+                                 final String client, final String route, final String sha256) {
+        final UUID claimId = claimIdOf(claimed);
+        final Path sunk = sinks.duplicates(client, route).resolve(claimId + "_" + name); // kept, not deleted (F4)
+        duplicates.insertDuplicate(claimId, originalArrivalId, route, client, name, sha256, sunk.toString());
+        move(claimed, sunk);
+    }
+
+    /** The per-delivery claim UUID prefixing the inflight file ({@code <claimUuid>_<name>}). */
+    private static UUID claimIdOf(final Path claimed) {
+        final String fn = claimed.getFileName().toString();
+        return UUID.fromString(fn.substring(0, fn.indexOf('_')));
     }
 
     private static void move(final Path from, final Path to) {

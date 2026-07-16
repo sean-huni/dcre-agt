@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+        xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+        http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
+
+    <!-- SCRUM-58 file-trace (spec 1.1): duplicate_delivery is a SIBLING table to
+         file_arrival, never a row in it. A same-name same-bytes re-delivery would
+         collide with the original on uq_arrival_identity (route_id,
+         physical_filename, payload_sha256) and a DUPLICATE status would violate
+         the uq_arrival_content partial index; a sibling table needs zero index
+         surgery on the dedup arbiter and records EVERY re-delivery event
+         distinctly. Idempotency key = claim_id (the per-delivery claim UUID that
+         prefixes the inflight file), so an orphan-sweep resume re-parses the same
+         claim id and the runtime INSERT ... ON CONFLICT (claim_id) DO NOTHING is
+         a no-op. -->
+    <changeSet id="006-duplicate-delivery" author="dcre">
+        <preConditions onFail="MARK_RAN">
+            <not>
+                <tableExists tableName="duplicate_delivery"/>
+            </not>
+        </preConditions>
+        <comment>agt_ops re-delivery ledger; claim_id idempotent; zero dedup-index surgery.</comment>
+        <createTable tableName="duplicate_delivery">
+            <column name="id" type="UUID" defaultValueComputed="gen_random_uuid()">
+                <constraints primaryKey="true" nullable="false"/>
+            </column>
+            <column name="claim_id" type="UUID">
+                <constraints nullable="false"/>
+            </column>
+            <column name="original_arrival_id" type="UUID">
+                <constraints nullable="false"
+                             foreignKeyName="fk_dup_original_arrival"
+                             references="file_arrival(id)"/>
+            </column>
+            <column name="route_id" type="VARCHAR(64)">
+                <constraints nullable="false"/>
+            </column>
+            <column name="client_token" type="VARCHAR(64)">
+                <constraints nullable="false"/>
+            </column>
+            <column name="physical_filename" type="VARCHAR(512)">
+                <constraints nullable="false"/>
+            </column>
+            <column name="payload_sha256" type="VARCHAR(64)">
+                <constraints nullable="false"/>
+            </column>
+            <column name="sunk_path" type="VARCHAR(1024)">
+                <constraints nullable="false"/>
+            </column>
+            <column name="observed_at" type="TIMESTAMP WITH TIME ZONE" defaultValueComputed="now()">
+                <constraints nullable="false"/>
+            </column>
+        </createTable>
+        <addUniqueConstraint tableName="duplicate_delivery"
+                             columnNames="claim_id"
+                             constraintName="uq_duplicate_delivery_claim"/>
+        <createIndex indexName="ix_dup_filename" tableName="duplicate_delivery">
+            <column name="physical_filename"/>
+        </createIndex>
+        <createIndex indexName="ix_dup_original" tableName="duplicate_delivery">
+            <column name="original_arrival_id"/>
+        </createIndex>
+    </changeSet>
+
+</databaseChangeLog>

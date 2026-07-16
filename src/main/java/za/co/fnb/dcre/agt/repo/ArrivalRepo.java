@@ -55,20 +55,26 @@ public class ArrivalRepo {
         }
     }
 
-    /** True when the same CONTENT (route + hash) already exists non-quarantined (Fugu F3). */
-    public boolean sameContentExists(String route, String sha256) {
+    /**
+     * The original arrival whose CONTENT (route + hash) this file duplicates, if
+     * any non-quarantined twin exists (Fugu F3). uq_arrival_content
+     * (route_id, payload_sha256) WHERE status &lt;&gt; 'QUARANTINED' makes the twin
+     * at most one; its id anchors a duplicate_delivery re-delivery row on the
+     * original flow (SCRUM-58 file-trace, spec 1.1).
+     */
+    public Optional<UUID> findContentTwin(String route, String sha256) {
         String sql = """
-                SELECT count(*) FROM file_arrival
-                WHERE route_id=? AND payload_sha256=? AND status <> 'QUARANTINED'""";
+                SELECT id FROM file_arrival
+                WHERE route_id=? AND payload_sha256=? AND status <> 'QUARANTINED'
+                LIMIT 1""";
         try (Connection c = ds.getConnection(); PreparedStatement p = c.prepareStatement(sql)) {
             p.setString(1, route);
             p.setString(2, sha256);
             try (ResultSet r = p.executeQuery()) {
-                r.next();
-                return r.getLong(1) > 0;
+                return r.next() ? Optional.of(r.getObject(1, UUID.class)) : Optional.empty();
             }
         } catch (SQLException e) {
-            throw new IllegalStateException("sameContentExists failed", e);
+            throw new IllegalStateException("findContentTwin failed", e);
         }
     }
 
