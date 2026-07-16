@@ -18,27 +18,39 @@ import za.co.fnb.dcre.agt.service.LeaseService;
 import za.co.fnb.dcre.agt.service.ReportTrigger;
 
 import javax.sql.DataSource;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
 import java.time.Instant;
 import java.util.HashMap;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.anyList;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 
 /**
- * ReportTrigger (SCRUM-55 Task 12): scans the collections-side prg_report_due
- * view and launches one PRG IMMEDIATE window per client. The PRG lane's
- * 003-reporting.xml is not on this branch yet, so the test creates a minimal
- * compatible view (contract: client, source_msg_id, reason) over a seed table.
+ * ReportTrigger (SCRUM-55 Task 12, review fix agt-12): scans the
+ * collections-side prg_report_due view and launches ONE PRG IMMEDIATE run PER
+ * DUE PARENT. Spring Batch's name=value,type,identifying notation cannot carry
+ * commas inside a value (DefaultJobParametersConverter reads token[0] as the
+ * value and Class.forName(token[1]) as the type), so parents are never joined:
+ * each launch carries a single sourceMsgId and a parent-distinct window key
+ * (digest of the full msgId) so JobInstances and PSR file names never collide.
+ * The PRG lane's 003-reporting.xml is not on this branch yet, so the test
+ * creates a minimal compatible view (contract: client, source_msg_id, reason)
+ * over a seed table.
  */
 @QuarkusTest
 @QuarkusTestResource(CrdbTestResource.class)
@@ -87,7 +99,7 @@ class ReportTriggerTest {
     }
 
     @Test
-    void launchesOneImmediateWindowPerClientWithDueParentsJoined() {
+    void launchesOnePrgImmediatePerDueParentWithParseSafeParams() {
         seedDue("FNBCC01", "DCRECC2026071600000001", "COMPLETE");
         seedDue("FNBCC01", "DCRECC2026071600000002", "IDLE");
         seedDue("FNBRF01", "DCRERF2026071600000003", "COMPLETE");
@@ -98,25 +110,37 @@ class ReportTriggerTest {
 
         final ArgumentCaptor<String> runKeys = ArgumentCaptor.captor();
         final ArgumentCaptor<List<String>> launchArgs = ArgumentCaptor.captor();
-        verify(launcher, times(2)).launchClock(eq(Stage.PRG), runKeys.capture(), launchArgs.capture());
+        verify(launcher, times(3)).launchClock(eq(Stage.PRG), runKeys.capture(), launchArgs.capture());
 
         final Map<String, List<String>> byRunKey = new HashMap<>();
         for (int i = 0; i < runKeys.getAllValues().size(); i++) {
             byRunKey.put(runKeys.getAllValues().get(i), launchArgs.getAllValues().get(i));
         }
+        assertEquals(3, byRunKey.size(), "run keys are distinct per parent: " + byRunKey.keySet());
         final long epoch = epochOf(runKeys.getAllValues().get(0), before, after);
 
-        final List<String> cc = byRunKey.get("FNBCC01-imm-" + epoch);
-        assertNotNull(cc, "one launch per client keyed <client>-imm-<epochSec>: " + byRunKey.keySet());
-        assertTrue(cc.contains("client=FNBCC01"), cc.toString());
-        assertTrue(cc.contains("window=imm-" + epoch), cc.toString());
-        assertTrue(cc.contains("report.type=IMMEDIATE,java.lang.String,false"), cc.toString());
-        assertTrue(cc.contains("parents=DCRECC2026071600000001,DCRECC2026071600000002,java.lang.String,false"),
-                "due parents comma-joined: " + cc);
+        assertImmediateLaunch(byRunKey, "FNBCC01", "DCRECC2026071600000001", epoch);
+        assertImmediateLaunch(byRunKey, "FNBCC01", "DCRECC2026071600000002", epoch);
+        assertImmediateLaunch(byRunKey, "FNBRF01", "DCRERF2026071600000003", epoch);
+    }
 
-        final List<String> rf = byRunKey.get("FNBRF01-imm-" + epoch);
-        assertNotNull(rf, "second client launches in the same scan: " + byRunKey.keySet());
-        assertTrue(rf.contains("parents=DCRERF2026071600000003,java.lang.String,false"), rf.toString());
+    @Test
+    void duplicateDueRowsForOneParentLaunchOnce() {
+        seedDue("FNBCC01", "DCRECC2026071600000007", "COMPLETE");
+        seedDue("FNBCC01", "DCRECC2026071600000007", "IDLE");
+        trigger.tick();
+        verify(launcher, times(1)).launchClock(eq(Stage.PRG), anyString(), anyList());
+    }
+
+    @Test
+    void runKeyStaysDnsSafeAtMaxFieldWidths() {
+        seedDue("FNBCLIENTMAX0016", "M".repeat(35), "COMPLETE");
+        trigger.tick();
+        final ArgumentCaptor<String> runKeys = ArgumentCaptor.captor();
+        verify(launcher, times(1)).launchClock(eq(Stage.PRG), runKeys.capture(), anyList());
+        final String jobName = JobLauncher.clockJobName(Stage.PRG, runKeys.getValue());
+        assertTrue(jobName.length() <= 63, "K8s label limit: " + jobName + " (" + jobName.length() + ")");
+        assertTrue(jobName.matches("[a-z0-9]([-a-z0-9]*[a-z0-9])?"), "DNS-1123: " + jobName);
     }
 
     @Test
@@ -142,8 +166,56 @@ class ReportTriggerTest {
         verifyNoInteractions(launcher);
     }
 
+    private void assertImmediateLaunch(final Map<String, List<String>> byRunKey, final String client,
+                                       final String sourceMsgId, final long epoch) {
+        final String window = "imm-" + epoch + "-" + digest12(sourceMsgId);
+        final List<String> args = byRunKey.get(client + "-" + window);
+        assertNotNull(args, "one launch keyed <client>-imm-<epochSec>-<digest12(parent)>: " + byRunKey.keySet());
+        assertTrue(args.contains("client=" + client), args.toString());
+        assertTrue(args.contains("window=" + window), args.toString());
+        assertTrue(args.contains("report.type=IMMEDIATE,java.lang.String,false"), args.toString());
+        assertTrue(args.contains("parents=" + sourceMsgId + ",java.lang.String,false"),
+                "single parent per launch, never comma-joined: " + args);
+        args.forEach(ReportTriggerTest::assertBatchNotationSafe);
+    }
+
+    /**
+     * The exact contract Spring Batch 6's DefaultJobParametersConverter parses:
+     * a bare identifying value with no comma, or value,type,identifying where
+     * token[1] must load via Class.forName. A comma inside the value shifts the
+     * tokens and blows up the PRG launch (the agt-12 review blocker).
+     */
+    private static void assertBatchNotationSafe(final String arg) {
+        final String value = arg.substring(arg.indexOf('=') + 1);
+        final String[] tokens = value.split(",");
+        if (tokens.length == 1) {
+            return; // plain identifying value, comma-free
+        }
+        assertEquals(3, tokens.length, "value,type,identifying with a comma-free value: " + arg);
+        try {
+            Class.forName(tokens[1]);
+        } catch (ClassNotFoundException e) {
+            throw new AssertionError("type token must be a loadable class (got '" + tokens[1] + "') in: " + arg, e);
+        }
+        assertTrue("true".equals(tokens[2]) || "false".equals(tokens[2]), "identifying flag: " + arg);
+    }
+
+    /** Mirrors ReportTrigger's deterministic parent digest (frozen contract). */
+    private static String digest12(final String sourceMsgId) {
+        try {
+            final byte[] sha = MessageDigest.getInstance("SHA-256")
+                    .digest(sourceMsgId.getBytes(StandardCharsets.UTF_8));
+            return HexFormat.of().formatHex(sha, 0, 6);
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-256 unavailable", e);
+        }
+    }
+
     private long epochOf(final String runKey, final long before, final long after) {
-        final long epoch = Long.parseLong(runKey.substring(runKey.lastIndexOf('-') + 1));
+        final int imm = runKey.indexOf("-imm-");
+        assertTrue(imm > 0, "run key shape <client>-imm-<epochSec>-<digest12>: " + runKey);
+        final String tail = runKey.substring(imm + "-imm-".length());
+        final long epoch = Long.parseLong(tail.substring(0, tail.indexOf('-')));
         assertTrue(epoch >= before && epoch <= after,
                 "window key derives from the scan epoch: " + runKey + " not in [" + before + "," + after + "]");
         return epoch;
