@@ -19,7 +19,12 @@ public class CrdbTestResource implements QuarkusTestResourceLifecycleManager {
         return Map.of(
                 "quarkus.datasource.jdbc.url", crdb.getJdbcUrl(),
                 "quarkus.datasource.username", crdb.getUsername(),
-                "quarkus.datasource.password", crdb.getPassword());
+                "quarkus.datasource.password", crdb.getPassword(),
+                // SCRUM-55: the read-only collections datasource shares the test
+                // container; ReportTriggerTest creates the prg_report_due contract.
+                "quarkus.datasource.collections.jdbc.url", crdb.getJdbcUrl(),
+                "quarkus.datasource.collections.username", crdb.getUsername(),
+                "quarkus.datasource.collections.password", crdb.getPassword());
     }
 
     @Override

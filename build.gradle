@@ -21,6 +21,7 @@ dependencies {
     implementation 'io.quarkus:quarkus-config-yaml'
     implementation 'io.quarkus:quarkus-rest'
     testImplementation 'io.quarkus:quarkus-junit'
+    testImplementation 'io.quarkus:quarkus-junit-mockito'
     testImplementation 'io.rest-assured:rest-assured'
     testImplementation 'org.testcontainers:cockroachdb:1.21.4'
     testImplementation 'org.testcontainers:junit-jupiter:1.21.4'

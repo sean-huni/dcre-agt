@@ -6,6 +6,14 @@ quarkus:
       url: ${AGT_DB_URL:jdbc:postgresql://localhost:26257/agt_ops?sslmode=disable}
     username: ${AGT_DB_USER:root}
     password: ${AGT_DB_PASSWORD:}
+    # SCRUM-55: read-only window into the collections DB (prg_report_due,
+    # prg_sla_pending). PRG owns the schema; AGT never writes here.
+    "collections":
+      db-kind: postgresql
+      jdbc:
+        url: ${AGT_COLLECTIONS_DB_URL:jdbc:postgresql://localhost:26257/dcre_collections?sslmode=disable}
+      username: ${AGT_COLLECTIONS_DB_USER:root}
+      password: ${AGT_COLLECTIONS_DB_PASSWORD:}
   liquibase:
     migrate-at-start: true
     change-log: db/changelog/db.changelog-master.xml
@@ -64,10 +72,20 @@ agt:
   orphan-max-attempts: ${AGT_ORPHAN_MAX_ATTEMPTS:3}
   orphan-backoff-seconds: ${AGT_ORPHAN_BACKOFF_SECONDS:60}
 
+# SCRUM-55 report knobs live under dcre.agt (outside the strict agt
+# ConfigMapping prefix; consumed directly by scheduler expressions).
+dcre:
+  agt:
+    # prg_report_due scan cadence in seconds (number-only Quarkus duration).
+    report-scan-seconds: ${AGT_REPORT_SCAN_SECONDS:15}
+
 "%test":
   quarkus:
     scheduler:
       enabled: false
+    http:
+      # Random port: 8081 collides with kubectl port-forwards on shared dev hosts.
+      test-port: 0
   agt:
     launch-enabled: false
     exchange-root: build/test-exchange
