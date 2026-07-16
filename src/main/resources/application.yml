@@ -71,6 +71,9 @@ agt:
   stage-deadline-seconds: ${AGT_STAGE_DEADLINE_SECONDS:900}
   orphan-max-attempts: ${AGT_ORPHAN_MAX_ATTEMPTS:3}
   orphan-backoff-seconds: ${AGT_ORPHAN_BACKOFF_SECONDS:60}
+  # SCRUM-55 Task 13: Fintegrate SLA thresholds in hours (amber warn, red breach).
+  sla-amber-hours: ${AGT_SLA_AMBER_HOURS:20}
+  sla-red-hours: ${AGT_SLA_RED_HOURS:24}
 
 # SCRUM-55 report knobs live under dcre.agt (outside the strict agt
 # ConfigMapping prefix; consumed directly by scheduler expressions).
@@ -78,6 +81,8 @@ dcre:
   agt:
     # prg_report_due scan cadence in seconds (number-only Quarkus duration).
     report-scan-seconds: ${AGT_REPORT_SCAN_SECONDS:15}
+    # prg_sla_pending scan cadence in seconds (number-only Quarkus duration).
+    sla-scan-seconds: ${AGT_SLA_SCAN_SECONDS:300}
 
 "%test":
   quarkus:

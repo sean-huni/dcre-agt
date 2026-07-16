@@ -81,6 +81,16 @@ public interface AgtConfig {
     @WithDefault("900")
     long stageDeadlineSeconds();
 
+    /** SLA amber threshold: hours a tx may sit Fintegrate-visible without a
+     *  terminal status before the amber gauge/WARN fires (SCRUM-55 Task 13). */
+    @WithDefault("20")
+    int slaAmberHours();
+
+    /** SLA red threshold: breach hours; the Grafana alert on the red gauge
+     *  drives the email-to-Fintegrate ops runbook. */
+    @WithDefault("24")
+    int slaRedHours();
+
     /** OrphanSweeper: bounded same-identity relaunch attempts for died arrival Jobs. */
     @WithDefault("3")
     int orphanMaxAttempts();
