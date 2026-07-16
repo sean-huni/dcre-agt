@@ -18,6 +18,7 @@ import java.util.HashSet;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Set;
+import java.util.regex.Pattern;
 
 /**
  * SCRUM-55 debounce/immediate report trigger: scans the collections-side
@@ -25,7 +26,10 @@ import java.util.Set;
  * Never one launch per client with comma-joined parents: Spring Batch's
  * name=value,type,identifying notation reads token[0] as the value and
  * Class.forName(token[1]) as the type, so a comma inside the parents value
- * crash-loops the PRG launch (agt-12 review blocker). The window key embeds a
+ * crash-loops the PRG launch (agt-12 review blocker). View-sourced client and
+ * sourceMsgId are additionally validated fail-closed against SAFE_TOKEN before
+ * use: a violating parent is excluded with an UNSAFE_TOKEN WARN, never
+ * launched. The window key embeds a
  * digest of the FULL sourceMsgId so same-client same-second parents get
  * distinct JobInstances and distinct PSR file names, and the K8s job name
  * stays under the 63-char label limit even at Max35 msgIds. Level-triggered
@@ -36,6 +40,14 @@ import java.util.Set;
 public class ReportTrigger {
 
     private static final Logger LOG = Logger.getLogger(ReportTrigger.class);
+
+    /**
+     * Fail-closed whitelist for view-sourced values embedded into Spring
+     * Batch's name=value,type,identifying notation and the K8s run key: a
+     * comma shifts the tokens, an equals sign splits the name, a newline
+     * forges log lines. Anything outside this set is excluded, never quoted.
+     */
+    private static final Pattern SAFE_TOKEN = Pattern.compile("^[A-Za-z0-9_-]+$");
 
     @Inject
     AgtConfig config;
@@ -63,10 +75,28 @@ public class ReportTrigger {
         final long epochSec = Instant.now().getEpochSecond();
         final Set<String> launched = new HashSet<>();
         for (final DueParent parent : due) {
-            if (launched.add(parent.client() + "|" + parent.sourceMsgId())) {
+            if (launched.add(parent.client() + "|" + parent.sourceMsgId())
+                    && safe("client", parent.client())
+                    && safe("sourceMsgId", parent.sourceMsgId())) {
                 launchImmediate(parent.client(), parent.sourceMsgId(), epochSec);
             }
         }
+    }
+
+    /** Fail-closed: on violation WARN (value elided to 8 chars) and never launch. */
+    private static boolean safe(final String field, final String value) {
+        if (value != null && SAFE_TOKEN.matcher(value).matches()) {
+            return true;
+        }
+        LOG.warnf("excluded stage=AGT reason=UNSAFE_TOKEN field=%s value=%s", field, elide(value));
+        return false;
+    }
+
+    private static String elide(final String value) {
+        if (value == null) {
+            return "null";
+        }
+        return value.length() <= 8 ? value : value.substring(0, 8);
     }
 
     private void launchImmediate(final String client, final String sourceMsgId, final long epochSec) {

@@ -24,8 +24,10 @@ import java.util.concurrent.atomic.AtomicLong;
  * SCRUM-55 Task 13: Fintegrate SLA watchdog (20h amber / 24h red). Every tick
  * re-reads the collections-side prg_sla_pending view and republishes truth:
  * per-client gauges dcre_sla_pending_amber / dcre_sla_pending_red (stale
- * clients drop to 0, MetricsService pattern) plus one WARN per (e2e, level)
- * per batch. Pure observation like MetricsService, so no lease gate: the
+ * clients drop to 0, MetricsService pattern) plus one WARN per
+ * (client, e2e, level) per batch: the dedup key carries the FULL tuple
+ * (idempotency-key rule), never a subset that lets two clients sharing an
+ * e2e swallow each other's WARN. Pure observation like MetricsService, so no lease gate: the
  * escalation (email Fintegrate) stays an ops runbook action driven by the
  * Grafana alert on the red gauge (Task 14).
  */
@@ -68,7 +70,7 @@ public class SlaMonitor {
             final boolean breach = row.ageHours() >= config.slaRedHours();
             (breach ? red : amber).merge(row.client(), 1L, Long::sum);
             final String level = breach ? "RED" : "AMBER";
-            if (warned.add(row.e2e() + "|" + level)) {
+            if (warned.add(row.client() + "|" + row.e2e() + "|" + level)) {
                 // Locale.ROOT: the line feeds log-based alerting, so the
                 // decimal separator must never follow the host locale.
                 LOG.warnf("sla stage=FINT client=%s e2e=%s ageHours=%s level=%s",

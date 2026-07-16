@@ -7,6 +7,7 @@ import io.quarkus.test.junit.QuarkusTest;
 import io.quarkus.test.junit.QuarkusTestProfile;
 import io.quarkus.test.junit.TestProfile;
 import jakarta.inject.Inject;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -29,6 +30,11 @@ import java.util.HashMap;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.logging.Handler;
+import java.util.logging.Level;
+import java.util.logging.LogRecord;
+import java.util.logging.Logger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -87,8 +93,12 @@ class ReportTriggerTest {
     @InjectMock
     JobLauncher launcher;
 
+    private CapturingHandler warns;
+
     @BeforeEach
     void resetViewAndLease() {
+        warns = new CapturingHandler();
+        Logger.getLogger(ReportTrigger.class.getName()).addHandler(warns);
         execCollections("CREATE TABLE IF NOT EXISTS prg_report_due_seed ("
                 + "client VARCHAR(16) NOT NULL, source_msg_id VARCHAR(35) NOT NULL, reason VARCHAR(16) NOT NULL)");
         execCollections("CREATE OR REPLACE VIEW prg_report_due AS "
@@ -96,6 +106,11 @@ class ReportTriggerTest {
         execCollections("DELETE FROM prg_report_due_seed");
         exec(opsDs, "UPDATE agt_lease SET expires_at = now() - INTERVAL '1 second'");
         assertTrue(lease.tryAcquire(config.holderId()), "test precondition: this instance holds the lease");
+    }
+
+    @AfterEach
+    void detachLogCapture() {
+        Logger.getLogger(ReportTrigger.class.getName()).removeHandler(warns);
     }
 
     @Test
@@ -141,6 +156,37 @@ class ReportTriggerTest {
         final String jobName = JobLauncher.clockJobName(Stage.PRG, runKeys.getValue());
         assertTrue(jobName.length() <= 63, "K8s label limit: " + jobName + " (" + jobName.length() + ")");
         assertTrue(jobName.matches("[a-z0-9]([-a-z0-9]*[a-z0-9])?"), "DNS-1123: " + jobName);
+    }
+
+    @Test
+    void maliciousSourceMsgIdWithCommaIsSkippedWithUnsafeTokenWarnAndNoLaunch() {
+        // Fail-closed guard: a comma in a view-sourced value shifts the
+        // name=value,type,identifying tokens, so the parent must be excluded
+        // (WARN, value elided to 8 chars) and never reach the launcher.
+        seedDue("FNBCC01", "EVIL,java.lang.Long", "COMPLETE");
+
+        trigger.tick();
+
+        verifyNoInteractions(launcher);
+        assertTrue(warns.lines.stream().anyMatch(w ->
+                        w.equals("excluded stage=AGT reason=UNSAFE_TOKEN field=sourceMsgId value=EVIL,jav")),
+                "UNSAFE_TOKEN WARN with field name and value elided to 8 chars: " + warns.lines);
+    }
+
+    @Test
+    void validParentStillLaunchesWhenAMaliciousSiblingIsSkipped() {
+        seedDue("FNBCC01", "DCRECC2026071600000010", "COMPLETE");
+        seedDue("FNBCC01", "BAD=EQUALS_SIGN", "IDLE");
+
+        trigger.tick();
+
+        final ArgumentCaptor<List<String>> launchArgs = ArgumentCaptor.captor();
+        verify(launcher, times(1)).launchClock(eq(Stage.PRG), anyString(), launchArgs.capture());
+        assertTrue(launchArgs.getValue().contains("parents=DCRECC2026071600000010,java.lang.String,false"),
+                "only the safe parent launches: " + launchArgs.getValue());
+        assertTrue(warns.lines.stream().anyMatch(w ->
+                        w.contains("reason=UNSAFE_TOKEN field=sourceMsgId value=BAD=EQUA")),
+                "WARN for the excluded sibling: " + warns.lines);
     }
 
     @Test
@@ -243,6 +289,33 @@ class ReportTriggerTest {
             p.executeUpdate();
         } catch (SQLException e) {
             throw new IllegalStateException("test SQL failed: " + sql, e);
+        }
+    }
+
+    /**
+     * Captures formatted WARN+ lines emitted by the ReportTrigger category
+     * (SlaMonitorTest pattern): ReportTrigger warns via Logger.warnf (printf
+     * style), so String.format over the record parameters reproduces the line.
+     */
+    private static final class CapturingHandler extends Handler {
+        private final List<String> lines = new CopyOnWriteArrayList<>();
+
+        @Override
+        public void publish(final LogRecord record) {
+            if (record.getLevel().intValue() >= Level.WARNING.intValue()) {
+                final Object[] params = record.getParameters();
+                lines.add(params == null || params.length == 0
+                        ? record.getMessage()
+                        : String.format(record.getMessage(), params));
+            }
+        }
+
+        @Override
+        public void flush() {
+        }
+
+        @Override
+        public void close() {
         }
     }
 }

@@ -38,7 +38,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * view and republishes truth per tick as per-client gauges
  * dcre_sla_pending_amber / dcre_sla_pending_red (20h / 24h) plus WARN lines
  * "sla stage=FINT client={} e2e={} ageHours={} level=AMBER|RED", at most one
- * WARN per (e2e, level) per tick batch. The PRG lane's reporting changelog is
+ * WARN per (client, e2e, level) per tick batch. The PRG lane's reporting changelog is
  * not on this branch yet, so the test creates a minimal compatible view
  * (contract: client, e2e, outbound_msg_id, visible_at, age_hours with
  * age_hours derived exactly as the ratified view derives it) over a seed
@@ -136,6 +136,20 @@ class SlaMonitorTest {
 
         assertEquals(0.0, gaugeValue("dcre_sla_pending_amber", "FNBRF01"),
                 "level-triggered truth: a cleared backlog drops the gauge to 0, not stale 1");
+    }
+
+    @Test
+    void warnsPerClientWhenTwoClientsShareAnE2eAtTheSameLevel() {
+        // Cross-entity collision guard (idempotency-key rule): the dedup key
+        // must be the FULL tuple (client, e2e, level). A subset key (e2e,
+        // level) silently swallows the second client's WARN line.
+        seedPending("FNBCC01", "E2ESHARED0000001", 21);
+        seedPending("FNBRF01", "E2ESHARED0000001", 21);
+
+        monitor.tick();
+
+        assertWarnLine("FNBCC01", "E2ESHARED0000001", "AMBER");
+        assertWarnLine("FNBRF01", "E2ESHARED0000001", "AMBER");
     }
 
     @Test
