@@ -175,10 +175,22 @@ public class ArrivalService {
         move(claimed, sunk);
     }
 
-    /** The per-delivery claim UUID prefixing the inflight file ({@code <claimUuid>_<name>}). */
-    private static UUID claimIdOf(final Path claimed) {
+    /** The per-delivery claim UUID prefixing the inflight file ({@code <claimUuid>_<name>}).
+     *  Package-private for the pure-unit malformed-name guard test (M3). Only ever
+     *  reached for an already-claimed content-twin, which is always {@code <uuid>_}
+     *  prefixed; the guards fail closed with context (move/hash error idiom) rather
+     *  than a bare StringIndexOutOfBounds / IllegalArgumentException. */
+    static UUID claimIdOf(final Path claimed) {
         final String fn = claimed.getFileName().toString();
-        return UUID.fromString(fn.substring(0, fn.indexOf('_')));
+        final int sep = fn.indexOf('_');
+        if (sep <= 0) {
+            throw new IllegalStateException("inflight filename lacks a '<claimUuid>_' prefix: " + fn);
+        }
+        try {
+            return UUID.fromString(fn.substring(0, sep));
+        } catch (IllegalArgumentException e) {
+            throw new IllegalStateException("inflight filename prefix is not a valid claim UUID: " + fn, e);
+        }
     }
 
     private static void move(final Path from, final Path to) {
