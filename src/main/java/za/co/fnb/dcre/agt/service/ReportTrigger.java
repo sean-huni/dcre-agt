@@ -92,11 +92,13 @@ public class ReportTrigger {
         return false;
     }
 
+    /** Log-safe sample: unsafe bytes never reach the log line (CWE-117), even elided. */
     private static String elide(final String value) {
         if (value == null) {
             return "null";
         }
-        return value.length() <= 8 ? value : value.substring(0, 8);
+        final String sanitized = value.replaceAll("[^A-Za-z0-9_-]", "?");
+        return sanitized.length() <= 8 ? sanitized : sanitized.substring(0, 8);
     }
 
     private void launchImmediate(final String client, final String sourceMsgId, final long epochSec) {

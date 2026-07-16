@@ -162,14 +162,15 @@ class ReportTriggerTest {
     void maliciousSourceMsgIdWithCommaIsSkippedWithUnsafeTokenWarnAndNoLaunch() {
         // Fail-closed guard: a comma in a view-sourced value shifts the
         // name=value,type,identifying tokens, so the parent must be excluded
-        // (WARN, value elided to 8 chars) and never reach the launcher.
+        // (WARN, value sanitized then elided to 8 chars: unsafe bytes never
+        // reach the log line, CWE-117) and never reach the launcher.
         seedDue("FNBCC01", "EVIL,java.lang.Long", "COMPLETE");
 
         trigger.tick();
 
         verifyNoInteractions(launcher);
         assertTrue(warns.lines.stream().anyMatch(w ->
-                        w.equals("excluded stage=AGT reason=UNSAFE_TOKEN field=sourceMsgId value=EVIL,jav")),
+                        w.equals("excluded stage=AGT reason=UNSAFE_TOKEN field=sourceMsgId value=EVIL?jav")),
                 "UNSAFE_TOKEN WARN with field name and value elided to 8 chars: " + warns.lines);
     }
 
@@ -185,7 +186,7 @@ class ReportTriggerTest {
         assertTrue(launchArgs.getValue().contains("parents=DCRECC2026071600000010,java.lang.String,false"),
                 "only the safe parent launches: " + launchArgs.getValue());
         assertTrue(warns.lines.stream().anyMatch(w ->
-                        w.contains("reason=UNSAFE_TOKEN field=sourceMsgId value=BAD=EQUA")),
+                        w.contains("reason=UNSAFE_TOKEN field=sourceMsgId value=BAD?EQUA")),
                 "WARN for the excluded sibling: " + warns.lines);
     }
 
