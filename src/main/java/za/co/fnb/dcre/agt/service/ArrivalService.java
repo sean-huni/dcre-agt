@@ -100,22 +100,18 @@ public class ArrivalService {
 
         // pathClient is authoritative: the drop-zone directory names the client.
         if (filenameClient == null) {
-            repo.insertArrival(UUID.randomUUID(), route, name, sha256, pathClient, null,
-                    ArrivalStatus.QUARANTINED, "UNPARSEABLE_FILENAME", null);
-            moveToError(claimed, arrivalId, name, pathClient, route);
             LOG.warnf("QUARANTINED %s: filename lacks R-31 tokens", name);
-            return new Result.Quarantined("UNPARSEABLE_FILENAME");
+            return quarantine(claimed, arrivalId, name, pathClient, route, sha256, null,
+                    "UNPARSEABLE_FILENAME");
         }
 
         if (!filenameClient.equals(pathClient)) {
             // Misfiled: the filename FNB token disagrees with the drop-zone client
             // (R-30 amendment). Fail closed; pathClient stays the ledger client_token.
-            repo.insertArrival(UUID.randomUUID(), route, name, sha256, pathClient, msgId,
-                    ArrivalStatus.QUARANTINED, "CLIENT_PATH_MISMATCH", null);
-            moveToError(claimed, arrivalId, name, pathClient, route);
             LOG.warnf("QUARANTINED %s: filename client %s != path client %s",
                     name, filenameClient, pathClient);
-            return new Result.Quarantined("CLIENT_PATH_MISMATCH");
+            return quarantine(claimed, arrivalId, name, pathClient, route, sha256, msgId,
+                    "CLIENT_PATH_MISMATCH");
         }
 
         final Optional<UUID> twin = repo.findContentTwin(route, sha256);
@@ -128,11 +124,9 @@ public class ArrivalService {
         }
 
         if (repo.sameKeyDifferentHashExists(route, pathClient, msgId, sha256)) {
-            repo.insertArrival(UUID.randomUUID(), route, name, sha256, pathClient, msgId,
-                    ArrivalStatus.QUARANTINED, "SAME_KEY_DIFFERENT_HASH", null);
-            moveToError(claimed, arrivalId, name, pathClient, route);
             LOG.warnf("QUARANTINED %s: same logical key, different hash", name);
-            return new Result.Quarantined("SAME_KEY_DIFFERENT_HASH");
+            return quarantine(claimed, arrivalId, name, pathClient, route, sha256, msgId,
+                    "SAME_KEY_DIFFERENT_HASH");
         }
 
         final Optional<UUID> id = repo.insertArrival(arrivalId, route, name, sha256, pathClient, msgId,
@@ -144,18 +138,27 @@ public class ArrivalService {
                 recordDuplicate(claimed, raceTwin.get(), name, pathClient, route, sha256);
                 return new Result.DuplicateSameHash();
             }
-            repo.insertArrival(UUID.randomUUID(), route, name, sha256, pathClient, msgId,
-                    ArrivalStatus.QUARANTINED, "SAME_KEY_DIFFERENT_HASH", null);
-            moveToError(claimed, arrivalId, name, pathClient, route);
-            return new Result.Quarantined("SAME_KEY_DIFFERENT_HASH");
+            return quarantine(claimed, arrivalId, name, pathClient, route, sha256, msgId,
+                    "SAME_KEY_DIFFERENT_HASH");
         }
         LOG.infof("Arrival %s claimed as %s", name, claimed.getFileName());
         return new Result.NewArrival(id.get());
     }
 
-    private void moveToError(final Path claimed, final UUID id, final String name,
-                             final String client, final String route) {
-        move(claimed, sinks.error(client, route).resolve(id + "_" + name)); // unique: never clobbers evidence (F5)
+    /**
+     * Quarantine fix (spec 2.3): the file_arrival row id IS the claim arrivalId
+     * that prefixes the error-dir file, and claimed_path holds the error sink
+     * path, so an error-dir {@code <uuid>_<name>} resolves to its row directly.
+     * Row committed write-ahead BEFORE the move (fail path capture, Section 5.2).
+     */
+    private Result quarantine(final Path claimed, final UUID arrivalId, final String name,
+                              final String client, final String route, final String sha256,
+                              final String msgId, final String reason) {
+        final Path sink = sinks.error(client, route).resolve(arrivalId + "_" + name); // unique: never clobbers evidence (F5)
+        repo.insertArrival(arrivalId, route, name, sha256, client, msgId,
+                ArrivalStatus.QUARANTINED, reason, sink.toString());
+        move(claimed, sink);
+        return new Result.Quarantined(reason);
     }
 
     /**
