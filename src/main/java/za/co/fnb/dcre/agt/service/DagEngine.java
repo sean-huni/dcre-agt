@@ -25,7 +25,9 @@ import java.util.Set;
  * predecessor routes to CIR only (whole-file NACK path, R-19/R-41/SPEC-DAG
  * section 3); BUSINESS_PARTIAL fans out like ACCEPTED (R-41: PASS rows continue).
  * M4 adds the fint-resp route: a single reader stage picked by filename token.
- * M5 adds the ENDO route: CRR -> CTV -> AIS -> [CDE, CIR].
+ * M5 added the ENDO route; SCRUM-69 reclassifies ENDO as Payments (immediate):
+ * CRR -> CTV -> AIS -> [CIR]. CDE never runs on the pay flow; CRW picks pay
+ * rows up by tx_header.flow from ingest day.
  * Pure decision logic lives in computeLaunches() for unit testing.
  */
 @ApplicationScoped
@@ -47,8 +49,8 @@ public class DagEngine {
             new EnumMap<>(Map.of(
                     Stage.CRR, EnumSet.of(Stage.CTV),
                     Stage.CTV, EnumSet.of(Stage.AIS),
-                    Stage.AIS, EnumSet.of(Stage.CDE, Stage.CIR))),
-            EnumSet.of(Stage.CDE, Stage.CIR));
+                    Stage.AIS, EnumSet.of(Stage.CIR))),
+            EnumSet.of(Stage.CIR));
 
     /** R-36 route-based DAG registry: the route -> shape mapping is data, not
      *  code; new request routes add an entry here, never a new code path. */
