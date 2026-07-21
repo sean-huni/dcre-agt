@@ -4,7 +4,7 @@ Collections Agent: the only long-running service in the DCRE Collections pipelin
 
 ## What it does
 
-AGT watches the per-client inbound exchange drop zones, registers stable file arrivals into a durable ledger (SHA-256 content identity, R-31 filename tokens, same-key-different-hash quarantine), and drives the Collections DAG level-triggered from that ledger: minting each pipeline stage as a write-ahead, deterministically-named Kubernetes Job, then observing its externally reported termination facts as the sole authority for stage completion (R-33). It also launches the clock-driven executors (CRW process-date, PRG payment-status, HCS holiday-calendar-sync) on interval windows, reconciles Jobs against intents after any restart, and bounds/relaunches same-identity Jobs that die mid-run (OrphanSweeper) instead of leaving an arrival stuck.
+AGT watches the per-client inbound exchange drop zones, registers stable file arrivals into a durable ledger (SHA-256 content identity, R-31 filename tokens, same-key-different-hash quarantine), and drives the request DAGs (DC Collections and ENDO Payments, R-36) level-triggered from that ledger: minting each pipeline stage as a write-ahead, deterministically-named Kubernetes Job, then observing its externally reported termination facts as the sole authority for stage completion (R-33). It also launches the clock-driven executors (CRW process-date, PRG payment-status, HCS holiday-calendar-sync) on interval windows, reconciles Jobs against intents after any restart, and bounds/relaunches same-identity Jobs that die mid-run (OrphanSweeper) instead of leaving an arrival stuck.
 
 ## Architecture and principles
 
