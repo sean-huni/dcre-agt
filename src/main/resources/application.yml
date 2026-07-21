@@ -11,7 +11,7 @@ quarkus:
     "collections":
       db-kind: postgresql
       jdbc:
-        url: ${AGT_COLLECTIONS_DB_URL:jdbc:postgresql://localhost:26257/dcre_collections?sslmode=disable}
+        url: ${AGT_COLLECTIONS_DB_URL:jdbc:postgresql://localhost:26257/dcre_col?sslmode=disable}
       username: ${AGT_COLLECTIONS_DB_USER:root}
       password: ${AGT_COLLECTIONS_DB_PASSWORD:}
   liquibase:
@@ -76,7 +76,7 @@ agt:
   # SCRUM-70: FQDN, not the short service name. This URL is handed to stage
   # pods in the FLOW namespaces (dcre-col/pay/man); `crdb` only resolves inside
   # the control namespace where the Service lives.
-  service-db-url: ${AGT_SERVICE_DB_URL:jdbc:postgresql://crdb.dcre.svc.cluster.local:26257/dcre_collections?sslmode=disable}
+  service-db-url: ${AGT_SERVICE_DB_URL:jdbc:postgresql://crdb.dcre.svc.cluster.local:26257/dcre_col?sslmode=disable}
   stage-memory-request: ${AGT_STAGE_MEMORY_REQUEST:512Mi}
   stage-memory-limit: ${AGT_STAGE_MEMORY_LIMIT:768Mi}
   stage-deadline-seconds: ${AGT_STAGE_DEADLINE_SECONDS:900}

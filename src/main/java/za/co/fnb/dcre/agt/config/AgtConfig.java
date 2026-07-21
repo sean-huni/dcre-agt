@@ -83,10 +83,10 @@ public interface AgtConfig {
     @WithDefault("6")
     int hcsIntervalHours();
 
-    /** JDBC url the service Jobs use for dcre_collections (in-cluster).
+    /** JDBC url the service Jobs use for dcre_col (in-cluster).
      *  SCRUM-70: FQDN, because stage pods run in the flow namespaces where the
      *  short service name `crdb` does not resolve. */
-    @WithDefault("jdbc:postgresql://crdb.dcre.svc.cluster.local:26257/dcre_collections?sslmode=disable")
+    @WithDefault("jdbc:postgresql://crdb.dcre.svc.cluster.local:26257/dcre_col?sslmode=disable")
     String serviceDbUrl();
 
     /** Stage-pod memory request. Default matches the pre-load-test sizing;
