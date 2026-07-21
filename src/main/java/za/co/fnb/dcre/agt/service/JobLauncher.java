@@ -9,6 +9,7 @@ import jakarta.inject.Inject;
 import org.jboss.logging.Logger;
 import za.co.fnb.dcre.agt.config.AgtConfig;
 import za.co.fnb.dcre.agt.domain.FileArrival;
+import za.co.fnb.dcre.agt.domain.Flow;
 import za.co.fnb.dcre.agt.domain.Outcome;
 import za.co.fnb.dcre.agt.domain.Stage;
 import za.co.fnb.dcre.agt.repo.ArrivalRepo;
@@ -50,32 +51,47 @@ public class JobLauncher {
     AgtConfig config;
 
     @Inject
+    FlowNamespaces flowNamespaces;
+
+    @Inject
     KubernetesClient k8s;
 
-    /** Full 128-bit arrival identity in the name (Fugu F2): 41 chars, DNS-1123 safe. */
-    public static String jobName(Stage stage, UUID arrivalId) {
-        return "dcre-" + stage.name().toLowerCase() + "-" + arrivalId.toString().replace("-", "");
+    /** Full 128-bit arrival identity in the name (Fugu F2). SCRUM-70: the
+     *  resolved flow prefix (col-/pay-/man-, 4 chars) replaces the dcre-
+     *  literal: 40 chars, DNS-1123 safe, still well under the 63-char limit. */
+    public static String jobName(Flow flow, Stage stage, UUID arrivalId) {
+        return flow.jobPrefix() + stage.name().toLowerCase() + "-" + arrivalId.toString().replace("-", "");
     }
 
-    /** Launch stage for arrival; no-op when an intent already exists (non-overlap). */
+    /** Launch stage for arrival; no-op when an intent already exists (non-overlap).
+     *  Single arrival fetch (m3): flow resolution and the Job spec share it. */
     public void launch(UUID arrivalId, Stage stage) {
-        String name = jobName(stage, arrivalId);
-        Optional<UUID> intent = intentRepo.insertIntent(arrivalId, stage, name);
+        FileArrival arrival = arrivalOf(arrivalId, stage.name());
+        Flow flow = flowNamespaces.flowFor(arrival);
+        String name = jobName(flow, stage, arrivalId);
+        String namespace = flowNamespaces.namespaceOf(flow);
+        Optional<UUID> intent = intentRepo.insertIntent(arrivalId, stage, name, namespace);
         if (intent.isEmpty()) {
             return; // already intended/launched by us or a predecessor incarnation
         }
-        createJob(intent.get(), arrivalId, stage, name);
+        createFromSpec(intent.get(), serviceJob(name, namespace, stage, arrival, serviceImage(stage)));
     }
 
-    /** Create (or re-create after crash) the Job for an existing intent. */
-    public void createJob(UUID intentId, UUID arrivalId, Stage stage, String name) {
+    /** Create (or re-create after crash) the Job for an existing intent. The
+     *  namespace comes from the intent row (durable), never re-resolved. */
+    public void createJob(UUID intentId, UUID arrivalId, Stage stage, String name, String namespace) {
         // arrivalId == null is a clock intent: its launch args are durable on the
         // intent row (a reconciled recreate with empty args crashed every clock
         // job with missing identifying params; caught live 2026-07-13).
         Job job = arrivalId == null
-                ? clockJob(name, stage, serviceImage(stage), clockArgs(intentId))
-                : serviceJob(name, stage, arrivalId, serviceImage(stage));
+                ? clockJob(name, namespace, stage, serviceImage(stage), clockArgs(intentId))
+                : serviceJob(name, namespace, stage, arrivalOf(arrivalId, name), serviceImage(stage));
         createFromSpec(intentId, job);
+    }
+
+    private FileArrival arrivalOf(UUID arrivalId, String context) {
+        return arrivalRepo.arrivalById(arrivalId).orElseThrow(() -> new IllegalStateException(
+                "arrival " + arrivalId + " not found: cannot build Job for " + context));
     }
 
     private java.util.List<String> clockArgs(UUID intentId) {
@@ -88,20 +104,21 @@ public class JobLauncher {
 
     private void createFromSpec(UUID intentId, Job job) {
         String name = job.getMetadata().getName();
+        String namespace = job.getMetadata().getNamespace();
         if (!config.launchEnabled()) {
             LOG.debugf("launch disabled; intent %s stays INTENDED", name);
             return;
         }
         String uid;
         try {
-            Job created = k8s.batch().v1().jobs().inNamespace(config.namespace()).resource(job).create();
+            Job created = k8s.batch().v1().jobs().inNamespace(namespace).resource(job).create();
             uid = created.getMetadata() != null ? created.getMetadata().getUid() : null;
-            LOG.infof("Launched %s (uid %s)", name, uid);
+            LOG.infof("Launched %s in %s (uid %s)", name, namespace, uid);
         } catch (KubernetesClientException e) {
             if (e.getCode() != 409) {
                 throw e; // reconciler retries later; intent stays INTENDED
             }
-            Job existing = k8s.batch().v1().jobs().inNamespace(config.namespace()).withName(name).get();
+            Job existing = k8s.batch().v1().jobs().inNamespace(namespace).withName(name).get();
             uid = existing != null && existing.getMetadata() != null ? existing.getMetadata().getUid() : null;
             LOG.infof("Job %s already exists (409, uid %s): treating as launched", name, uid);
         }
@@ -129,37 +146,39 @@ public class JobLauncher {
     }
 
     /**
-     * Clock Job name from (stage, runKey). Lowercase BEFORE sanitizing (M5: a
-     * sanitize-first bug collapsed FNBRF01/FNBCC01 to one name), and a LEADING
-     * stage token in the run key is stripped once (M6: HcsScheduler's runKey
-     * "hcs-w<n>" produced "dcre-hcs-hcs-w<n>"): the name owns the prefix, the
-     * run key never contributes it.
+     * Clock Job name from (flow, stage, runKey). Lowercase BEFORE sanitizing
+     * (M5: a sanitize-first bug collapsed FNBRF01/FNBCC01 to one name), and a
+     * LEADING stage token in the run key is stripped once (M6: HcsScheduler's
+     * runKey "hcs-w<n>" produced "dcre-hcs-hcs-w<n>"): the name owns the
+     * prefix, the run key never contributes it. SCRUM-70: the flow prefix
+     * replaces the dcre- literal.
      */
-    public static String clockJobName(Stage stage, String runKey) {
+    public static String clockJobName(Flow flow, Stage stage, String runKey) {
         String svc = stage.name().toLowerCase();
         String key = runKey.toLowerCase().replaceAll("[^a-z0-9-]", "-");
         if (key.startsWith(svc + "-")) {
             key = key.substring(svc.length() + 1);
         }
-        return "dcre-" + svc + "-" + key;
+        return flow.jobPrefix() + svc + "-" + key;
     }
 
     /** Clock-triggered launch (R-37 CRW; R-28 PRG in M4): identity (stage, runKey). */
-    public void launchClock(Stage stage, String runKey, java.util.List<String> args) {
-        String name = clockJobName(stage, runKey);
+    public void launchClock(Flow flow, Stage stage, String runKey, java.util.List<String> args) {
+        String name = clockJobName(flow, stage, runKey);
+        String namespace = flowNamespaces.namespaceOf(flow);
         java.util.Optional<UUID> intent =
-                intentRepo.insertClockIntent(stage, runKey, name, String.join("\n", args));
+                intentRepo.insertClockIntent(stage, runKey, name, String.join("\n", args), namespace);
         if (intent.isEmpty()) {
             return;
         }
-        createFromSpec(intent.get(), clockJob(name, stage, serviceImage(stage), args));
+        createFromSpec(intent.get(), clockJob(name, namespace, stage, serviceImage(stage), args));
     }
 
-    private Job clockJob(String name, Stage stage, String image, java.util.List<String> args) {
+    private Job clockJob(String name, String namespace, Stage stage, String image, java.util.List<String> args) {
         return new JobBuilder()
                 .withNewMetadata()
                     .withName(name)
-                    .withNamespace(config.namespace())
+                    .withNamespace(namespace)
                     .addToLabels(Map.of(LABEL_MANAGED_BY, "agt", LABEL_STAGE, stage.name()))
                 .endMetadata()
                 .withNewSpec()
@@ -266,10 +285,9 @@ public class JobLauncher {
     }
 
     /** M2 real-service Job: Spring Batch app; program args become JobParameters. */
-    private Job serviceJob(String name, Stage stage, UUID arrivalId, String image) {
-        var arrival = arrivalRepo.arrivalById(arrivalId).orElseThrow();
+    private Job serviceJob(String name, String namespace, Stage stage, FileArrival arrival, String image) {
         Map<Stage, Outcome> outcomes = stage == Stage.CIR
-                ? outcomeRepo.outcomesForArrival(arrivalId)
+                ? outcomeRepo.outcomesForArrival(arrival.id())
                 : Map.of();
         java.util.List<String> args = serviceArgs(stage, arrival, outcomes);
         // ENDO reuses the DC CTV image with the DC flow switched off (M5, R-36):
@@ -281,10 +299,10 @@ public class JobLauncher {
         return new JobBuilder()
                 .withNewMetadata()
                     .withName(name)
-                    .withNamespace(config.namespace())
+                    .withNamespace(namespace)
                     .addToLabels(Map.of(LABEL_MANAGED_BY, "agt",
                             LABEL_STAGE, stage.name(),
-                            LABEL_ARRIVAL, arrivalId.toString()))
+                            LABEL_ARRIVAL, arrival.id().toString()))
                 .endMetadata()
                 .withNewSpec()
                     .withBackoffLimit(0)

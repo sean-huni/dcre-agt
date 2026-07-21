@@ -154,15 +154,15 @@ class OrphanSweepTest {
     @Test
     void clockIntentIgnored() {
         final String key = "osw6-" + suffix();
-        final UUID clockId = intentRepo.insertClockIntent(Stage.PRG, key, "dcre-prg-" + key, "{}")
+        final UUID clockId = intentRepo.insertClockIntent(Stage.PRG, key, "col-prg-" + key, "{}", "dcre-col")
                 .orElseThrow();
         intentRepo.markIntentLaunched(clockId, "uid-" + key);
         assertTrue(outcomeRepo.insertOutcome(clockId, 0, Outcome.TECH_FAILED, 1, "Failed/Test"));
 
         relauncher.sweepTechOrphans(Map.of());
         relauncher.relaunchOrExhaust(
-                new LaunchIntent(clockId, null, Stage.PRG, "dcre-prg-" + key,
-                        LaunchIntent.LAUNCHED, key, 0), null);
+                new LaunchIntent(clockId, null, Stage.PRG, "col-prg-" + key,
+                        LaunchIntent.LAUNCHED, key, 0, "dcre-col"), null);
 
         assertEquals(0, attemptOf(clockId), "clock intents self-heal at the next window boundary");
     }
@@ -175,7 +175,7 @@ class OrphanSweepTest {
 
     private UUID launchedIntent(final UUID arrivalId, final String tag) {
         final UUID intentId = intentRepo.insertIntent(arrivalId, Stage.CRR,
-                "dcre-crr-" + tag + "-" + suffix()).orElseThrow();
+                "col-crr-" + tag + "-" + suffix(), "dcre-col").orElseThrow();
         intentRepo.markIntentLaunched(intentId, "uid-" + tag);
         return intentId;
     }

@@ -12,6 +12,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import za.co.fnb.dcre.agt.config.AgtConfig;
+import za.co.fnb.dcre.agt.domain.Flow;
 import za.co.fnb.dcre.agt.domain.Stage;
 import za.co.fnb.dcre.agt.repo.CollectionsReadRepo;
 import za.co.fnb.dcre.agt.service.JobLauncher;
@@ -39,6 +40,7 @@ import java.util.logging.Logger;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
@@ -123,13 +125,16 @@ class ReportTriggerTest {
         trigger.tick();
         final long after = Instant.now().getEpochSecond();
 
+        final ArgumentCaptor<Flow> flows = ArgumentCaptor.captor();
         final ArgumentCaptor<String> runKeys = ArgumentCaptor.captor();
         final ArgumentCaptor<List<String>> launchArgs = ArgumentCaptor.captor();
-        verify(launcher, times(3)).launchClock(eq(Stage.PRG), runKeys.capture(), launchArgs.capture());
+        verify(launcher, times(3)).launchClock(flows.capture(), eq(Stage.PRG), runKeys.capture(), launchArgs.capture());
 
         final Map<String, List<String>> byRunKey = new HashMap<>();
+        final Map<String, Flow> flowByRunKey = new HashMap<>();
         for (int i = 0; i < runKeys.getAllValues().size(); i++) {
             byRunKey.put(runKeys.getAllValues().get(i), launchArgs.getAllValues().get(i));
+            flowByRunKey.put(runKeys.getAllValues().get(i), flows.getAllValues().get(i));
         }
         assertEquals(3, byRunKey.size(), "run keys are distinct per parent: " + byRunKey.keySet());
         final long epoch = epochOf(runKeys.getAllValues().get(0), before, after);
@@ -137,6 +142,12 @@ class ReportTriggerTest {
         assertImmediateLaunch(byRunKey, "FNBCC01", "DCRECC2026071600000001", epoch);
         assertImmediateLaunch(byRunKey, "FNBCC01", "DCRECC2026071600000002", epoch);
         assertImmediateLaunch(byRunKey, "FNBRF01", "DCRERF2026071600000003", epoch);
+
+        // SCRUM-70: IMMEDIATE windows resolve by the parent client's flow
+        // (interim R-42 pay-clients map: FNBRF01 pay, FNBCC01 collections).
+        flowByRunKey.forEach((key, flow) -> assertEquals(
+                key.startsWith("FNBRF01-") ? Flow.PAY : Flow.COL, flow,
+                "client flow routing for " + key));
     }
 
     @Test
@@ -144,7 +155,7 @@ class ReportTriggerTest {
         seedDue("FNBCC01", "DCRECC2026071600000007", "COMPLETE");
         seedDue("FNBCC01", "DCRECC2026071600000007", "IDLE");
         trigger.tick();
-        verify(launcher, times(1)).launchClock(eq(Stage.PRG), anyString(), anyList());
+        verify(launcher, times(1)).launchClock(any(Flow.class), eq(Stage.PRG), anyString(), anyList());
     }
 
     @Test
@@ -152,8 +163,8 @@ class ReportTriggerTest {
         seedDue("FNBCLIENTMAX0016", "M".repeat(35), "COMPLETE");
         trigger.tick();
         final ArgumentCaptor<String> runKeys = ArgumentCaptor.captor();
-        verify(launcher, times(1)).launchClock(eq(Stage.PRG), runKeys.capture(), anyList());
-        final String jobName = JobLauncher.clockJobName(Stage.PRG, runKeys.getValue());
+        verify(launcher, times(1)).launchClock(any(Flow.class), eq(Stage.PRG), runKeys.capture(), anyList());
+        final String jobName = JobLauncher.clockJobName(Flow.COL, Stage.PRG, runKeys.getValue());
         assertTrue(jobName.length() <= 63, "K8s label limit: " + jobName + " (" + jobName.length() + ")");
         assertTrue(jobName.matches("[a-z0-9]([-a-z0-9]*[a-z0-9])?"), "DNS-1123: " + jobName);
     }
@@ -182,7 +193,7 @@ class ReportTriggerTest {
         trigger.tick();
 
         final ArgumentCaptor<List<String>> launchArgs = ArgumentCaptor.captor();
-        verify(launcher, times(1)).launchClock(eq(Stage.PRG), anyString(), launchArgs.capture());
+        verify(launcher, times(1)).launchClock(any(Flow.class), eq(Stage.PRG), anyString(), launchArgs.capture());
         assertTrue(launchArgs.getValue().contains("parents=DCRECC2026071600000010,java.lang.String,false"),
                 "only the safe parent launches: " + launchArgs.getValue());
         assertTrue(warns.lines.stream().anyMatch(w ->

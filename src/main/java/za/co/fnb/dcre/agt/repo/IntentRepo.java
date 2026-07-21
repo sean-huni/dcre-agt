@@ -27,16 +27,17 @@ public class IntentRepo {
     DataSource ds;
 
     /** Write-ahead intent. @return intent id, or empty when (arrival, stage) already intended. */
-    public Optional<UUID> insertIntent(UUID arrivalId, Stage stage, String jobName) {
+    public Optional<UUID> insertIntent(UUID arrivalId, Stage stage, String jobName, String namespace) {
         String sql = """
-                INSERT INTO launch_intent (arrival_id, stage, job_name, status)
-                VALUES (?,?,?,'INTENDED')
+                INSERT INTO launch_intent (arrival_id, stage, job_name, status, namespace)
+                VALUES (?,?,?,'INTENDED',?)
                 ON CONFLICT (arrival_id, stage) DO NOTHING
                 RETURNING id""";
         try (Connection c = ds.getConnection(); PreparedStatement p = c.prepareStatement(sql)) {
             p.setObject(1, arrivalId);
             p.setString(2, stage.name());
             p.setString(3, jobName);
+            p.setString(4, namespace);
             try (ResultSet r = p.executeQuery()) {
                 return r.next() ? Optional.of(r.getObject(1, UUID.class)) : Optional.empty();
             }
@@ -46,10 +47,11 @@ public class IntentRepo {
     }
 
     /** Write-ahead clock intent (no arrival). @return id, or empty when (stage, run_key) exists. */
-    public Optional<UUID> insertClockIntent(Stage stage, String runKey, String jobName, String launchArgs) {
+    public Optional<UUID> insertClockIntent(Stage stage, String runKey, String jobName,
+                                            String launchArgs, String namespace) {
         String sql = """
-                INSERT INTO launch_intent (stage, run_key, job_name, status, launch_args)
-                VALUES (?,?,?,'INTENDED',?)
+                INSERT INTO launch_intent (stage, run_key, job_name, status, launch_args, namespace)
+                VALUES (?,?,?,'INTENDED',?,?)
                 ON CONFLICT DO NOTHING
                 RETURNING id""";
         try (Connection c = ds.getConnection(); PreparedStatement p = c.prepareStatement(sql)) {
@@ -57,6 +59,7 @@ public class IntentRepo {
             p.setString(2, runKey);
             p.setString(3, jobName);
             p.setString(4, launchArgs);
+            p.setString(5, namespace);
             try (ResultSet r = p.executeQuery()) {
                 return r.next() ? Optional.of(r.getObject(1, UUID.class)) : Optional.empty();
             }
@@ -142,7 +145,7 @@ public class IntentRepo {
     /** Arrival intents whose CURRENT attempt ended TECH-class: the orphan-sweep worklist. */
     public List<LaunchIntent> launchedArrivalIntentsWithTechCurrentAttempt() {
         String sql = """
-                SELECT i.id, i.arrival_id, i.stage, i.job_name, i.status, i.run_key, i.attempt
+                SELECT i.id, i.arrival_id, i.stage, i.job_name, i.status, i.run_key, i.attempt, i.namespace
                 FROM launch_intent i JOIN stage_outcome o
                   ON o.intent_id = i.id AND o.attempt = i.attempt
                 WHERE i.status='LAUNCHED' AND i.arrival_id IS NOT NULL
@@ -160,7 +163,7 @@ public class IntentRepo {
     }
 
     public List<LaunchIntent> intentsForArrival(UUID arrivalId) {
-        String sql = "SELECT id, arrival_id, stage, job_name, status, run_key, attempt "
+        String sql = "SELECT id, arrival_id, stage, job_name, status, run_key, attempt, namespace "
                 + "FROM launch_intent WHERE arrival_id=?";
         try (Connection c = ds.getConnection(); PreparedStatement p = c.prepareStatement(sql)) {
             p.setObject(1, arrivalId);
@@ -179,7 +182,7 @@ public class IntentRepo {
     /** Intents whose CURRENT attempt has no outcome yet (earlier attempts' rows do not count). */
     public List<LaunchIntent> intentsWithoutOutcome() {
         String sql = """
-                SELECT i.id, i.arrival_id, i.stage, i.job_name, i.status, i.run_key, i.attempt
+                SELECT i.id, i.arrival_id, i.stage, i.job_name, i.status, i.run_key, i.attempt, i.namespace
                 FROM launch_intent i LEFT JOIN stage_outcome o
                   ON o.intent_id = i.id AND o.attempt = i.attempt
                 WHERE o.id IS NULL""";
@@ -212,6 +215,6 @@ public class IntentRepo {
     private static LaunchIntent map(ResultSet r) throws SQLException {
         return new LaunchIntent(r.getObject(1, UUID.class), r.getObject(2, UUID.class),
                 Stage.valueOf(r.getString(3)), r.getString(4), r.getString(5), r.getString(6),
-                r.getInt(7));
+                r.getInt(7), r.getString(8));
     }
 }

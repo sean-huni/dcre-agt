@@ -49,6 +49,14 @@ agt:
         onhost-req-endo: { in: fnbrf01/onhost-req-endo/in, error: fnbrf01/onhost-req-endo/error, archive: fnbrf01/onhost-req-endo/archive }
         fint-resp:       { in: fnbrf01/fint-resp/in,       error: fnbrf01/fint-resp/error,       archive: fnbrf01/fint-resp/archive }
   namespace: ${AGT_NAMESPACE:dcre}
+  # SCRUM-70 flow namespaces: AGT stays in the control namespace (agt.namespace);
+  # stage Jobs launch into the flow namespace of the route family.
+  namespace-col: ${AGT_NAMESPACE_COL:dcre-col}
+  namespace-pay: ${AGT_NAMESPACE_PAY:dcre-pay}
+  namespace-man: ${AGT_NAMESPACE_MAN:dcre-man}
+  # INTERIM (R-42): comma-separated client tokens on the pay flow, until the
+  # R-14 client reference table lands.
+  pay-clients: ${AGT_PAY_CLIENTS:FNBRF01}
   holder-id: ${HOSTNAME:local-agt}
   launch-enabled: ${AGT_LAUNCH_ENABLED:true}
   crr-image: ${AGT_CRR_IMAGE:}
@@ -65,7 +73,10 @@ agt:
   crw-interval-seconds: ${AGT_CRW_INTERVAL_SECONDS:60}
   prg-interval-seconds: ${AGT_PRG_INTERVAL_SECONDS:60}
   hcs-interval-hours: ${AGT_HCS_INTERVAL_HOURS:6}
-  service-db-url: ${AGT_SERVICE_DB_URL:jdbc:postgresql://crdb:26257/dcre_collections?sslmode=disable}
+  # SCRUM-70: FQDN, not the short service name. This URL is handed to stage
+  # pods in the FLOW namespaces (dcre-col/pay/man); `crdb` only resolves inside
+  # the control namespace where the Service lives.
+  service-db-url: ${AGT_SERVICE_DB_URL:jdbc:postgresql://crdb.dcre.svc.cluster.local:26257/dcre_collections?sslmode=disable}
   stage-memory-request: ${AGT_STAGE_MEMORY_REQUEST:512Mi}
   stage-memory-limit: ${AGT_STAGE_MEMORY_LIMIT:768Mi}
   stage-deadline-seconds: ${AGT_STAGE_DEADLINE_SECONDS:900}

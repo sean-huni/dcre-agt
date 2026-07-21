@@ -3,6 +3,8 @@ package za.co.fnb.dcre.agt.config;
 import io.smallrye.config.ConfigMapping;
 import io.smallrye.config.WithDefault;
 
+import java.util.Set;
+
 @ConfigMapping(prefix = "agt")
 public interface AgtConfig {
 
@@ -10,6 +12,25 @@ public interface AgtConfig {
     String exchangeRoot();
 
     String namespace();
+
+    /** SCRUM-70 flow namespaces: agt.namespace above stays AGT's own/control
+     *  namespace; stage Jobs launch into the flow namespace of the route
+     *  family (spec 2026-07-21 section 1 item 3). */
+    @WithDefault("dcre-col")
+    String namespaceCol();
+
+    @WithDefault("dcre-pay")
+    String namespacePay();
+
+    /** Dormant until the M10 mandates program. */
+    @WithDefault("dcre-man")
+    String namespaceMan();
+
+    /** INTERIM (R-42): client tokens whose fint-resp arrivals and clock jobs
+     *  ride the pay flow, until the R-14 client reference table lands.
+     *  Membership semantics (m4): consumers normalize (trim + uppercase) on read. */
+    @WithDefault("FNBRF01")
+    Set<String> payClients();
 
     /** Unique holder id for the DB lease (pod hostname). */
     String holderId();
@@ -62,8 +83,10 @@ public interface AgtConfig {
     @WithDefault("6")
     int hcsIntervalHours();
 
-    /** JDBC url the service Jobs use for dcre_collections (in-cluster). */
-    @WithDefault("jdbc:postgresql://crdb:26257/dcre_collections?sslmode=disable")
+    /** JDBC url the service Jobs use for dcre_collections (in-cluster).
+     *  SCRUM-70: FQDN, because stage pods run in the flow namespaces where the
+     *  short service name `crdb` does not resolve. */
+    @WithDefault("jdbc:postgresql://crdb.dcre.svc.cluster.local:26257/dcre_collections?sslmode=disable")
     String serviceDbUrl();
 
     /** Stage-pod memory request. Default matches the pre-load-test sizing;

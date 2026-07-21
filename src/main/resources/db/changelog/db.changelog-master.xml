@@ -11,5 +11,6 @@
     <include file="db/changelog/2026/07/004-intent-args.xml"/>
     <include file="db/changelog/2026/07/005-orphan-attempts.xml"/>
     <include file="db/changelog/2026/07/006-duplicate-delivery.xml"/>
+    <include file="db/changelog/2026/07/007-intent-namespace.xml"/>
 
 </databaseChangeLog>

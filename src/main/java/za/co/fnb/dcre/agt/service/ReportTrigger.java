@@ -61,6 +61,9 @@ public class ReportTrigger {
     @Inject
     JobLauncher launcher;
 
+    @Inject
+    FlowNamespaces flowNamespaces;
+
     @RunOnVirtualThread
     @Scheduled(every = "{dcre.agt.report-scan-seconds}",
             concurrentExecution = Scheduled.ConcurrentExecution.SKIP)
@@ -104,7 +107,8 @@ public class ReportTrigger {
     private void launchImmediate(final String client, final String sourceMsgId, final long epochSec) {
         final String window = "imm-" + epochSec + "-" + parentDigest(sourceMsgId);
         LOG.infof("report-due scan: PRG IMMEDIATE for %s parent=%s window=%s", client, sourceMsgId, window);
-        launcher.launchClock(Stage.PRG, client + "-" + window, List.of(
+        // SCRUM-70: the IMMEDIATE window follows the parent client's flow (R-42 interim map).
+        launcher.launchClock(flowNamespaces.clientFlow(client), Stage.PRG, client + "-" + window, List.of(
                 "client=" + client,
                 "window=" + window,
                 "report.type=IMMEDIATE,java.lang.String,false",

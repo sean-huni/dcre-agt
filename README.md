@@ -45,7 +45,11 @@ AGT resolves `agt.exchange-root` (default `../../../../../infra/dcre-infra/excha
 | `AGT_DB_USER` | `root` | `agt_ops` datasource username |
 | `AGT_DB_PASSWORD` | (empty) | `agt_ops` datasource password |
 | `DCRE_EXCHANGE_ROOT` | `../../../../../infra/dcre-infra/exchange` | Root of the exchange directory tree (R-30 contract) |
-| `AGT_NAMESPACE` | `dcre` | Kubernetes namespace for both the client and launched stage Jobs |
+| `AGT_NAMESPACE` | `dcre` | AGT's own CONTROL namespace only (K8s client, deployment, crdb/lgtm shared infra); stage Jobs launch into the flow namespaces below (SCRUM-70) |
+| `AGT_NAMESPACE_COL` | `dcre-col` | Flow namespace for Collections stage Jobs (`col-*`: onhost-req, CRW window, HCS, collections-client PRG/fint-resp) |
+| `AGT_NAMESPACE_PAY` | `dcre-pay` | Flow namespace for Payments stage Jobs (`pay-*`: onhost-req-endo, pay-client PRG/fint-resp) |
+| `AGT_NAMESPACE_MAN` | `dcre-man` | Flow namespace for Mandates stage Jobs (`man-*`); dormant until M10 |
+| `AGT_PAY_CLIENTS` | `FNBRF01` | INTERIM (R-42) comma-separated client tokens on the pay flow, until the R-14 client table lands; trimmed + uppercased on read |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://localhost:4317` | OTLP endpoint for traces/metrics export |
 | `AGT_LAUNCH_ENABLED` | `true` | Gate for K8s Job creation; observation stays on independently |
 | `AGT_CRR_IMAGE` / `AGT_CTV_IMAGE` / `AGT_CIR_IMAGE` / `AGT_CDE_IMAGE` / `AGT_CRW_IMAGE` | (empty) | Stage images; a missing image fails the launch fast (no stub fallback) |
@@ -58,7 +62,7 @@ AGT resolves `agt.exchange-root` (default `../../../../../infra/dcre-infra/excha
 | `AGT_CRW_INTERVAL_SECONDS` | `60` | CRW Process-Date Executor window length |
 | `AGT_PRG_INTERVAL_SECONDS` | `60` | PRG clock-window length |
 | `AGT_HCS_INTERVAL_HOURS` | `6` | HCS holiday-sync re-sync cadence |
-| `AGT_SERVICE_DB_URL` | `jdbc:postgresql://crdb:26257/dcre_collections?sslmode=disable` | JDBC URL handed to launched stage Jobs for `dcre_collections` |
+| `AGT_SERVICE_DB_URL` | `jdbc:postgresql://crdb.dcre.svc.cluster.local:26257/dcre_collections?sslmode=disable` | JDBC URL handed to launched stage Jobs for `dcre_collections` (FQDN: stage pods run in the flow namespaces, where the short `crdb` name does not resolve) |
 | `AGT_STAGE_MEMORY_REQUEST` | `512Mi` | Stage-pod memory request |
 | `AGT_STAGE_MEMORY_LIMIT` | `768Mi` | Stage-pod memory limit |
 | `AGT_STAGE_DEADLINE_SECONDS` | `900` | Stage Job `activeDeadlineSeconds` |

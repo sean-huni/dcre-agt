@@ -64,17 +64,16 @@ public class Reconciler {
     @Inject
     KubernetesClient k8s;
 
+    @Inject
+    FlowNamespaces flowNamespaces;
+
     @RunOnVirtualThread
     @Scheduled(every = "5s", concurrentExecution = io.quarkus.scheduler.Scheduled.ConcurrentExecution.SKIP)
     void tick() {
         if (!lease.holdsLease() || !config.launchEnabled()) {
             return;
         }
-        Map<String, Job> live = new HashMap<>();
-        for (Job j : k8s.batch().v1().jobs().inNamespace(config.namespace())
-                .withLabel(JobLauncher.LABEL_MANAGED_BY, "agt").list().getItems()) {
-            live.put(j.getMetadata().getName(), j);
-        }
+        Map<String, Job> live = liveManagedJobs();
 
         for (LaunchIntent intent : intentRepo.intentsWithoutOutcome()) {
             try {
@@ -94,6 +93,20 @@ public class Reconciler {
         }
     }
 
+    /** SCRUM-70: managed Jobs live in the control namespace (legacy) AND the
+     *  flow namespaces; the reconciler works over their union, keyed by name
+     *  (names are flow-prefixed, so cross-namespace collisions cannot occur). */
+    Map<String, Job> liveManagedJobs() {
+        Map<String, Job> live = new HashMap<>();
+        for (String namespace : flowNamespaces.allNamespaces()) {
+            for (Job j : k8s.batch().v1().jobs().inNamespace(namespace)
+                    .withLabel(JobLauncher.LABEL_MANAGED_BY, "agt").list().getItems()) {
+                live.put(j.getMetadata().getName(), j);
+            }
+        }
+        return live;
+    }
+
     void reconcile(LaunchIntent intent, Job liveJob) {
         boolean launched = LaunchIntent.LAUNCHED.equals(intent.status());
         if (!launched) {
@@ -103,7 +116,8 @@ public class Reconciler {
                 intentRepo.markIntentLaunched(intent.id(), uid);
             } else {
                 LOG.warnf("Reconcile: INTENDED intent %s has no Job; creating", intent.jobName());
-                launcher.createJob(intent.id(), intent.arrivalId(), intent.stage(), intent.jobName());
+                launcher.createJob(intent.id(), intent.arrivalId(), intent.stage(), intent.jobName(),
+                        intent.namespaceOr(config.namespace()));
             }
             return;
         }

@@ -66,7 +66,10 @@ public class OutcomeWatcher {
         if (!LaunchIntent.LAUNCHED.equals(intent.status())) {
             return; // reconciler's problem
         }
-        Job job = k8s.batch().v1().jobs().inNamespace(config.namespace())
+        // SCRUM-70: observe in the namespace the intent was WRITTEN with; the
+        // control namespace is only the pre-backfill fallback, never a probe.
+        String namespace = intent.namespaceOr(config.namespace());
+        Job job = k8s.batch().v1().jobs().inNamespace(namespace)
                 .withName(intent.jobName()).get();
         if (job == null) {
             return; // TTL-reaped or not yet visible: reconciler resolves via the durable seam (F1)
@@ -85,7 +88,7 @@ public class OutcomeWatcher {
         JobCondition cond = terminal.get();
         boolean failed = "Failed".equals(cond.getType());
         String condition = cond.getType() + (cond.getReason() != null ? "/" + cond.getReason() : "");
-        Integer exitCode = podExitCode(intent.jobName());
+        Integer exitCode = podExitCode(namespace, intent.jobName());
 
         Outcome outcome;
         if (failed) {
@@ -113,9 +116,9 @@ public class OutcomeWatcher {
     }
 
     /** Best-effort real exit code from the Job's pod; null when the pod is already gone. */
-    private Integer podExitCode(String jobName) {
+    private Integer podExitCode(String namespace, String jobName) {
         try {
-            var pods = k8s.pods().inNamespace(config.namespace())
+            var pods = k8s.pods().inNamespace(namespace)
                     .withLabel("job-name", jobName).list().getItems();
             if (pods.isEmpty()) {
                 return null;
