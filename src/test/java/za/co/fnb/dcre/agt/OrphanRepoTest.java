@@ -50,7 +50,7 @@ class OrphanRepoTest {
     void attemptBookkeepingAndPerAttemptOutcomes() {
         UUID arrivalId = insertArrival("ORPH1");
         UUID intentId = intentRepo.insertIntent(arrivalId, Stage.CRR,
-                "dcre-crr-orph1-" + suffix()).orElseThrow();
+                "col-crr-orph1-" + suffix(), "dcre-col").orElseThrow();
         intentRepo.markIntentLaunched(intentId, "uid-orph1");
 
         assertTrue(outcomeRepo.insertOutcome(intentId, 0, Outcome.TECH_FAILED, 5, "Failed/Test"));
@@ -69,12 +69,12 @@ class OrphanRepoTest {
     void techCurrentAttemptSweepFindsArrivalIntentButNeverClockIntent() {
         UUID arrivalId = insertArrival("ORPH2");
         UUID intentId2 = intentRepo.insertIntent(arrivalId, Stage.CRR,
-                "dcre-crr-orph2-" + suffix()).orElseThrow();
+                "col-crr-orph2-" + suffix(), "dcre-col").orElseThrow();
         intentRepo.markIntentLaunched(intentId2, "uid-orph2");
         assertTrue(outcomeRepo.insertOutcome(intentId2, 0, Outcome.TECH_FAILED, 1, "Failed/Test"));
 
         UUID clockId = intentRepo.insertClockIntent(Stage.PRG, "orph-" + suffix(),
-                "dcre-prg-orph-" + suffix(), "{}").orElseThrow();
+                "col-prg-orph-" + suffix(), "{}", "dcre-col").orElseThrow();
         intentRepo.markIntentLaunched(clockId, "uid-orph-clock");
         assertTrue(outcomeRepo.insertOutcome(clockId, 0, Outcome.TECH_FAILED, 1, "Failed/Test"));
 

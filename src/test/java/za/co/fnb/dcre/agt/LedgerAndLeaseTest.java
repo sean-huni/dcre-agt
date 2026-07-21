@@ -50,9 +50,10 @@ class LedgerAndLeaseTest {
     void intentIsWriteAheadAndNonOverlapping() {
         UUID arrival = arrivalRepo.insertArrival(UUID.randomUUID(), "onhost-req", "FNBCC01_M" + UUID.randomUUID(), "h",
                 "FNBCC01", "M1", ArrivalStatus.CLAIMED, null, null).orElseThrow();
-        Optional<UUID> intent = intentRepo.insertIntent(arrival, Stage.CRR, "dcre-crr-" + arrival.toString().substring(0, 8));
+        Optional<UUID> intent = intentRepo.insertIntent(arrival, Stage.CRR,
+                "col-crr-" + arrival.toString().substring(0, 8), "dcre-col");
         assertTrue(intent.isPresent());
-        assertTrue(intentRepo.insertIntent(arrival, Stage.CRR, "other-name").isEmpty(),
+        assertTrue(intentRepo.insertIntent(arrival, Stage.CRR, "other-name", "dcre-col").isEmpty(),
                 "second intent for same (arrival, stage) must be refused");
 
         assertTrue(outcomeRepo.insertOutcome(intent.get(), 0, Outcome.BUSINESS_ACCEPTED, 0, "Complete"));

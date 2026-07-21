@@ -38,6 +38,9 @@ public class PrgScheduler {
     @Inject
     JobLauncher launcher;
 
+    @Inject
+    FlowNamespaces flowNamespaces;
+
     @RunOnVirtualThread
     @Scheduled(every = "10s", concurrentExecution = io.quarkus.scheduler.Scheduled.ConcurrentExecution.SKIP)
     void tick() {
@@ -46,7 +49,9 @@ public class PrgScheduler {
         }
         long window = window(Instant.now().getEpochSecond(), config.prgIntervalSeconds());
         for (String client : arrivalRepo.distinctClientTokens()) {
-            launcher.launchClock(Stage.PRG, client + "-w" + window, List.of(
+            // SCRUM-70: the PSR window follows the client's flow (R-42 interim map).
+            launcher.launchClock(flowNamespaces.clientFlow(client), Stage.PRG,
+                    client + "-w" + window, List.of(
                     "client=" + client,
                     "window=w" + window));
             considerManualTrigger(client, window);
@@ -72,7 +77,8 @@ public class PrgScheduler {
         // The window param carries a -manual suffix so the Batch job instance is
         // distinct from the scheduled run of the same window (identifying params
         // are the instance identity; resend alone is non-identifying).
-        launcher.launchClock(Stage.PRG, client + "-manual-" + window, List.of(
+        launcher.launchClock(flowNamespaces.clientFlow(client), Stage.PRG,
+                client + "-manual-" + window, List.of(
                 "client=" + client,
                 "window=w" + window + "-manual",
                 "resend=true,java.lang.String,false"));

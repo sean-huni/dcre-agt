@@ -5,6 +5,7 @@ import io.smallrye.common.annotation.RunOnVirtualThread;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import za.co.fnb.dcre.agt.config.AgtConfig;
+import za.co.fnb.dcre.agt.domain.Flow;
 import za.co.fnb.dcre.agt.domain.Stage;
 
 import java.time.Instant;
@@ -38,7 +39,13 @@ public class CrwScheduler {
         long window = Instant.now().getEpochSecond() / config.crwIntervalSeconds();
         LocalDate runDate = LocalDate.now(ZoneOffset.UTC);
         String runKey = runDate + "-w" + window;
-        launcher.launchClock(Stage.CRW, runKey, List.of(
+        // SCRUM-70 approved simplification: ONE window job serves ALL lanes and
+        // lives in dcre-col with the col- prefix (collections-primary; payments
+        // lanes still run inside it). Namespaces classify JOB FAMILIES for now.
+        // TODO(M11 payments carve-out): split the clock launch per flow (COL +
+        // PAY window jobs, runKey-suffixed, flow= launch arg) once CRW's
+        // LaneEmissionService can filter lanes by tx_header.flow.
+        launcher.launchClock(Flow.COL, Stage.CRW, runKey, List.of(
                 "run.date=" + runDate,
                 "window=" + runKey));
     }

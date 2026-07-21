@@ -5,6 +5,7 @@ import io.smallrye.common.annotation.RunOnVirtualThread;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import za.co.fnb.dcre.agt.config.AgtConfig;
+import za.co.fnb.dcre.agt.domain.Flow;
 import za.co.fnb.dcre.agt.domain.Stage;
 
 import java.time.Instant;
@@ -36,8 +37,9 @@ public class HcsScheduler {
             return;
         }
         long window = window(Instant.now().getEpochSecond(), config.hcsIntervalHours());
-        // Run key carries NO stage token: clockJobName owns the dcre-hcs- prefix.
-        launcher.launchClock(Stage.HCS, "w" + window, List.of(
+        // Run key carries NO stage token: clockJobName owns the col-hcs- prefix.
+        // SCRUM-70: holiday sync is collections-shared infrastructure -> COL.
+        launcher.launchClock(Flow.COL, Stage.HCS, "w" + window, List.of(
                 "sync.date=" + LocalDate.now(),
                 "window=w" + window,
                 "countries=ZA,java.lang.String,false"));

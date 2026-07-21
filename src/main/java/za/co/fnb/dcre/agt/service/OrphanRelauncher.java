@@ -80,12 +80,13 @@ public class OrphanRelauncher {
             return;
         }
         if (deadJob != null) {
-            k8s.batch().v1().jobs().inNamespace(config.namespace())
+            k8s.batch().v1().jobs().inNamespace(intent.namespaceOr(config.namespace()))
                     .withName(intent.jobName()).delete(); // clear Failed object before same-name create
         }
         int attempt = intentRepo.beginRelaunchAttempt(intent.id());
         LOG.warnf("Orphan %s: relaunch attempt %d/%d (same identity, Batch resumes from last commit)",
                 intent.jobName(), attempt, config.orphanMaxAttempts());
-        launcher.createJob(intent.id(), intent.arrivalId(), intent.stage(), intent.jobName());
+        launcher.createJob(intent.id(), intent.arrivalId(), intent.stage(), intent.jobName(),
+                intent.namespaceOr(config.namespace()));
     }
 }

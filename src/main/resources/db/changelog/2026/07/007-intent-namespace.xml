@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+        xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+        http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
+
+    <!-- SCRUM-70: the launch intent carries its target K8s namespace durably
+         (flow namespaces dcre-col/dcre-pay/dcre-man; control namespace dcre),
+         so OutcomeWatcher/OrphanRelauncher/Reconciler recreates act on the
+         namespace that was INTENDED, never on a config-of-the-day guess. -->
+    <changeSet id="007-intent-namespace" author="dcre">
+        <preConditions onFail="MARK_RAN">
+            <not><columnExists tableName="launch_intent" columnName="namespace"/></not>
+        </preConditions>
+        <addColumn tableName="launch_intent">
+            <column name="namespace" type="VARCHAR(63)"/>
+        </addColumn>
+        <rollback>
+            <dropColumn tableName="launch_intent" columnName="namespace"/>
+        </rollback>
+    </changeSet>
+
+    <!-- Pre-SCRUM-70 intents all launched into the control namespace. -->
+    <changeSet id="007-intent-namespace-backfill" author="dcre">
+        <preConditions onFail="MARK_RAN">
+            <columnExists tableName="launch_intent" columnName="namespace"/>
+        </preConditions>
+        <update tableName="launch_intent">
+            <column name="namespace" value="dcre"/>
+            <where>namespace IS NULL</where>
+        </update>
+        <rollback/>
+    </changeSet>
+
+</databaseChangeLog>

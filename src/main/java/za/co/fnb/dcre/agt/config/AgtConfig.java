@@ -11,6 +11,24 @@ public interface AgtConfig {
 
     String namespace();
 
+    /** SCRUM-70 flow namespaces: agt.namespace above stays AGT's own/control
+     *  namespace; stage Jobs launch into the flow namespace of the route
+     *  family (spec 2026-07-21 section 1 item 3). */
+    @WithDefault("dcre-col")
+    String namespaceCol();
+
+    @WithDefault("dcre-pay")
+    String namespacePay();
+
+    /** Dormant until the M10 mandates program. */
+    @WithDefault("dcre-man")
+    String namespaceMan();
+
+    /** INTERIM (R-42): client tokens whose fint-resp arrivals and clock jobs
+     *  ride the pay flow, until the R-14 client reference table lands. */
+    @WithDefault("FNBRF01")
+    java.util.List<String> payClients();
+
     /** Unique holder id for the DB lease (pod hostname). */
     String holderId();
 

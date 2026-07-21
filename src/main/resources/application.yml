@@ -49,6 +49,14 @@ agt:
         onhost-req-endo: { in: fnbrf01/onhost-req-endo/in, error: fnbrf01/onhost-req-endo/error, archive: fnbrf01/onhost-req-endo/archive }
         fint-resp:       { in: fnbrf01/fint-resp/in,       error: fnbrf01/fint-resp/error,       archive: fnbrf01/fint-resp/archive }
   namespace: ${AGT_NAMESPACE:dcre}
+  # SCRUM-70 flow namespaces: AGT stays in the control namespace (agt.namespace);
+  # stage Jobs launch into the flow namespace of the route family.
+  namespace-col: ${AGT_NAMESPACE_COL:dcre-col}
+  namespace-pay: ${AGT_NAMESPACE_PAY:dcre-pay}
+  namespace-man: ${AGT_NAMESPACE_MAN:dcre-man}
+  # INTERIM (R-42): comma-separated client tokens on the pay flow, until the
+  # R-14 client reference table lands.
+  pay-clients: ${AGT_PAY_CLIENTS:FNBRF01}
   holder-id: ${HOSTNAME:local-agt}
   launch-enabled: ${AGT_LAUNCH_ENABLED:true}
   crr-image: ${AGT_CRR_IMAGE:}
