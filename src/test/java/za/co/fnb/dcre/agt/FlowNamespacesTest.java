@@ -50,6 +50,13 @@ class FlowNamespacesTest {
     }
 
     @Test
+    void payClientTokenMatchingIsTrimmedAndCaseInsensitive() {
+        // m4: membership must not depend on config/token whitespace or case.
+        assertEquals(Flow.PAY, FlowNamespaces.flowForRoute("fint-resp", " fnbrf01 ", PAY_CLIENTS));
+        assertEquals(Flow.COL, FlowNamespaces.flowForRoute("fint-resp", " fnbcc01 ", PAY_CLIENTS));
+    }
+
+    @Test
     void jobPrefixesReplaceTheDcreLiteral() {
         assertEquals("col-", Flow.COL.jobPrefix());
         assertEquals("pay-", Flow.PAY.jobPrefix());

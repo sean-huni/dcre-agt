@@ -8,7 +8,10 @@
     <!-- SCRUM-70: the launch intent carries its target K8s namespace durably
          (flow namespaces dcre-col/dcre-pay/dcre-man; control namespace dcre),
          so OutcomeWatcher/OrphanRelauncher/Reconciler recreates act on the
-         namespace that was INTENDED, never on a config-of-the-day guess. -->
+         namespace that was INTENDED, never on a config-of-the-day guess.
+         Legacy (pre-SCRUM-70) rows deliberately stay NULL: every reader falls
+         back to the control namespace via LaunchIntent.namespaceOr, so no
+         data backfill is needed. -->
     <changeSet id="007-intent-namespace" author="dcre">
         <preConditions onFail="MARK_RAN">
             <not><columnExists tableName="launch_intent" columnName="namespace"/></not>
@@ -19,18 +22,6 @@
         <rollback>
             <dropColumn tableName="launch_intent" columnName="namespace"/>
         </rollback>
-    </changeSet>
-
-    <!-- Pre-SCRUM-70 intents all launched into the control namespace. -->
-    <changeSet id="007-intent-namespace-backfill" author="dcre">
-        <preConditions onFail="MARK_RAN">
-            <columnExists tableName="launch_intent" columnName="namespace"/>
-        </preConditions>
-        <update tableName="launch_intent">
-            <column name="namespace" value="dcre"/>
-            <where>namespace IS NULL</where>
-        </update>
-        <rollback/>
     </changeSet>
 
 </databaseChangeLog>

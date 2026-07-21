@@ -95,8 +95,8 @@ class FlowNamespaceLaunchTest {
         assertEquals("dcre-col", config.namespaceCol());
         assertEquals("dcre-pay", config.namespacePay());
         assertEquals("dcre-man", config.namespaceMan());
-        assertEquals(List.of("FNBRF01"), config.payClients(),
-                "interim R-42 default until the R-14 client table lands");
+        assertEquals(java.util.Set.of("FNBRF01"), config.payClients(),
+                "interim R-42 default until the R-14 client table lands (Set semantics, m4)");
         assertEquals("dcre", config.namespace(), "AGT's own/control namespace is unchanged");
     }
 

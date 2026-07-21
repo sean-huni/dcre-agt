@@ -55,11 +55,13 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class NamespaceRoutingTest {
 
     /** Real launcher against the CRUD mock server; CRR image feeds the orphan
-     *  recreate's Job spec build. */
+     *  recreate's Job spec build. pay-clients is deliberately messy (m4): the
+     *  reader must trim + uppercase, so FNBRF01 still routes PAY end-to-end. */
     public static class RoutingProfile implements QuarkusTestProfile {
         @Override
         public Map<String, String> getConfigOverrides() {
-            return Map.of("agt.launch-enabled", "true", "agt.crr-image", "dcre-crr:test");
+            return Map.of("agt.launch-enabled", "true", "agt.crr-image", "dcre-crr:test",
+                    "agt.pay-clients", " fnbrf01 ");
         }
     }
 
@@ -185,6 +187,53 @@ class NamespaceRoutingTest {
                 "R-42 pay client: PRG window in the pay namespace with the pay- prefix");
         assertEquals("dcre-col", namespaceOfIntentLike("col-prg-fnbcc01-w%"),
                 "collections client: PRG window stays col-");
+    }
+
+    @Test
+    void nullNamespaceIntentObservesInTheControlNamespace() throws IOException {
+        // Legacy (pre-SCRUM-70) launch_intent rows keep namespace NULL: the
+        // fallback target is the CONTROL namespace, never a flow namespace.
+        String name = "dcre-crr-" + suffix();
+        UUID arrivalId = insertArrival("onhost-req", "FNBCC01");
+        UUID intentId = intentRepo.insertIntent(arrivalId, Stage.CRR, name, null).orElseThrow();
+        Job legacy = createJob("dcre", name, true);
+        intentRepo.markIntentLaunched(intentId, legacy.getMetadata().getUid());
+        writeOutcomeSeam(name, "BUSINESS_ACCEPTED");
+
+        watcher.observe(intentOf(arrivalId, intentId));
+
+        assertEquals(Outcome.BUSINESS_ACCEPTED, outcomeRepo.outcomesForArrival(arrivalId).get(Stage.CRR),
+                "NULL-namespace intent is observed via the control-namespace fallback");
+    }
+
+    @Test
+    void nullNamespaceIntentRelaunchesIntoTheControlNamespace() {
+        String name = "dcre-crr-" + suffix();
+        UUID arrivalId = insertArrival("onhost-req", "FNBCC01");
+        UUID intentId = intentRepo.insertIntent(arrivalId, Stage.CRR, name, null).orElseThrow();
+        Job dead = createJob("dcre", name, false);
+        String deadUid = dead.getMetadata().getUid();
+        intentRepo.markIntentLaunched(intentId, deadUid);
+        assertTrue(outcomeRepo.insertOutcome(intentId, 0, Outcome.TECH_FAILED, 137, "Failed/PodKill"));
+
+        relauncher.relaunchOrExhaust(intentOf(arrivalId, intentId), dead);
+
+        Job recreated = k8s.batch().v1().jobs().inNamespace("dcre").withName(name).get();
+        assertNotNull(recreated, "legacy relaunch targets the control namespace");
+        assertNotEquals(deadUid, recreated.getMetadata().getUid(),
+                "the dead legacy Job was deleted in the control namespace first");
+    }
+
+    @Test
+    void nullNamespaceIntendedIntentRecreatesInTheControlNamespace() {
+        String name = "dcre-crr-" + suffix();
+        UUID arrivalId = insertArrival("onhost-req", "FNBCC01");
+        UUID intentId = intentRepo.insertIntent(arrivalId, Stage.CRR, name, null).orElseThrow();
+
+        reconciler.reconcile(intentOf(arrivalId, intentId), null);
+
+        assertNotNull(k8s.batch().v1().jobs().inNamespace("dcre").withName(name).get(),
+                "INTENDED legacy intent recreates in the control namespace");
     }
 
     private Job createJob(String ns, String name, boolean complete) {

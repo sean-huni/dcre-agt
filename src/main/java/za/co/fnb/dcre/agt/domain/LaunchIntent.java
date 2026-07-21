@@ -9,7 +9,7 @@ public record LaunchIntent(UUID id, UUID arrivalId, Stage stage, String jobName,
     public static final String INTENDED = "INTENDED";
     public static final String LAUNCHED = "LAUNCHED";
 
-    /** Pre-backfill safety: a null namespace means a pre-SCRUM-70 row. */
+    /** Legacy rows (pre-SCRUM-70) keep namespace NULL: fall back to the control namespace. */
     public String namespaceOr(String fallback) {
         return namespace != null ? namespace : fallback;
     }

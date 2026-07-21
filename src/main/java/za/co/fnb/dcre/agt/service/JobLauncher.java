@@ -63,9 +63,10 @@ public class JobLauncher {
         return flow.jobPrefix() + stage.name().toLowerCase() + "-" + arrivalId.toString().replace("-", "");
     }
 
-    /** Launch stage for arrival; no-op when an intent already exists (non-overlap). */
+    /** Launch stage for arrival; no-op when an intent already exists (non-overlap).
+     *  Single arrival fetch (m3): flow resolution and the Job spec share it. */
     public void launch(UUID arrivalId, Stage stage) {
-        FileArrival arrival = arrivalRepo.arrivalById(arrivalId).orElseThrow();
+        FileArrival arrival = arrivalOf(arrivalId, stage.name());
         Flow flow = flowNamespaces.flowFor(arrival);
         String name = jobName(flow, stage, arrivalId);
         String namespace = flowNamespaces.namespaceOf(flow);
@@ -73,7 +74,7 @@ public class JobLauncher {
         if (intent.isEmpty()) {
             return; // already intended/launched by us or a predecessor incarnation
         }
-        createJob(intent.get(), arrivalId, stage, name, namespace);
+        createFromSpec(intent.get(), serviceJob(name, namespace, stage, arrival, serviceImage(stage)));
     }
 
     /** Create (or re-create after crash) the Job for an existing intent. The
@@ -84,8 +85,13 @@ public class JobLauncher {
         // job with missing identifying params; caught live 2026-07-13).
         Job job = arrivalId == null
                 ? clockJob(name, namespace, stage, serviceImage(stage), clockArgs(intentId))
-                : serviceJob(name, namespace, stage, arrivalId, serviceImage(stage));
+                : serviceJob(name, namespace, stage, arrivalOf(arrivalId, name), serviceImage(stage));
         createFromSpec(intentId, job);
+    }
+
+    private FileArrival arrivalOf(UUID arrivalId, String context) {
+        return arrivalRepo.arrivalById(arrivalId).orElseThrow(() -> new IllegalStateException(
+                "arrival " + arrivalId + " not found: cannot build Job for " + context));
     }
 
     private java.util.List<String> clockArgs(UUID intentId) {
@@ -279,10 +285,9 @@ public class JobLauncher {
     }
 
     /** M2 real-service Job: Spring Batch app; program args become JobParameters. */
-    private Job serviceJob(String name, String namespace, Stage stage, UUID arrivalId, String image) {
-        var arrival = arrivalRepo.arrivalById(arrivalId).orElseThrow();
+    private Job serviceJob(String name, String namespace, Stage stage, FileArrival arrival, String image) {
         Map<Stage, Outcome> outcomes = stage == Stage.CIR
-                ? outcomeRepo.outcomesForArrival(arrivalId)
+                ? outcomeRepo.outcomesForArrival(arrival.id())
                 : Map.of();
         java.util.List<String> args = serviceArgs(stage, arrival, outcomes);
         // ENDO reuses the DC CTV image with the DC flow switched off (M5, R-36):
@@ -297,7 +302,7 @@ public class JobLauncher {
                     .withNamespace(namespace)
                     .addToLabels(Map.of(LABEL_MANAGED_BY, "agt",
                             LABEL_STAGE, stage.name(),
-                            LABEL_ARRIVAL, arrivalId.toString()))
+                            LABEL_ARRIVAL, arrival.id().toString()))
                 .endMetadata()
                 .withNewSpec()
                     .withBackoffLimit(0)
