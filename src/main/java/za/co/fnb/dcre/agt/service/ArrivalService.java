@@ -5,6 +5,7 @@ import jakarta.inject.Inject;
 import org.jboss.logging.Logger;
 import za.co.fnb.dcre.agt.domain.ArrivalStatus;
 import za.co.fnb.dcre.agt.repo.ArrivalRepo;
+import za.co.fnb.dcre.agt.repo.DuplicateRepo;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -54,6 +55,9 @@ public class ArrivalService {
     ArrivalRepo repo;
 
     @Inject
+    DuplicateRepo duplicates;
+
+    @Inject
     ExchangeSinks sinks;
 
     public sealed interface Result {
@@ -96,64 +100,97 @@ public class ArrivalService {
 
         // pathClient is authoritative: the drop-zone directory names the client.
         if (filenameClient == null) {
-            repo.insertArrival(UUID.randomUUID(), route, name, sha256, pathClient, null,
-                    ArrivalStatus.QUARANTINED, "UNPARSEABLE_FILENAME", null);
-            moveToError(claimed, arrivalId, name, pathClient, route);
             LOG.warnf("QUARANTINED %s: filename lacks R-31 tokens", name);
-            return new Result.Quarantined("UNPARSEABLE_FILENAME");
+            return quarantine(claimed, arrivalId, name, pathClient, route, sha256, null,
+                    "UNPARSEABLE_FILENAME");
         }
 
         if (!filenameClient.equals(pathClient)) {
             // Misfiled: the filename FNB token disagrees with the drop-zone client
             // (R-30 amendment). Fail closed; pathClient stays the ledger client_token.
-            repo.insertArrival(UUID.randomUUID(), route, name, sha256, pathClient, msgId,
-                    ArrivalStatus.QUARANTINED, "CLIENT_PATH_MISMATCH", null);
-            moveToError(claimed, arrivalId, name, pathClient, route);
             LOG.warnf("QUARANTINED %s: filename client %s != path client %s",
                     name, filenameClient, pathClient);
-            return new Result.Quarantined("CLIENT_PATH_MISMATCH");
+            return quarantine(claimed, arrivalId, name, pathClient, route, sha256, msgId,
+                    "CLIENT_PATH_MISMATCH");
         }
 
-        if (repo.sameContentExists(route, sha256)) {
-            // Identical bytes already registered under ANY name: no-op (F3).
-            moveToDuplicates(claimed, arrivalId, name, pathClient, route);
+        final Optional<UUID> twin = repo.findContentTwin(route, sha256);
+        if (twin.isPresent()) {
+            // Identical bytes already registered under ANY name: record the
+            // re-delivery write-ahead, then no-op (F3, spec 1.1).
+            recordDuplicate(claimed, twin.get(), name, pathClient, route, sha256);
             LOG.infof("Duplicate content re-delivery ignored: %s", name);
             return new Result.DuplicateSameHash();
         }
 
         if (repo.sameKeyDifferentHashExists(route, pathClient, msgId, sha256)) {
-            repo.insertArrival(UUID.randomUUID(), route, name, sha256, pathClient, msgId,
-                    ArrivalStatus.QUARANTINED, "SAME_KEY_DIFFERENT_HASH", null);
-            moveToError(claimed, arrivalId, name, pathClient, route);
             LOG.warnf("QUARANTINED %s: same logical key, different hash", name);
-            return new Result.Quarantined("SAME_KEY_DIFFERENT_HASH");
+            return quarantine(claimed, arrivalId, name, pathClient, route, sha256, msgId,
+                    "SAME_KEY_DIFFERENT_HASH");
         }
 
         final Optional<UUID> id = repo.insertArrival(arrivalId, route, name, sha256, pathClient, msgId,
                 ArrivalStatus.CLAIMED, null, claimed.toString());
         if (id.isEmpty()) {
             // Raced another writer on a dedup index: classify by what exists now.
-            if (repo.sameContentExists(route, sha256)) {
-                moveToDuplicates(claimed, arrivalId, name, pathClient, route);
+            final Optional<UUID> raceTwin = repo.findContentTwin(route, sha256);
+            if (raceTwin.isPresent()) {
+                recordDuplicate(claimed, raceTwin.get(), name, pathClient, route, sha256);
                 return new Result.DuplicateSameHash();
             }
-            repo.insertArrival(UUID.randomUUID(), route, name, sha256, pathClient, msgId,
-                    ArrivalStatus.QUARANTINED, "SAME_KEY_DIFFERENT_HASH", null);
-            moveToError(claimed, arrivalId, name, pathClient, route);
-            return new Result.Quarantined("SAME_KEY_DIFFERENT_HASH");
+            return quarantine(claimed, arrivalId, name, pathClient, route, sha256, msgId,
+                    "SAME_KEY_DIFFERENT_HASH");
         }
         LOG.infof("Arrival %s claimed as %s", name, claimed.getFileName());
         return new Result.NewArrival(id.get());
     }
 
-    private void moveToError(final Path claimed, final UUID id, final String name,
-                             final String client, final String route) {
-        move(claimed, sinks.error(client, route).resolve(id + "_" + name)); // unique: never clobbers evidence (F5)
+    /**
+     * Quarantine fix (spec 2.3): the file_arrival row id IS the claim arrivalId
+     * that prefixes the error-dir file, and claimed_path holds the error sink
+     * path, so an error-dir {@code <uuid>_<name>} resolves to its row directly.
+     * Row committed write-ahead BEFORE the move (fail path capture, Section 5.2).
+     */
+    private Result quarantine(final Path claimed, final UUID arrivalId, final String name,
+                              final String client, final String route, final String sha256,
+                              final String msgId, final String reason) {
+        final Path sink = sinks.error(client, route).resolve(arrivalId + "_" + name); // unique: never clobbers evidence (F5)
+        repo.insertArrival(arrivalId, route, name, sha256, client, msgId,
+                ArrivalStatus.QUARANTINED, reason, sink.toString());
+        move(claimed, sink);
+        return new Result.Quarantined(reason);
     }
 
-    private void moveToDuplicates(final Path claimed, final UUID id, final String name,
-                                  final String client, final String route) {
-        move(claimed, sinks.duplicates(client, route).resolve(id + "_" + name)); // kept, not deleted (F4)
+    /**
+     * Records the re-delivery in duplicate_delivery write-ahead (spec 1.1) BEFORE
+     * sinking the file, keyed by the claim_id parsed from the inflight
+     * {@code <claimUuid>_} prefix so an orphan-sweep resume that re-parses the
+     * same claim id is an ON CONFLICT no-op. sunk_path commits before the move.
+     */
+    private void recordDuplicate(final Path claimed, final UUID originalArrivalId, final String name,
+                                 final String client, final String route, final String sha256) {
+        final UUID claimId = claimIdOf(claimed);
+        final Path sunk = sinks.duplicates(client, route).resolve(claimId + "_" + name); // kept, not deleted (F4)
+        duplicates.insertDuplicate(claimId, originalArrivalId, route, client, name, sha256, sunk.toString());
+        move(claimed, sunk);
+    }
+
+    /** The per-delivery claim UUID prefixing the inflight file ({@code <claimUuid>_<name>}).
+     *  Package-private for the pure-unit malformed-name guard test (M3). Only ever
+     *  reached for an already-claimed content-twin, which is always {@code <uuid>_}
+     *  prefixed; the guards fail closed with context (move/hash error idiom) rather
+     *  than a bare StringIndexOutOfBounds / IllegalArgumentException. */
+    static UUID claimIdOf(final Path claimed) {
+        final String fn = claimed.getFileName().toString();
+        final int sep = fn.indexOf('_');
+        if (sep <= 0) {
+            throw new IllegalStateException("inflight filename lacks a '<claimUuid>_' prefix: " + fn);
+        }
+        try {
+            return UUID.fromString(fn.substring(0, sep));
+        } catch (IllegalArgumentException e) {
+            throw new IllegalStateException("inflight filename prefix is not a valid claim UUID: " + fn, e);
+        }
     }
 
     private static void move(final Path from, final Path to) {
