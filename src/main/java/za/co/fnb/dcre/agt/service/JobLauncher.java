@@ -211,6 +211,12 @@ public class JobLauncher {
             args.add("input.file=" + arrival.claimedPath() + ",java.lang.String,false");
             args.add("original.name=" + arrival.physicalFilename() + ",java.lang.String,false");
         }
+        if (stage == Stage.CRR && ArrivalService.ROUTE_ONHOST_REQ_ENDO.equals(arrival.routeId())) {
+            // SCRUM-69: ENDO = Payments. CRR stamps tx_header.flow from this
+            // non-identifying arg (absent = COL); the route is durable on the
+            // arrival row, so a reconciled re-create rebuilds it identically.
+            args.add("flow=PAY,java.lang.String,false");
+        }
         if (stage == Stage.CIR) {
             args.add("route.id=" + cirIdentity(arrival.routeId(), "route.id", arrival) + ",java.lang.String,false");
             args.add("client.token=" + cirIdentity(arrival.clientToken(), "client.token", arrival) + ",java.lang.String,false");

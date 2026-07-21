@@ -177,20 +177,24 @@ class DagEngineTest {
     }
 
     @Test
-    void endoAisAcceptedForksCdeAndCirTogether() {
+    void endoAisAcceptedLaunchesCirOnly() {
+        // SCRUM-69: ENDO = Payments, immediate; CDE never runs on the pay flow
+        // (CRW picks pay rows up by tx_header.flow from ingest day).
         Set<Stage> launches = DagEngine.computeLaunches(ArrivalService.ROUTE_ONHOST_REQ_ENDO,
                 "FNBRF01_MSG1.txt",
                 Map.of(Stage.CRR, Outcome.BUSINESS_ACCEPTED, Stage.CTV, Outcome.BUSINESS_ACCEPTED,
                         Stage.AIS, Outcome.BUSINESS_ACCEPTED),
                 EnumSet.of(Stage.CRR, Stage.CTV, Stage.AIS));
-        assertEquals(EnumSet.of(Stage.CDE, Stage.CIR), launches);
+        assertEquals(EnumSet.of(Stage.CIR), launches, "pay flow: AIS acceptance launches CIR only, never CDE");
     }
 
     @Test
-    void endoCompletesWhenBothTerminalsAreBusinessDone() {
+    void endoCompletesOnCirAlone() {
+        // SCRUM-69 terminal set is {CIR}: the responder's acceptance completes
+        // the pay-flow DAG without any CDE outcome.
         assertEquals(ArrivalStatus.DAG_COMPLETE, DagEngine.terminalState(ArrivalService.ROUTE_ONHOST_REQ_ENDO,
                 Map.of(Stage.CRR, Outcome.BUSINESS_ACCEPTED, Stage.CTV, Outcome.BUSINESS_ACCEPTED,
-                        Stage.AIS, Outcome.BUSINESS_ACCEPTED, Stage.CDE, Outcome.BUSINESS_ACCEPTED,
+                        Stage.AIS, Outcome.BUSINESS_ACCEPTED,
                         Stage.CIR, Outcome.BUSINESS_ACCEPTED)).orElseThrow());
         assertTrue(DagEngine.terminalState(ArrivalService.ROUTE_ONHOST_REQ_ENDO,
                         Map.of(Stage.CRR, Outcome.BUSINESS_ACCEPTED, Stage.CTV, Outcome.BUSINESS_ACCEPTED,

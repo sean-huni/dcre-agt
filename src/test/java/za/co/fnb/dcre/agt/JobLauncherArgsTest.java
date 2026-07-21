@@ -32,6 +32,31 @@ class JobLauncherArgsTest {
                 ArrivalStatus.DAG_RUNNING, null, "/exchange/claimed/FNBRF01_MSG1.txt");
     }
 
+    private static FileArrival endoArrival() {
+        return new FileArrival(ARRIVAL_ID, "onhost-req-endo", "FNBRF01_MSG1.txt",
+                "sha", "FNBRF01", "DCRERF2026071313500102",
+                ArrivalStatus.DAG_RUNNING, null, "/exchange/claimed/FNBRF01_MSG1.txt");
+    }
+
+    @Test
+    void endoCrrCarriesThePayFlowArg() {
+        // SCRUM-69: CRR stamps tx_header.flow from the launch arg; ENDO
+        // arrivals ride the pay flow. Plain non-identifying param, mirroring
+        // the existing CIR identity args.
+        List<String> args = JobLauncher.serviceArgs(Stage.CRR, endoArrival(), Map.of());
+        assertTrue(args.contains("flow=PAY,java.lang.String,false"), "got " + args);
+    }
+
+    @Test
+    void flowArgIsEndoCrrOnly() {
+        assertFalse(JobLauncher.serviceArgs(Stage.CTV, endoArrival(), Map.of()).stream()
+                        .anyMatch(a -> a.startsWith("flow=")),
+                "flow rides the boundary reader only; CTV keeps env-based flow switching");
+        assertFalse(JobLauncher.serviceArgs(Stage.CRR, arrival(), Map.of()).stream()
+                        .anyMatch(a -> a.startsWith("flow=")),
+                "DC arrivals carry no flow arg; CRR defaults to COL");
+    }
+
     @Test
     void cirCarriesClientTokenMsgIdAndOutcomeHint() {
         List<String> args = JobLauncher.serviceArgs(Stage.CIR, arrival(),
