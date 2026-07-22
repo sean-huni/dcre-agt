@@ -143,4 +143,71 @@ class JobLauncherArgsTest {
                 "input.file=/exchange/claimed/FNBRF01_MSG1.txt,java.lang.String,false",
                 "original.name=FNBRF01_MSG1.txt,java.lang.String,false"), args);
     }
+
+    // --- M10 mandates (SCRUM-79) -------------------------------------------
+
+    private static FileArrival manArrival() {
+        return new FileArrival(ARRIVAL_ID, "onhost-req-man", "FNBCC01_MANB1.txt",
+                "sha", "FNBCC01", "MANB1",
+                ArrivalStatus.DAG_RUNNING, null, "/exchange/claimed/FNBCC01_MANB1.txt");
+    }
+
+    private static FileArrival manRespArrival(String token) {
+        String name = "FNBCC01_OUT1_" + token + ".xml";
+        return new FileArrival(ARRIVAL_ID, "fint-resp-man", name,
+                "sha", "FNBCC01", "OUT1_" + token,
+                ArrivalStatus.DAG_RUNNING, null, "/exchange/claimed/" + name);
+    }
+
+    @Test
+    void mrrIsABoundaryReader() {
+        List<String> args = JobLauncher.serviceArgs(Stage.MRR, manArrival(), Map.of());
+        assertEquals(List.of(
+                "arrival.id=" + ARRIVAL_ID,
+                "input.file=/exchange/claimed/FNBCC01_MANB1.txt,java.lang.String,false",
+                "original.name=FNBCC01_MANB1.txt,java.lang.String,false"), args,
+                "MRR reads the claimed instruction book (CRR pattern)");
+    }
+
+    @Test
+    void marCarriesTheReplyTypeParsedFromTheFilenameToken() {
+        // T12 contract: reply-type selects the target resp table; MAR also
+        // reads the claimed pain.012 payload (IXR clone).
+        for (String token : List.of("ISR", "SBSR", "PBSR")) {
+            List<String> args = JobLauncher.serviceArgs(Stage.MAR, manRespArrival(token), Map.of());
+            assertTrue(args.contains("input.file=/exchange/claimed/FNBCC01_OUT1_" + token
+                    + ".xml,java.lang.String,false"), "boundary reader args, got " + args);
+            assertTrue(args.contains("reply.type=" + token + ",java.lang.String,false"),
+                    "reply.type from the filename token, got " + args);
+        }
+    }
+
+    @Test
+    void marFailsClosedOnAnUnknownReplyToken() {
+        IllegalStateException e = assertThrows(IllegalStateException.class,
+                () -> JobLauncher.serviceArgs(Stage.MAR, manRespArrival("XXXX"), Map.of()));
+        assertTrue(e.getMessage().contains(ARRIVAL_ID.toString()), "got: " + e.getMessage());
+    }
+
+    @Test
+    void mirCarriesTheArrivalIdentityAndHintLikeCir() {
+        // MIR is the man-route responder (CIR clone, T7): same A-45 identity
+        // params and the rejecting validator's verdict as outcome.hint.
+        List<String> args = JobLauncher.serviceArgs(Stage.MIR, manArrival(),
+                Map.of(Stage.MRR, Outcome.BUSINESS_ACCEPTED, Stage.MRV, Outcome.BUSINESS_FILE_REJECTED));
+        assertTrue(args.contains("arrival.id=" + ARRIVAL_ID));
+        assertTrue(args.contains("route.id=onhost-req-man,java.lang.String,false"), "got " + args);
+        assertTrue(args.contains("client.token=FNBCC01,java.lang.String,false"));
+        assertTrue(args.contains("msg.id=MANB1,java.lang.String,false"));
+        assertTrue(args.contains("outcome.hint=BUSINESS_FILE_REJECTED,java.lang.String,false"));
+    }
+
+    @Test
+    void mirOmitsHintWhenOnlyTheBoundaryReaderFailed() {
+        // MRR fatal: no spine/verdicts exist; MIR NACKs from fatal.reason.
+        List<String> args = JobLauncher.serviceArgs(Stage.MIR, manArrival(),
+                Map.of(Stage.MRR, Outcome.BUSINESS_FILE_FATAL));
+        assertTrue(args.contains("client.token=FNBCC01,java.lang.String,false"));
+        assertFalse(args.stream().anyMatch(a -> a.startsWith("outcome.hint=")), "got " + args);
+    }
 }

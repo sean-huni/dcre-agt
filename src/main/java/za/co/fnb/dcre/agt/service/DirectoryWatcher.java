@@ -39,11 +39,14 @@ public class DirectoryWatcher {
 
     private static final Logger LOG = Logger.getLogger(DirectoryWatcher.class);
 
-    /** (route id, accessor into a client's dirs) for each of the three AGT inbound channels. */
+    /** (route id, accessor into a client's dirs) for each of the five AGT
+     *  inbound channels (M10/SCRUM-79 adds the dedicated man pair). */
     private static final List<InboundChannel> INBOUND = List.of(
             new InboundChannel(ArrivalService.ROUTE_ONHOST_REQ, InboundChannels::onhostReq),
             new InboundChannel(ArrivalService.ROUTE_ONHOST_REQ_ENDO, InboundChannels::onhostReqEndo),
-            new InboundChannel(ArrivalService.ROUTE_FINT_RESP, InboundChannels::fintResp));
+            new InboundChannel(ArrivalService.ROUTE_FINT_RESP, InboundChannels::fintResp),
+            new InboundChannel(ArrivalService.ROUTE_ONHOST_REQ_MAN, InboundChannels::onhostReqMan),
+            new InboundChannel(ArrivalService.ROUTE_FINT_RESP_MAN, InboundChannels::fintRespMan));
 
     private record InboundChannel(String route, Function<InboundChannels, ChannelDirs> dirs) { }
 

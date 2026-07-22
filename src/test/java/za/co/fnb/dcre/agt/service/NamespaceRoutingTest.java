@@ -81,6 +81,9 @@ class NamespaceRoutingTest {
     PrgScheduler prgScheduler;
 
     @Inject
+    MrgScheduler mrgScheduler;
+
+    @Inject
     LeaseService lease;
 
     @Inject
@@ -190,6 +193,21 @@ class NamespaceRoutingTest {
     }
 
     @Test
+    void mrgSchedulerIsLaunchDisabledWithoutAnImage() {
+        // M10/SCRUM-79: no agt.mrg-image in this profile -> the scheduler skips
+        // entirely. Delta assertion: DB state is shared across test classes.
+        insertArrival("onhost-req", "FNBCC01");
+        exec("UPDATE agt_lease SET expires_at = now() - INTERVAL '1 second'");
+        assertTrue(lease.tryAcquire(config.holderId()), "test precondition: lease held");
+        long before = countIntentsLike("man-mrg-%");
+
+        mrgScheduler.tick();
+
+        assertEquals(before, countIntentsLike("man-mrg-%"),
+                "absent/empty MRG image = launch-disabled: no new windows minted");
+    }
+
+    @Test
     void nullNamespaceIntentObservesInTheControlNamespace() throws IOException {
         // Legacy (pre-SCRUM-70) launch_intent rows keep namespace NULL: the
         // fallback target is the CONTROL namespace, never a flow namespace.
@@ -264,6 +282,19 @@ class NamespaceRoutingTest {
         return arrivalRepo.insertArrival(UUID.randomUUID(), route, client + "_NRT" + tag + ".txt",
                 "sha-nrt-" + tag, client, "MNRT" + tag, ArrivalStatus.DAG_RUNNING, null,
                 "/exchange/claimed/" + client + "_NRT" + tag + ".txt").orElseThrow();
+    }
+
+    private long countIntentsLike(String jobNamePattern) {
+        try (Connection c = ds.getConnection(); PreparedStatement p = c.prepareStatement(
+                "SELECT count(*) FROM launch_intent WHERE job_name LIKE ?")) {
+            p.setString(1, jobNamePattern);
+            try (ResultSet r = p.executeQuery()) {
+                assertTrue(r.next());
+                return r.getLong(1);
+            }
+        } catch (SQLException e) {
+            throw new IllegalStateException("test SQL failed", e);
+        }
     }
 
     private String namespaceOfIntentLike(String jobNamePattern) {

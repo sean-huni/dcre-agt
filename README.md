@@ -4,16 +4,16 @@ Collections Agent: the only long-running service in the DCRE Collections pipelin
 
 ## What it does
 
-AGT watches the per-client inbound exchange drop zones, registers stable file arrivals into a durable ledger (SHA-256 content identity, R-31 filename tokens, same-key-different-hash quarantine), and drives the request DAGs (DC Collections and ENDO Payments, R-36) level-triggered from that ledger: minting each pipeline stage as a write-ahead, deterministically-named Kubernetes Job, then observing its externally reported termination facts as the sole authority for stage completion (R-33). It also launches the clock-driven executors (CRW process-date, PRG payment-status, HCS holiday-calendar-sync) on interval windows, reconciles Jobs against intents after any restart, and bounds/relaunches same-identity Jobs that die mid-run (OrphanSweeper) instead of leaving an arrival stuck.
+AGT watches the per-client inbound exchange drop zones, registers stable file arrivals into a durable ledger (SHA-256 content identity, R-31 filename tokens, same-key-different-hash quarantine), and drives the request DAGs (DC Collections, ENDO Payments, and M10 Mandates `MRR -> MRV -> MAF -> MIS -> [MIR, MRW]`, R-36) level-triggered from that ledger: minting each pipeline stage as a write-ahead, deterministically-named Kubernetes Job, then observing its externally reported termination facts as the sole authority for stage completion (R-33). Response routes are token-picked: `fint-resp` launches the per-token reader (IXR/SXR/PXR), `fint-resp-man` maps every pain.012 token to the single MAR reader, which chains into the MSR projection writer. It also launches the clock-driven executors (CRW process-date, PRG payment-status, HCS holiday-calendar-sync, MRG mandates-report) on interval windows, reconciles Jobs against intents after any restart, and bounds/relaunches same-identity Jobs that die mid-run (OrphanSweeper) instead of leaving an arrival stuck.
 
 ## Architecture and principles
 
-- **SOLID**: each control loop is a single-responsibility `@ApplicationScoped` bean with one job: `DirectoryWatcher` (arrival discovery), `ArrivalService` (claim/hash/dedup), `DagEngine` (pure DAG decision logic, unit-testable via `computeLaunches()`/`terminalState()`), `JobLauncher` (write-ahead Job creation), `OutcomeWatcher` (termination observation), `Reconciler` (post-restart/reap recovery), `OrphanRelauncher` (bounded same-identity relaunch), `LeaseService` (single-writer CAS lease), `CrwScheduler`/`PrgScheduler`/`HcsScheduler` (clock windows), `MetricsService` (ledger-derived gauges).
+- **SOLID**: each control loop is a single-responsibility `@ApplicationScoped` bean with one job: `DirectoryWatcher` (arrival discovery), `ArrivalService` (claim/hash/dedup), `DagEngine` (pure DAG decision logic, unit-testable via `computeLaunches()`/`terminalState()`), `JobLauncher` (write-ahead Job creation), `OutcomeWatcher` (termination observation), `Reconciler` (post-restart/reap recovery), `OrphanRelauncher` (bounded same-identity relaunch), `LeaseService` (single-writer CAS lease), `CrwScheduler`/`PrgScheduler`/`HcsScheduler`/`MrgScheduler` (clock windows), `MetricsService` (ledger-derived gauges).
 - **12FactorApp Alignment** (https://12factor.net/): every override point is `${ENV_VAR:default}` in `application.yml` with a working dev default committed (clean clone runs with no `.env`); config never hardcodes URLs/images/secrets; the process is stateless (all state lives in `agt_ops` and the K8s API, never in memory alone: `LeaseService`/`Reconciler` rebuild everything from the ledgers on restart); CockroachDB, Kubernetes, and the OTLP collector are attached backing services reached only via env-configured endpoints.
 - **Layer-first packages**: `config` (SmallRye `@ConfigMapping`), `domain` (enums/records: `Stage`, `Outcome`, `ArrivalStatus`, `FileArrival`, `LaunchIntent`), `repo` (JDBC access to the three ledgers), `service` (control loops).
 - **Idempotent restart semantics**: `launch_intent` is write-ahead (intent row inserted before the Job), so a crash between intent-insert and Job-create is safe; Job names embed the full 128-bit arrival UUID (`dcre-<stage>-<uuid-no-dashes>`), so a 409 Conflict on re-create is treated as already-launched; `stage_outcome` inserts are `UNIQUE(intent_id, attempt)`, so re-observation is a no-op; the `Reconciler` (every 5s) is status-driven, never blind-recreates a `LAUNCHED` intent, and resolves reaped-before-observed Jobs from the durable `/exchange/outcomes/<job>` seam before falling back to a bounded relaunch.
 - **OrphanSweeper** (`Reconciler` + `OrphanRelauncher`): a `LAUNCHED` intent whose current attempt ended TECH-class (dead pod, no live Job, no readable outcome after the reap grace window) gets a same-identity Job recreate up to `agt.orphan-max-attempts` (default 3) with `agt.orphan-backoff-seconds` (default 60) between attempts; exhausting the budget records a terminal `TECH_EXHAUSTED` outcome and fails the arrival (`DAG_FAILED`) rather than leaving a silent zombie. Business outcomes are never relaunched; clock intents self-heal at the next window boundary instead.
-- **Fail-closed defaults**: unparseable filenames, unknown fint-resp tokens, and missing stage images all quarantine/refuse rather than guess; `BUSINESS_FILE_REJECTED`/`BUSINESS_FILE_FATAL` route to CIR only (whole-file NACK); a tech-failed CIR keeps the arrival open instead of closing it without a response ever reaching OnHost.
+- **Fail-closed defaults**: unparseable filenames, unknown fint-resp tokens (either response route), and missing stage images all quarantine/refuse rather than guess; `BUSINESS_FILE_REJECTED`/`BUSINESS_FILE_FATAL` route to the route family's responder only (CIR, or MIR on `onhost-req-man`: whole-file NACK); a tech-failed responder keeps the arrival open instead of closing it without a response ever reaching OnHost.
 
 ## Prerequisites
 
@@ -59,9 +59,12 @@ AGT resolves `agt.exchange-root` (default `../../../../../infra/dcre-infra/excha
 | `AGT_PRG_IMAGE` | `dcre-prg:m4` | PRG clock-window executor image |
 | `AGT_AIS_IMAGE` | `dcre-ais:m5` | AIS endorsements stage image (ENDO route) |
 | `AGT_HCS_IMAGE` | `dcre-hcs:m6` | HCS holiday-calendar-sync clock executor image |
+| `AGT_MRR_IMAGE` / `AGT_MRV_IMAGE` / `AGT_MAF_IMAGE` / `AGT_MIS_IMAGE` / `AGT_MIR_IMAGE` / `AGT_MRW_IMAGE` / `AGT_MAR_IMAGE` / `AGT_MSR_IMAGE` / `AGT_MRG_IMAGE` | (empty) | M10 mandates stage images (SCRUM-79); absent/empty = launch-disabled until the 2.3 release line |
+| `AGT_MAN_CLIENTS` | `FNBCC01,FNBCC02,FNBRF01` | INTERIM comma-separated mandate-capable client tokens (MRG windows launch only for these), until the R-14 client table lands; trimmed + uppercased on read |
 | `AGT_CRW_INTERVAL_SECONDS` | `60` | CRW Process-Date Executor window length |
 | `AGT_PRG_INTERVAL_SECONDS` | `60` | PRG clock-window length |
 | `AGT_HCS_INTERVAL_HOURS` | `6` | HCS holiday-sync re-sync cadence |
+| `AGT_MRG_INTERVAL_SECONDS` | `60` | MRG mandates-report clock-window length |
 | `AGT_SERVICE_DB_URL` | `jdbc:postgresql://crdb.dcre.svc.cluster.local:26257/dcre_col?sslmode=disable` | JDBC URL handed to launched stage Jobs for `dcre_col` (FQDN: stage pods run in the flow namespaces, where the short `crdb` name does not resolve) |
 | `AGT_STAGE_MEMORY_REQUEST` | `512Mi` | Stage-pod memory request |
 | `AGT_STAGE_MEMORY_LIMIT` | `768Mi` | Stage-pod memory limit |
@@ -70,7 +73,7 @@ AGT resolves `agt.exchange-root` (default `../../../../../infra/dcre-infra/excha
 | `AGT_ORPHAN_BACKOFF_SECONDS` | `60` | OrphanSweeper: minimum seconds between relaunch attempts |
 | `HOSTNAME` | `local-agt` | DB lease holder id (must be unique per running instance) |
 
-Per-client inbound exchange layout (clients `FNBCC01`, `FNBCC02`, `FNBRF01`, each with `onhost-req`/`onhost-req-endo`/`fint-resp` channels) is data in `agt.exchange.clients.*`, not an env var; edit `application.yml` to add a client.
+Per-client inbound exchange layout (clients `FNBCC01`, `FNBCC02`, `FNBRF01`, each with `onhost-req`/`onhost-req-endo`/`fint-resp`/`onhost-req-man`/`fint-resp-man` channels) is data in `agt.exchange.clients.*`, not an env var; edit `application.yml` to add a client.
 
 ## Testing
 

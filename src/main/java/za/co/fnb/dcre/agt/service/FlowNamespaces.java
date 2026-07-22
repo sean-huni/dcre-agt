@@ -27,13 +27,16 @@ public class FlowNamespaces {
 
     /**
      * Pure route resolution. INTERIM (R-42): the pay-clients membership decides
-     * the fint-resp flow until the R-14 client reference table lands; unknown
-     * routes fall back to collections-primary, mirroring DagEngine's DC fallback.
+     * the fint-resp flow until the R-14 client reference table lands; the M10
+     * man routes are client-independent (SCRUM-79: mandates are their own job
+     * family, never pulled into PAY by client membership); unknown routes fall
+     * back to collections-primary, mirroring DagEngine's DC fallback.
      * Token comparison is normalized (trim + uppercase, m4).
      */
     public static Flow flowForRoute(String routeId, String clientToken, Collection<String> payClients) {
         return switch (routeId == null ? "" : routeId) {
             case ArrivalService.ROUTE_ONHOST_REQ_ENDO -> Flow.PAY;
+            case ArrivalService.ROUTE_ONHOST_REQ_MAN, ArrivalService.ROUTE_FINT_RESP_MAN -> Flow.MAN;
             case ArrivalService.ROUTE_FINT_RESP ->
                     clientToken != null && payClients.contains(normalize(clientToken)) ? Flow.PAY : Flow.COL;
             default -> Flow.COL; // onhost-req and unknown routes: collections-primary

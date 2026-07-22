@@ -50,6 +50,9 @@ public class ArrivalService {
     public static final String ROUTE_ONHOST_REQ = "onhost-req";
     public static final String ROUTE_ONHOST_REQ_ENDO = "onhost-req-endo";
     public static final String ROUTE_FINT_RESP = "fint-resp";
+    /** M10 mandates routes (SCRUM-79): dedicated man exchange channels end to end. */
+    public static final String ROUTE_ONHOST_REQ_MAN = "onhost-req-man";
+    public static final String ROUTE_FINT_RESP_MAN = "fint-resp-man";
 
     @Inject
     ArrivalRepo repo;

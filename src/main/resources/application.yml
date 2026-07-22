@@ -40,14 +40,20 @@ agt:
         onhost-req:      { in: fnbcc01/onhost-req/in,      error: fnbcc01/onhost-req/error,      archive: fnbcc01/onhost-req/archive }
         onhost-req-endo: { in: fnbcc01/onhost-req-endo/in, error: fnbcc01/onhost-req-endo/error, archive: fnbcc01/onhost-req-endo/archive }
         fint-resp:       { in: fnbcc01/fint-resp/in,       error: fnbcc01/fint-resp/error,       archive: fnbcc01/fint-resp/archive }
+        onhost-req-man:  { in: fnbcc01/onhost-req-man/in,  error: fnbcc01/onhost-req-man/error,  archive: fnbcc01/onhost-req-man/archive }
+        fint-resp-man:   { in: fnbcc01/fint-resp-man/in,   error: fnbcc01/fint-resp-man/error,   archive: fnbcc01/fint-resp-man/archive }
       FNBCC02:
         onhost-req:      { in: fnbcc02/onhost-req/in,      error: fnbcc02/onhost-req/error,      archive: fnbcc02/onhost-req/archive }
         onhost-req-endo: { in: fnbcc02/onhost-req-endo/in, error: fnbcc02/onhost-req-endo/error, archive: fnbcc02/onhost-req-endo/archive }
         fint-resp:       { in: fnbcc02/fint-resp/in,       error: fnbcc02/fint-resp/error,       archive: fnbcc02/fint-resp/archive }
+        onhost-req-man:  { in: fnbcc02/onhost-req-man/in,  error: fnbcc02/onhost-req-man/error,  archive: fnbcc02/onhost-req-man/archive }
+        fint-resp-man:   { in: fnbcc02/fint-resp-man/in,   error: fnbcc02/fint-resp-man/error,   archive: fnbcc02/fint-resp-man/archive }
       FNBRF01:
         onhost-req:      { in: fnbrf01/onhost-req/in,      error: fnbrf01/onhost-req/error,      archive: fnbrf01/onhost-req/archive }
         onhost-req-endo: { in: fnbrf01/onhost-req-endo/in, error: fnbrf01/onhost-req-endo/error, archive: fnbrf01/onhost-req-endo/archive }
         fint-resp:       { in: fnbrf01/fint-resp/in,       error: fnbrf01/fint-resp/error,       archive: fnbrf01/fint-resp/archive }
+        onhost-req-man:  { in: fnbrf01/onhost-req-man/in,  error: fnbrf01/onhost-req-man/error,  archive: fnbrf01/onhost-req-man/archive }
+        fint-resp-man:   { in: fnbrf01/fint-resp-man/in,   error: fnbrf01/fint-resp-man/error,   archive: fnbrf01/fint-resp-man/archive }
   namespace: ${AGT_NAMESPACE:dcre}
   # SCRUM-70 flow namespaces: AGT stays in the control namespace (agt.namespace);
   # stage Jobs launch into the flow namespace of the route family.
@@ -70,9 +76,24 @@ agt:
   prg-image: ${AGT_PRG_IMAGE:dcre-prg:m4}
   ais-image: ${AGT_AIS_IMAGE:dcre-ais:m5}
   hcs-image: ${AGT_HCS_IMAGE:dcre-hcs:m6}
+  # M10 mandates stage images (SCRUM-79): empty default = launch-disabled until
+  # the 2.3 release line ships the dcre-m* images.
+  mrr-image: ${AGT_MRR_IMAGE:}
+  mrv-image: ${AGT_MRV_IMAGE:}
+  maf-image: ${AGT_MAF_IMAGE:}
+  mis-image: ${AGT_MIS_IMAGE:}
+  mir-image: ${AGT_MIR_IMAGE:}
+  mrw-image: ${AGT_MRW_IMAGE:}
+  mar-image: ${AGT_MAR_IMAGE:}
+  msr-image: ${AGT_MSR_IMAGE:}
+  mrg-image: ${AGT_MRG_IMAGE:}
+  # INTERIM (R-42 analog for M10): comma-separated mandate-capable client
+  # tokens, until the R-14 client reference table lands.
+  man-clients: ${AGT_MAN_CLIENTS:FNBCC01,FNBCC02,FNBRF01}
   crw-interval-seconds: ${AGT_CRW_INTERVAL_SECONDS:60}
   prg-interval-seconds: ${AGT_PRG_INTERVAL_SECONDS:60}
   hcs-interval-hours: ${AGT_HCS_INTERVAL_HOURS:6}
+  mrg-interval-seconds: ${AGT_MRG_INTERVAL_SECONDS:60}
   # SCRUM-70: FQDN, not the short service name. This URL is handed to stage
   # pods in the FLOW namespaces (dcre-col/pay/man); `crdb` only resolves inside
   # the control namespace where the Service lives.
