@@ -133,9 +133,19 @@ public class Reconciler {
         boolean launched = LaunchIntent.LAUNCHED.equals(intent.status());
         if (!launched) {
             if (liveJob != null) {
-                // Create happened, mark did not: promote, never re-create (F1b).
                 String uid = liveJob.getMetadata() != null ? liveJob.getMetadata().getUid() : null;
-                intentRepo.markIntentLaunched(intent.id(), uid);
+                if (LaunchIntent.ABANDONED.equals(intent.status())) {
+                    // Wedged-alive crash-window (SCRUM-86): a relaunch claimed this
+                    // intent (heartbeat nulled) then crashed before recreate, so the
+                    // OLD Job is still live. Adopt it AND re-arm the stale-heartbeat
+                    // clock, else a still-wedged pod drops from 45s detection to the
+                    // 900s activeDeadlineSeconds path.
+                    intentRepo.reAdoptWithHeartbeat(intent.id(), uid);
+                } else {
+                    // Create happened, mark did not: promote, never re-create (F1b).
+                    // Heartbeat stays NULL: the fresh pod arms it on its first beat.
+                    intentRepo.markIntentLaunched(intent.id(), uid);
+                }
             } else {
                 LOG.warnf("Reconcile: INTENDED intent %s has no Job; creating", intent.jobName());
                 launcher.createJob(intent.id(), intent.arrivalId(), intent.stage(), intent.jobName(),

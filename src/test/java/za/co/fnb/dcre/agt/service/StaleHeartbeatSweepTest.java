@@ -72,6 +72,9 @@ class StaleHeartbeatSweepTest {
     OrphanRelauncher relauncher;
 
     @Inject
+    Reconciler reconciler;
+
+    @Inject
     ArrivalRepo arrivalRepo;
 
     @Inject
@@ -189,6 +192,34 @@ class StaleHeartbeatSweepTest {
         assertEquals(1, attemptOf(intentId), "the intent's attempt advanced exactly once");
     }
 
+    @Test
+    void reAdoptedWedgedIntentIsReDetectedWithinTtlNotStrandedTo900s() {
+        // Crash-window recovery for the wedged-alive sub-case: a relaunch that
+        // crashed AFTER the atomic claim (intent ABANDONED, heartbeat_at cleared)
+        // but BEFORE the delete+recreate leaves the OLD wedged Job still live.
+        // On the next incarnation reconcile() adopts that live Job (never a
+        // recreate) - and it MUST re-arm the stale-heartbeat clock, otherwise
+        // heartbeat_at stays NULL and the wedge silently drops from the 45s
+        // detection path down to the 900s activeDeadlineSeconds path.
+        String name = "col-crr-" + suffix();
+        UUID arrivalId = insertArrival();
+        UUID intentId = launchedWithJob(arrivalId, name);
+        intentRepo.claimForRelaunch(intentId); // mid-crash: ABANDONED, heartbeat NULL
+        assertEquals(LaunchIntent.ABANDONED, statusOf(intentId));
+        assertTrue(heartbeatIsNull(intentId), "claim cleared the heartbeat");
+
+        reconciler.reconcile(intentOf(arrivalId, intentId), jobOf(name)); // OLD Job still live
+
+        assertEquals(LaunchIntent.LAUNCHED, statusOf(intentId), "re-adopted onto the live Job");
+        assertFalse(heartbeatIsNull(intentId),
+                "re-adopt re-armed the stale-heartbeat clock (heartbeat_at not NULL)");
+        // The still-wedged pod never beats, so the re-armed clock lapses in one TTL.
+        setHeartbeat(intentId, "now() - INTERVAL '60 seconds'");
+        assertTrue(intentRepo.launchedArrivalIntentsWithStaleHeartbeat(45).stream()
+                        .anyMatch(i -> i.id().equals(intentId)),
+                "the re-adopted wedge is re-detected within one TTL, not stranded to 900s");
+    }
+
     private UUID launchedWithJob(final UUID arrivalId, final String name) {
         UUID intentId = intentRepo.insertIntent(arrivalId, Stage.CRR, name, "dcre-col").orElseThrow();
         Job job = k8s.batch().v1().jobs().inNamespace("dcre-col").resource(
@@ -201,6 +232,11 @@ class StaleHeartbeatSweepTest {
 
     private Job jobOf(final String name) {
         return k8s.batch().v1().jobs().inNamespace("dcre-col").withName(name).get();
+    }
+
+    private LaunchIntent intentOf(final UUID arrivalId, final UUID intentId) {
+        return intentRepo.intentsForArrival(arrivalId).stream()
+                .filter(i -> i.id().equals(intentId)).findFirst().orElseThrow();
     }
 
     private String uidOf(final String name) {

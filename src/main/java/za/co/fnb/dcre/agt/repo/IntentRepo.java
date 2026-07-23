@@ -75,6 +75,25 @@ public class IntentRepo {
         });
     }
 
+    /**
+     * Re-adopt an ABANDONED intent onto its STILL-LIVE Job (M12/SCRUM-86): the
+     * wedged-alive crash-window recovery. A relaunch that crashed after the
+     * atomic claim (heartbeat_at nulled) but before the delete+recreate leaves
+     * the old wedged Job running; the reconciler adopts it rather than recreate,
+     * and RE-ARMS the stale-heartbeat clock (heartbeat_at = now()) so a pod that
+     * is still wedged re-goes-stale within one TTL instead of dropping to the
+     * activeDeadlineSeconds path. Distinct from markIntentLaunched precisely
+     * because the latter must NOT set a heartbeat on a fresh INTENDED promote (a
+     * slow-but-healthy boot would be false-flagged before its first real beat).
+     */
+    public void reAdoptWithHeartbeat(final UUID intentId, final String jobUid) {
+        JdbcSupport.exec(ds, "UPDATE launch_intent SET status='LAUNCHED', job_uid=?, "
+                + "heartbeat_at=now() WHERE id=?", p -> {
+            p.setString(1, jobUid);
+            p.setObject(2, intentId);
+        });
+    }
+
     /** Durable launch args of a clock intent; the Reconciler recreates from these. */
     public Optional<String> intentLaunchArgs(UUID intentId) {
         try (Connection c = ds.getConnection();
@@ -110,21 +129,6 @@ public class IntentRepo {
             }
         } catch (SQLException e) {
             throw new IllegalStateException("intentCreatedAt failed", e);
-        }
-    }
-
-    /** New attempt number after bump; stamps last_attempt_at (OrphanSweeper bookkeeping). */
-    public int beginRelaunchAttempt(final UUID intentId) {
-        String sql = "UPDATE launch_intent SET attempt = attempt + 1, last_attempt_at = now() "
-                + "WHERE id=? RETURNING attempt";
-        try (Connection c = ds.getConnection(); PreparedStatement p = c.prepareStatement(sql)) {
-            p.setObject(1, intentId);
-            try (ResultSet r = p.executeQuery()) {
-                r.next();
-                return r.getInt(1);
-            }
-        } catch (SQLException e) {
-            throw new IllegalStateException("beginRelaunchAttempt failed", e);
         }
     }
 

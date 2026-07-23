@@ -12,8 +12,11 @@ public record LaunchIntent(UUID id, UUID arrivalId, Stage stage, String jobName,
      *  claim flips LAUNCHED -> ABANDONED so a second sweep/incarnation cannot
      *  re-claim the same intent in the tick; the relaunching pod's createJob
      *  re-marks it LAUNCHED. A crash in that window leaves it ABANDONED with a
-     *  bumped attempt and no live Job, which the reconciler recreates (its
-     *  not-LAUNCHED-no-Job branch), so it is always recoverable. */
+     *  bumped attempt, which the reconciler recovers on the next incarnation:
+     *  no live Job -> recreate; the OLD Job still live (wedged-alive) -> adopt it
+     *  AND re-arm the stale-heartbeat clock (reAdoptWithHeartbeat), so the wedge
+     *  is re-detected within one TTL rather than stranded to the 900s
+     *  activeDeadlineSeconds path. */
     public static final String ABANDONED = "ABANDONED";
 
     /** Legacy rows (pre-SCRUM-70) keep namespace NULL: fall back to the control namespace. */

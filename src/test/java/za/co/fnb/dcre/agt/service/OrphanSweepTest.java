@@ -145,7 +145,8 @@ class OrphanSweepTest {
         final UUID intentId = launchedIntent(arrivalId, "osw7");
         assertTrue(outcomeRepo.insertOutcome(intentId, 0, Outcome.TECH_FAILED, 137, "Failed/PodKill"));
 
-        assertEquals(1, intentRepo.beginRelaunchAttempt(intentId));
+        // Bump the attempt through the live seam the production path uses.
+        assertEquals(1, intentRepo.claimForRelaunch(intentId).orElseThrow());
         assertTrue(outcomeRepo.insertOutcome(intentId, 1, Outcome.BUSINESS_ACCEPTED, 0, "Complete"));
 
         assertEquals(Outcome.BUSINESS_ACCEPTED, outcomeRepo.outcomesForArrival(arrivalId).get(Stage.CRR),
