@@ -66,6 +66,7 @@ AGT resolves `agt.exchange-root` (default `../../../../../infra/dcre-infra/excha
 | `AGT_HCS_INTERVAL_HOURS` | `6` | HCS holiday-sync re-sync cadence |
 | `AGT_MRG_INTERVAL_SECONDS` | `60` | MRG mandates-report clock-window length |
 | `AGT_SERVICE_DB_URL` | `jdbc:postgresql://crdb.dcre.svc.cluster.local:26257/dcre_col?sslmode=disable` | JDBC URL handed to launched stage Jobs for `dcre_col` (FQDN: stage pods run in the flow namespaces, where the short `crdb` name does not resolve) |
+| `AGT_MAN_SERVICE_DB_URL` | `jdbc:postgresql://crdb.dcre.svc.cluster.local:26257/dcre_man?sslmode=disable` | JDBC URL handed to the M10 mandates stage Jobs (`MRR`..`MRG`) for `dcre_man`; the DB URL follows the stage's flow family |
 | `AGT_STAGE_MEMORY_REQUEST` | `512Mi` | Stage-pod memory request |
 | `AGT_STAGE_MEMORY_LIMIT` | `768Mi` | Stage-pod memory limit |
 | `AGT_STAGE_DEADLINE_SECONDS` | `900` | Stage Job `activeDeadlineSeconds` |
