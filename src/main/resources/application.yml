@@ -101,6 +101,12 @@ agt:
   # B2 (SCRUM-79 review): M10 mandates stage Jobs persist in dcre_man; the DB
   # URL follows the stage's flow family (JobLauncher), never a shared default.
   man-service-db-url: ${AGT_MAN_SERVICE_DB_URL:jdbc:postgresql://crdb.dcre.svc.cluster.local:26257/dcre_man?sslmode=disable}
+  # M12/SCRUM-88 (R-47): the agt_ops URL handed to every launched stage pod so
+  # the platform-batch heartbeat writer (T2) can reach agt_ops. FQDN for the
+  # same reason as man-service-db-url; identical for all flows. user = root
+  # (dev cluster); the password holds the blank datasource default.
+  agtops-db-url: ${AGT_AGTOPS_DB_URL:jdbc:postgresql://crdb.dcre.svc.cluster.local:26257/agt_ops?sslmode=disable}
+  agtops-db-user: ${AGT_AGTOPS_DB_USER:root}
   stage-memory-request: ${AGT_STAGE_MEMORY_REQUEST:512Mi}
   stage-memory-limit: ${AGT_STAGE_MEMORY_LIMIT:768Mi}
   stage-deadline-seconds: ${AGT_STAGE_DEADLINE_SECONDS:900}
