@@ -60,6 +60,8 @@ public class ExchangeSinks {
             case ArrivalService.ROUTE_ONHOST_REQ -> channels.onhostReq();
             case ArrivalService.ROUTE_ONHOST_REQ_ENDO -> channels.onhostReqEndo();
             case ArrivalService.ROUTE_FINT_RESP -> channels.fintResp();
+            case ArrivalService.ROUTE_ONHOST_REQ_MAN -> channels.onhostReqMan();
+            case ArrivalService.ROUTE_FINT_RESP_MAN -> channels.fintRespMan();
             default -> throw new IllegalArgumentException("not an AGT inbound route: " + route);
         };
     }

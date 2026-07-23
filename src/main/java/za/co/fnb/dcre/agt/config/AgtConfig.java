@@ -71,6 +71,33 @@ public interface AgtConfig {
     /** M6 HCS holiday-calendar-sync clock executor image (R-38). */
     java.util.Optional<String> hcsImage();
 
+    /** M10 mandates stage images (SCRUM-79). Absent/empty = launch-disabled:
+     *  the MRG scheduler skips its windows and a DAG launch fails fast
+     *  (SCRUM-33 semantics, no stub fallback). */
+    java.util.Optional<String> mrrImage();
+
+    java.util.Optional<String> mrvImage();
+
+    java.util.Optional<String> mafImage();
+
+    java.util.Optional<String> misImage();
+
+    java.util.Optional<String> mirImage();
+
+    java.util.Optional<String> mrwImage();
+
+    java.util.Optional<String> marImage();
+
+    java.util.Optional<String> msrImage();
+
+    java.util.Optional<String> mrgImage();
+
+    /** INTERIM (R-42 analog for M10): client tokens that are mandate-capable;
+     *  MRG windows launch only for these, until the R-14 client reference
+     *  table lands. Normalized (trim + uppercase) on read like pay-clients. */
+    @WithDefault("FNBCC01,FNBCC02,FNBRF01")
+    Set<String> manClients();
+
     /** CRW Process-Date Executor window length (R-37); dev default 60s. */
     @WithDefault("60")
     long crwIntervalSeconds();
@@ -83,11 +110,21 @@ public interface AgtConfig {
     @WithDefault("6")
     int hcsIntervalHours();
 
+    /** MRG mandates-report clock-window length (M10/SCRUM-79); dev default 60s. */
+    @WithDefault("60")
+    long mrgIntervalSeconds();
+
     /** JDBC url the service Jobs use for dcre_col (in-cluster).
      *  SCRUM-70: FQDN, because stage pods run in the flow namespaces where the
      *  short service name `crdb` does not resolve. */
     @WithDefault("jdbc:postgresql://crdb.dcre.svc.cluster.local:26257/dcre_col?sslmode=disable")
     String serviceDbUrl();
+
+    /** JDBC url the M10 mandates stage Jobs use for dcre_man (B2, SCRUM-79
+     *  review): the man services own their schema in dcre_man; handing them
+     *  the dcre_col URL would silently build it there. */
+    @WithDefault("jdbc:postgresql://crdb.dcre.svc.cluster.local:26257/dcre_man?sslmode=disable")
+    String manServiceDbUrl();
 
     /** Stage-pod memory request. Default matches the pre-load-test sizing;
      *  large-copybook runs (300k tx) need more (found live 2026-07-14: CTV OOM

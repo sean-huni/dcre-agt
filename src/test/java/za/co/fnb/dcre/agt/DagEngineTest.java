@@ -128,10 +128,14 @@ class DagEngineTest {
 
     @Test
     void fintRespTokenPicksSingleReaderStage() {
-        assertEquals(Stage.IXR, DagEngine.fintRespStage("FNBRF01_ISR_20260712.txt").orElseThrow());
-        assertEquals(Stage.SXR, DagEngine.fintRespStage("FNBRF01_SBSR_20260712.txt").orElseThrow());
-        assertEquals(Stage.PXR, DagEngine.fintRespStage("FNBRF01_PBSR_20260712.txt").orElseThrow());
-        assertTrue(DagEngine.fintRespStage("FNBRF01_XXXX_20260712.txt").isEmpty(),
+        assertEquals(Stage.IXR, DagEngine.fintRespStage(ArrivalService.ROUTE_FINT_RESP,
+                "FNBRF01_ISR_20260712.txt").orElseThrow());
+        assertEquals(Stage.SXR, DagEngine.fintRespStage(ArrivalService.ROUTE_FINT_RESP,
+                "FNBRF01_SBSR_20260712.txt").orElseThrow());
+        assertEquals(Stage.PXR, DagEngine.fintRespStage(ArrivalService.ROUTE_FINT_RESP,
+                "FNBRF01_PBSR_20260712.txt").orElseThrow());
+        assertTrue(DagEngine.fintRespStage(ArrivalService.ROUTE_FINT_RESP,
+                        "FNBRF01_XXXX_20260712.txt").isEmpty(),
                 "unknown token fails closed");
     }
 

@@ -6,15 +6,17 @@ import java.util.Map;
 
 /**
  * Per-client inbound exchange layout (SCRUM-42, R-30 amendment). AGT only owns
- * the three INBOUND channels (onhost-req, onhost-req-endo, fint-resp); each
+ * the five INBOUND channels (onhost-req, onhost-req-endo, fint-resp, and the
+ * M10 mandates pair onhost-req-man / fint-resp-man, SCRUM-79); each
  * relative path resolves against {@code agt.exchange-root}
  * ({@link AgtConfig#exchangeRoot()}). Kept self-contained (no platform-files
  * dependency): AGT binds this locally.
  *
  * <p>SmallRye kebab-case binding maps {@code onhostReq()} to the yml key
- * {@code onhost-req}, {@code onhostReqEndo()} to {@code onhost-req-endo}, and
- * {@code fintResp()} to {@code fint-resp}. Nested types are interfaces because
- * {@code @ConfigMapping} groups cannot be records.
+ * {@code onhost-req}, {@code onhostReqEndo()} to {@code onhost-req-endo},
+ * {@code fintResp()} to {@code fint-resp}, and likewise for the man pair.
+ * Nested types are interfaces because {@code @ConfigMapping} groups cannot be
+ * records.
  */
 @ConfigMapping(prefix = "agt.exchange")
 public interface AgtExchangeConfig {
@@ -28,6 +30,10 @@ public interface AgtExchangeConfig {
         ChannelDirs onhostReqEndo();
 
         ChannelDirs fintResp();
+
+        ChannelDirs onhostReqMan();
+
+        ChannelDirs fintRespMan();
     }
 
     interface ChannelDirs {

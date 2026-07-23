@@ -54,13 +54,14 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 @TestProfile(NamespaceRoutingTest.RoutingProfile.class)
 class NamespaceRoutingTest {
 
-    /** Real launcher against the CRUD mock server; CRR image feeds the orphan
-     *  recreate's Job spec build. pay-clients is deliberately messy (m4): the
+    /** Real launcher against the CRUD mock server; CRR/MRR images feed the
+     *  Job spec builds. pay-clients is deliberately messy (m4): the
      *  reader must trim + uppercase, so FNBRF01 still routes PAY end-to-end. */
     public static class RoutingProfile implements QuarkusTestProfile {
         @Override
         public Map<String, String> getConfigOverrides() {
             return Map.of("agt.launch-enabled", "true", "agt.crr-image", "dcre-crr:test",
+                    "agt.mrr-image", "dcre-mrr:test",
                     "agt.pay-clients", " fnbrf01 ");
         }
     }
@@ -79,6 +80,12 @@ class NamespaceRoutingTest {
 
     @Inject
     PrgScheduler prgScheduler;
+
+    @Inject
+    MrgScheduler mrgScheduler;
+
+    @Inject
+    JobLauncher launcher;
 
     @Inject
     LeaseService lease;
@@ -190,6 +197,42 @@ class NamespaceRoutingTest {
     }
 
     @Test
+    void manStageJobCarriesTheManDbUrlAndCollectionsKeepsCol() {
+        // B2 (SCRUM-79 review): the nine M-services own their schema in
+        // dcre_man; handing them the dcre_col URL would build it there.
+        UUID manArrival = insertArrival("onhost-req-man", "FNBCC01");
+        launcher.launch(manArrival, Stage.MRR);
+        Job manJob = k8s.batch().v1().jobs().inNamespace("dcre-man")
+                .withName(JobLauncher.jobName(za.co.fnb.dcre.agt.domain.Flow.MAN, Stage.MRR, manArrival)).get();
+        assertNotNull(manJob, "MRR job created in dcre-man");
+        assertTrue(dbUrlOf(manJob).contains("/dcre_man"),
+                "man stage job env carries the dcre_man URL, got " + dbUrlOf(manJob));
+
+        UUID colArrival = insertArrival("onhost-req", "FNBCC01");
+        launcher.launch(colArrival, Stage.CRR);
+        Job colJob = k8s.batch().v1().jobs().inNamespace("dcre-col")
+                .withName(JobLauncher.jobName(za.co.fnb.dcre.agt.domain.Flow.COL, Stage.CRR, colArrival)).get();
+        assertNotNull(colJob, "CRR job created in dcre-col");
+        assertTrue(dbUrlOf(colJob).contains("/dcre_col"),
+                "collections stage job env keeps the dcre_col URL, got " + dbUrlOf(colJob));
+    }
+
+    @Test
+    void mrgSchedulerIsLaunchDisabledWithoutAnImage() {
+        // M10/SCRUM-79: no agt.mrg-image in this profile -> the scheduler skips
+        // entirely. Delta assertion: DB state is shared across test classes.
+        insertArrival("onhost-req", "FNBCC01");
+        exec("UPDATE agt_lease SET expires_at = now() - INTERVAL '1 second'");
+        assertTrue(lease.tryAcquire(config.holderId()), "test precondition: lease held");
+        long before = countIntentsLike("man-mrg-%");
+
+        mrgScheduler.tick();
+
+        assertEquals(before, countIntentsLike("man-mrg-%"),
+                "absent/empty MRG image = launch-disabled: no new windows minted");
+    }
+
+    @Test
     void nullNamespaceIntentObservesInTheControlNamespace() throws IOException {
         // Legacy (pre-SCRUM-70) launch_intent rows keep namespace NULL: the
         // fallback target is the CONTROL namespace, never a flow namespace.
@@ -264,6 +307,28 @@ class NamespaceRoutingTest {
         return arrivalRepo.insertArrival(UUID.randomUUID(), route, client + "_NRT" + tag + ".txt",
                 "sha-nrt-" + tag, client, "MNRT" + tag, ArrivalStatus.DAG_RUNNING, null,
                 "/exchange/claimed/" + client + "_NRT" + tag + ".txt").orElseThrow();
+    }
+
+    /** DCRE_DB_URL env value of the Job's stage container (B2 seam). */
+    static String dbUrlOf(Job job) {
+        return job.getSpec().getTemplate().getSpec().getContainers().get(0).getEnv().stream()
+                .filter(e -> "DCRE_DB_URL".equals(e.getName()))
+                .map(io.fabric8.kubernetes.api.model.EnvVar::getValue)
+                .findFirst()
+                .orElseThrow(() -> new IllegalStateException("no DCRE_DB_URL env on " + job.getMetadata().getName()));
+    }
+
+    private long countIntentsLike(String jobNamePattern) {
+        try (Connection c = ds.getConnection(); PreparedStatement p = c.prepareStatement(
+                "SELECT count(*) FROM launch_intent WHERE job_name LIKE ?")) {
+            p.setString(1, jobNamePattern);
+            try (ResultSet r = p.executeQuery()) {
+                assertTrue(r.next());
+                return r.getLong(1);
+            }
+        } catch (SQLException e) {
+            throw new IllegalStateException("test SQL failed", e);
+        }
     }
 
     private String namespaceOfIntentLike(String jobNamePattern) {

@@ -91,6 +91,26 @@ class FlowNamespaceLaunchTest {
     }
 
     @Test
+    void manArrivalIntentTargetsTheManNamespaceAndFailsFastWithoutImage() {
+        // M10/SCRUM-79: the write-ahead intent lands first (man- prefix,
+        // dcre-man namespace); the unset image then fails the launch fast
+        // (SCRUM-33 semantics: launch-disabled by default until 2.3 images).
+        UUID arrivalId = insertArrival("onhost-req-man", "FNBCC01", "FLN5");
+        IllegalStateException e = org.junit.jupiter.api.Assertions.assertThrows(
+                IllegalStateException.class, () -> launcher.launch(arrivalId, Stage.MRR));
+        assertTrue(e.getMessage().contains("AGT_MRR_IMAGE"), "got: " + e.getMessage());
+        assertIntent(arrivalId, "man-mrr-", "dcre-man");
+    }
+
+    @Test
+    void manRespArrivalIntentTargetsTheManNamespace() {
+        UUID arrivalId = insertArrival("fint-resp-man", "FNBRF01", "FLN6");
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException.class,
+                () -> launcher.launch(arrivalId, Stage.MAR), "no MAR image: fail fast");
+        assertIntent(arrivalId, "man-mar-", "dcre-man");
+    }
+
+    @Test
     void flowConfigDefaultsMatchTheSpec() {
         assertEquals("dcre-col", config.namespaceCol());
         assertEquals("dcre-pay", config.namespacePay());

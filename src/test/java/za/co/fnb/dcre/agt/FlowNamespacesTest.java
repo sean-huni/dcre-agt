@@ -57,6 +57,19 @@ class FlowNamespacesTest {
     }
 
     @Test
+    void manRoutesResolveMandatesRegardlessOfClient() {
+        // M10/SCRUM-79: both man routes are client-independent, unlike
+        // fint-resp which follows the reading client's flow.
+        assertEquals(Flow.MAN, FlowNamespaces.flowForRoute("onhost-req-man", "FNBCC01", PAY_CLIENTS));
+        assertEquals(Flow.MAN, FlowNamespaces.flowForRoute("onhost-req-man", "FNBRF01", PAY_CLIENTS),
+                "a pay client's mandate book still rides the MAN flow");
+        assertEquals(Flow.MAN, FlowNamespaces.flowForRoute("fint-resp-man", "FNBRF01", PAY_CLIENTS),
+                "pay-clients membership never pulls a man response into PAY");
+        assertEquals(Flow.MAN, FlowNamespaces.flowForRoute("fint-resp-man", null, PAY_CLIENTS),
+                "client-independent: even a token-less man response stays MAN");
+    }
+
+    @Test
     void jobPrefixesReplaceTheDcreLiteral() {
         assertEquals("col-", Flow.COL.jobPrefix());
         assertEquals("pay-", Flow.PAY.jobPrefix());

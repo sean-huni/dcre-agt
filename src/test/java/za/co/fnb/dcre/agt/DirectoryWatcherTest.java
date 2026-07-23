@@ -110,6 +110,34 @@ class DirectoryWatcherTest {
                 "claimed into the FNBCC02 fint-resp sink");
     }
 
+    @Test
+    void discoversOnhostReqManChannel() throws Exception {
+        final String msgId = "MANB" + UUID.randomUUID().toString().substring(0, 8);
+        final String name = "FNBCC01_" + msgId + ".txt";
+        final FileArrival arrival =
+                discover("fnbcc01", ArrivalService.ROUTE_ONHOST_REQ_MAN, name, "man-" + msgId);
+
+        assertEquals(ArrivalService.ROUTE_ONHOST_REQ_MAN, arrival.routeId(),
+                "onhost-req-man channel is scanned (M10/SCRUM-79)");
+        assertEquals("FNBCC01", arrival.clientToken());
+        assertTrue(claimedInto(sinks.inflight("FNBCC01", ArrivalService.ROUTE_ONHOST_REQ_MAN), name),
+                "claimed into the FNBCC01 onhost-req-man sink");
+    }
+
+    @Test
+    void discoversFintRespManChannel() throws Exception {
+        final String msgId = "OUT" + UUID.randomUUID().toString().substring(0, 8);
+        final String name = "FNBRF01_" + msgId + "_PBSR.xml";
+        final FileArrival arrival =
+                discover("fnbrf01", ArrivalService.ROUTE_FINT_RESP_MAN, name, "pbsr-" + msgId);
+
+        assertEquals(ArrivalService.ROUTE_FINT_RESP_MAN, arrival.routeId(),
+                "fint-resp-man channel is scanned (M10/SCRUM-79)");
+        assertEquals("FNBRF01", arrival.clientToken());
+        assertTrue(claimedInto(sinks.inflight("FNBRF01", ArrivalService.ROUTE_FINT_RESP_MAN), name),
+                "claimed into the FNBRF01 fint-resp-man sink");
+    }
+
     /** True when the ledger holds ANY arrival (any status) for this physical filename. */
     private boolean ledgerHas(final String physicalFilename) {
         return repo.arrivalsByStatus(ArrivalStatus.values()).stream()

@@ -12,22 +12,24 @@ import za.co.fnb.dcre.agt.domain.Stage;
 import za.co.fnb.dcre.agt.repo.ArrivalRepo;
 import za.co.fnb.dcre.agt.repo.IntentRepo;
 import za.co.fnb.dcre.agt.repo.OutcomeRepo;
+import za.co.fnb.dcre.agt.service.RouteDags.RouteDag;
 
-import java.util.EnumMap;
 import java.util.EnumSet;
-import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
 /**
- * Level-triggered DAG engine over the ledgers. DC route (M1):
- * CRR -> CTV -> [CDE, CIR]. A BUSINESS_FILE_FATAL or BUSINESS_FILE_REJECTED
- * predecessor routes to CIR only (whole-file NACK path, R-19/R-41/SPEC-DAG
- * section 3); BUSINESS_PARTIAL fans out like ACCEPTED (R-41: PASS rows continue).
- * M4 adds the fint-resp route: a single reader stage picked by filename token.
- * M5 added the ENDO route; SCRUM-69 reclassifies ENDO as Payments (immediate):
- * CRR -> CTV -> AIS -> [CIR]. CDE never runs on the pay flow; CRW picks pay
- * rows up by tx_header.flow from ingest day.
+ * Level-triggered DAG engine over the ledgers. Route shapes live in
+ * {@link RouteDags} (R-36 data, not code): DC Collections
+ * CRR -> CTV -> [CDE, CIR]; ENDO Payments CRR -> CTV -> AIS -> [CIR]
+ * (SCRUM-69: CDE never runs on the pay flow); M10 Mandates (SCRUM-79)
+ * MRR -> MRV -> MAF -> MIS -> [MIR, MRW]. A BUSINESS_FILE_FATAL or
+ * BUSINESS_FILE_REJECTED predecessor routes to the route family's responder
+ * only (CIR, or MIR on the man route: whole-file NACK path, R-19/R-41/SPEC-DAG
+ * section 3); BUSINESS_PARTIAL fans out like ACCEPTED (R-41: PASS rows
+ * continue). Response routes are token-picked: fint-resp launches the single
+ * reader stage (IXR/SXR/PXR, M4); fint-resp-man maps every pain.012 token to
+ * the one MAR reader, which chains into MSR (SCRUM-79).
  * Pure decision logic lives in computeLaunches() for unit testing.
  */
 @ApplicationScoped
@@ -35,48 +37,47 @@ public class DagEngine {
 
     private static final Logger LOG = Logger.getLogger(DagEngine.class);
 
-    /** A request route's DAG shape: successor edges plus the terminal fork. */
-    record RouteDag(Map<Stage, Set<Stage>> edges, Set<Stage> terminal) { }
-
-    // R-37: CRW is a clock-driven Process-Date Executor, not a DAG successor.
-    static final RouteDag DC_DAG = new RouteDag(
-            new EnumMap<>(Map.of(
-                    Stage.CRR, EnumSet.of(Stage.CTV),
-                    Stage.CTV, EnumSet.of(Stage.CDE, Stage.CIR))),
-            EnumSet.of(Stage.CDE, Stage.CIR));
-
-    static final RouteDag ENDO_DAG = new RouteDag(
-            new EnumMap<>(Map.of(
-                    Stage.CRR, EnumSet.of(Stage.CTV),
-                    Stage.CTV, EnumSet.of(Stage.AIS),
-                    Stage.AIS, EnumSet.of(Stage.CIR))),
-            EnumSet.of(Stage.CIR));
-
-    /** R-36 route-based DAG registry: the route -> shape mapping is data, not
-     *  code; new request routes add an entry here, never a new code path. */
-    static final Map<String, RouteDag> DAGS = Map.of(
-            ArrivalService.ROUTE_ONHOST_REQ, DC_DAG,
-            ArrivalService.ROUTE_ONHOST_REQ_ENDO, ENDO_DAG);
-
-    /** fint-resp filename token -> reader stage; empty = unknown token (fail closed). */
-    public static java.util.Optional<Stage> fintRespStage(String filename) {
+    /** pain.012/fint-resp reply token from the filename; empty = unknown
+     *  (fail closed). Shared with JobLauncher's MAR reply.type arg. */
+    public static java.util.Optional<String> replyToken(String filename) {
         if (filename.contains("_ISR")) {
-            return java.util.Optional.of(Stage.IXR);
+            return java.util.Optional.of("ISR");
         }
         if (filename.contains("_SBSR")) {
-            return java.util.Optional.of(Stage.SXR);
+            return java.util.Optional.of("SBSR");
         }
         if (filename.contains("_PBSR")) {
-            return java.util.Optional.of(Stage.PXR);
+            return java.util.Optional.of("PBSR");
         }
         return java.util.Optional.empty();
     }
 
+    /** Response-route filename token -> reader stage (route-aware, SCRUM-79):
+     *  collections fint-resp keeps the per-token readers; fint-resp-man maps
+     *  ALL tokens to the single MAR service (canon singular). Empty = unknown
+     *  token (fail closed). */
+    public static java.util.Optional<Stage> fintRespStage(String route, String filename) {
+        return replyToken(filename).map(token -> ArrivalService.ROUTE_FINT_RESP_MAN.equals(route)
+                ? Stage.MAR
+                : switch (token) {
+                    case "ISR" -> Stage.IXR;
+                    case "SBSR" -> Stage.SXR;
+                    default -> Stage.PXR;
+                });
+    }
+
+    private static boolean isRespRoute(String route) {
+        return ArrivalService.ROUTE_FINT_RESP.equals(route)
+                || ArrivalService.ROUTE_FINT_RESP_MAN.equals(route);
+    }
+
     /** First stage for a CLAIMED arrival; empty = quarantine (fail closed). */
     static java.util.Optional<Stage> initialStage(String route, String filename) {
-        return ArrivalService.ROUTE_FINT_RESP.equals(route)
-                ? fintRespStage(filename)
-                : java.util.Optional.of(Stage.CRR);
+        if (isRespRoute(route)) {
+            return fintRespStage(route, filename);
+        }
+        return java.util.Optional.of(
+                ArrivalService.ROUTE_ONHOST_REQ_MAN.equals(route) ? Stage.MRR : Stage.CRR);
     }
 
     @Inject
@@ -141,15 +142,18 @@ public class DagEngine {
     }
 
     /** Route dispatch: request routes resolve their DAG from the R-36 registry;
-     *  fint-resp is the single token-picked reader (re-seeded level-triggered,
-     *  intents dedupe). Unknown routes fall back to the DC shape (as before). */
+     *  response routes seed the token-picked reader (re-seeded level-triggered,
+     *  intents dedupe), and fint-resp-man additionally advances the MAR -> MSR
+     *  edge. Unknown routes fall back to the DC shape (as before). */
     public static Set<Stage> computeLaunches(String route, String filename,
                                              Map<Stage, Outcome> outcomes, Set<Stage> intended) {
-        if (!ArrivalService.ROUTE_FINT_RESP.equals(route)) {
-            return computeLaunches(DAGS.getOrDefault(route, DC_DAG), outcomes, intended);
+        if (!isRespRoute(route)) {
+            return computeLaunches(RouteDags.REQUESTS.getOrDefault(route, RouteDags.DC), outcomes, intended);
         }
-        Set<Stage> launches = EnumSet.noneOf(Stage.class);
-        fintRespStage(filename)
+        Set<Stage> launches = ArrivalService.ROUTE_FINT_RESP_MAN.equals(route)
+                ? computeLaunches(RouteDags.FINT_RESP_MAN, outcomes, intended)
+                : EnumSet.noneOf(Stage.class);
+        fintRespStage(route, filename)
                 .filter(stage -> !intended.contains(stage) && !outcomes.containsKey(stage))
                 .ifPresent(launches::add);
         return launches;
@@ -157,7 +161,7 @@ public class DagEngine {
 
     /** Successor stages to launch now, given recorded outcomes and existing intents (onhost-req). */
     public static Set<Stage> computeLaunches(Map<Stage, Outcome> outcomes, Set<Stage> intended) {
-        return computeLaunches(DC_DAG, outcomes, intended);
+        return computeLaunches(RouteDags.DC, outcomes, intended);
     }
 
     private static Set<Stage> computeLaunches(RouteDag dag, Map<Stage, Outcome> outcomes, Set<Stage> intended) {
@@ -165,21 +169,21 @@ public class DagEngine {
         for (Map.Entry<Stage, Outcome> done : outcomes.entrySet()) {
             switch (done.getValue()) {
                 case BUSINESS_PARTIAL, BUSINESS_ACCEPTED -> {
-                    // R-41: PARTIAL continues PASS rows (acceptance mode is CTV's
-                    // call now); both fan out to all successors.
+                    // R-41: PARTIAL continues PASS rows (acceptance mode is the
+                    // validator's call now); both fan out to all successors.
                     for (Stage next : dag.edges().getOrDefault(done.getKey(), Set.of())) {
                         if (!intended.contains(next)) {
                             launches.add(next);
                         }
                     }
                 }
-                case BUSINESS_FILE_REJECTED, BUSINESS_FILE_FATAL -> {
-                    // Whole-file NACK (fatal or R-41 policy rejection): the initial
-                    // responder still runs; nothing else does.
-                    if (!intended.contains(Stage.CIR)) {
-                        launches.add(Stage.CIR);
-                    }
-                }
+                case BUSINESS_FILE_REJECTED, BUSINESS_FILE_FATAL ->
+                    // Whole-file NACK (fatal or R-41 policy rejection): the route
+                    // family's responder still runs; nothing else does. Response
+                    // routes have no responder: fail closed, reconciler's call.
+                    dag.responder()
+                            .filter(responder -> !intended.contains(responder))
+                            .ifPresent(launches::add);
                 case TECH_FAILED -> {
                     // Process death is never a business verdict (R-33): no successors;
                     // relaunch policy is the reconciler's/operator's call.
@@ -190,30 +194,36 @@ public class DagEngine {
     }
 
     /** fint-resp terminal: the single reader stage BUSINESS_ACCEPTED completes
-     *  the DAG; anything else stays open for the reconciler (fail closed). */
+     *  the DAG; fint-resp-man completes on its terminal fork (MSR); anything
+     *  else stays open for the reconciler (fail closed). */
     public static java.util.Optional<ArrivalStatus> terminalState(String route, Map<Stage, Outcome> outcomes) {
-        if (!ArrivalService.ROUTE_FINT_RESP.equals(route)) {
-            return terminalState(DAGS.getOrDefault(route, DC_DAG), outcomes);
+        if (ArrivalService.ROUTE_FINT_RESP.equals(route)) {
+            boolean readerAccepted = outcomes.values().stream().anyMatch(o -> o == Outcome.BUSINESS_ACCEPTED);
+            return readerAccepted ? java.util.Optional.of(ArrivalStatus.DAG_COMPLETE) : java.util.Optional.empty();
         }
-        boolean readerAccepted = outcomes.values().stream().anyMatch(o -> o == Outcome.BUSINESS_ACCEPTED);
-        return readerAccepted ? java.util.Optional.of(ArrivalStatus.DAG_COMPLETE) : java.util.Optional.empty();
+        RouteDag dag = ArrivalService.ROUTE_FINT_RESP_MAN.equals(route)
+                ? RouteDags.FINT_RESP_MAN
+                : RouteDags.REQUESTS.getOrDefault(route, RouteDags.DC);
+        return terminalState(dag, outcomes);
     }
 
-    /** Terminal arrival state, when reached (onhost-req). The responder (CIR) must itself be
-     *  business-done before any terminal verdict (Fugu F6: a tech-failed CIR
+    /** Terminal arrival state, when reached (onhost-req). The responder must itself be
+     *  business-done before any terminal verdict (Fugu F6: a tech-failed responder
      *  means the NACK never left; the arrival stays open for the reconciler). */
     public static java.util.Optional<ArrivalStatus> terminalState(Map<Stage, Outcome> outcomes) {
-        return terminalState(DC_DAG, outcomes);
+        return terminalState(RouteDags.DC, outcomes);
     }
 
     private static java.util.Optional<ArrivalStatus> terminalState(RouteDag dag, Map<Stage, Outcome> outcomes) {
-        boolean cirDone = isBusinessDone(outcomes.get(Stage.CIR));
         // R-41: BUSINESS_FILE_REJECTED terminates exactly like BUSINESS_FILE_FATAL
-        // (CIR acceptance closes the DAG; whole file never debits).
+        // (responder acceptance closes the DAG; the whole file never debits).
         boolean anyFatal = outcomes.values().stream()
                 .anyMatch(o -> o == Outcome.BUSINESS_FILE_FATAL || o == Outcome.BUSINESS_FILE_REJECTED);
         if (anyFatal) {
-            return cirDone ? java.util.Optional.of(ArrivalStatus.DAG_FAILED) : java.util.Optional.empty();
+            // No responder on a response route: never a terminal verdict (fail closed).
+            return dag.responder()
+                    .filter(responder -> isBusinessDone(outcomes.get(responder)))
+                    .map(responder -> ArrivalStatus.DAG_FAILED);
         }
         // R-41: PARTIAL continues PASS rows, so it completes like ACCEPTED: all
         // terminal stages business-done (isBusinessDone admits PARTIAL).

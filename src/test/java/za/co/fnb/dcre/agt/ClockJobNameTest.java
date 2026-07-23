@@ -37,6 +37,12 @@ class ClockJobNameTest {
     }
 
     @Test
+    void manFlowClockJobsCarryTheManPrefix() {
+        // M10/SCRUM-79: MRG windows always ride Flow.MAN (client-independent).
+        assertEquals("man-mrg-fnbcc01-w5", JobLauncher.clockJobName(Flow.MAN, Stage.MRG, "FNBCC01-w5"));
+    }
+
+    @Test
     void stageTokenInsideTheKeyIsNotStripped() {
         assertEquals("col-prg-client-prg-w1", JobLauncher.clockJobName(Flow.COL, Stage.PRG, "client-prg-w1"),
                 "only a LEADING stage token is redundant");

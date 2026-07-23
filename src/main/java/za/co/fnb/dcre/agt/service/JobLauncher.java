@@ -34,9 +34,23 @@ public class JobLauncher {
     public static final String LABEL_STAGE = "dcre/stage";
     public static final String LABEL_ARRIVAL = "dcre/arrival";
 
-    /** Boundary stages that read the claimed payload file (CRR; M4 fint-resp readers). */
+    /** Boundary stages that read the claimed payload file (CRR; M4 fint-resp
+     *  readers; M10 MRR instruction-book reader and MAR pain.012 reader). */
     static final java.util.Set<Stage> BOUNDARY_READERS =
-            java.util.EnumSet.of(Stage.CRR, Stage.IXR, Stage.SXR, Stage.PXR);
+            java.util.EnumSet.of(Stage.CRR, Stage.IXR, Stage.SXR, Stage.PXR, Stage.MRR, Stage.MAR);
+
+    /** Whole-file responder stages: carry the A-45 arrival identity params and
+     *  the rejecting validator's outcome.hint (CIR; M10 man responder MIR). */
+    static final java.util.Set<Stage> RESPONDERS =
+            java.util.EnumSet.of(Stage.CIR, Stage.MIR);
+
+    /** M10 mandates stages persist in dcre_man (B2, SCRUM-79 review): the
+     *  DCRE_DB_URL env follows the stage's flow family. Stage-keyed so a
+     *  reconciled re-create (which has only the intent row) resolves the same
+     *  URL; COL/PAY stages keep dcre_col unchanged. */
+    static final java.util.Set<Stage> MAN_STAGES = java.util.EnumSet.of(
+            Stage.MRR, Stage.MRV, Stage.MAF, Stage.MIS, Stage.MIR,
+            Stage.MRW, Stage.MAR, Stage.MSR, Stage.MRG);
 
     @Inject
     IntentRepo intentRepo;
@@ -125,6 +139,11 @@ public class JobLauncher {
         intentRepo.markIntentLaunched(intentId, uid);
     }
 
+    /** DB URL for a stage's Job env: man stages get dcre_man, all else dcre_col (B2). */
+    private String dbUrlFor(Stage stage) {
+        return MAN_STAGES.contains(stage) ? config.manServiceDbUrl() : config.serviceDbUrl();
+    }
+
     /** Image for a stage; every stage is a real service since M5 (SCRUM-33:
      *  stub deleted), so a missing image is a misconfiguration, never a fallback. */
     private String serviceImage(Stage stage) {
@@ -140,6 +159,15 @@ public class JobLauncher {
             case PRG -> config.prgImage();
             case AIS -> config.aisImage();
             case HCS -> config.hcsImage();
+            case MRR -> config.mrrImage();
+            case MRV -> config.mrvImage();
+            case MAF -> config.mafImage();
+            case MIS -> config.misImage();
+            case MIR -> config.mirImage();
+            case MRW -> config.mrwImage();
+            case MAR -> config.marImage();
+            case MSR -> config.msrImage();
+            case MRG -> config.mrgImage();
         };
         return image.orElseThrow(() -> new IllegalStateException(
                 "no image configured for stage " + stage + ": set AGT_" + stage.name() + "_IMAGE"));
@@ -197,7 +225,7 @@ public class JobLauncher {
                                 .withImagePullPolicy("IfNotPresent")
                                 .withArgs(args.toArray(String[]::new))
                                 .addNewEnv().withName("JOB_NAME").withValue(name).endEnv()
-                                .addNewEnv().withName("DCRE_DB_URL").withValue(config.serviceDbUrl()).endEnv()
+                                .addNewEnv().withName("DCRE_DB_URL").withValue(dbUrlFor(stage)).endEnv()
                                 .addNewEnv().withName("DCRE_EXCHANGE_ROOT").withValue("/exchange").endEnv()
                                 .addNewVolumeMount().withName("exchange").withMountPath("/exchange").endVolumeMount()
                                 .withNewResources()
@@ -214,11 +242,14 @@ public class JobLauncher {
 
     /**
      * Program args for a service Job (arrival.id identifying per R-16; everything
-     * else non-identifying). CIR carries the arrival identity, with route.id
-     * carrying the route dimension of the R-16 arrival identity (A-45: CIR 2.0.1
-     * requires it to keep cross-route twin arrivals from colliding on the
-     * response file), and the rejecting validator's verdict so it can NACK a
-     * headerless spine (R-41/A-42). All
+     * else non-identifying). The responders (CIR; M10 MIR) carry the arrival
+     * identity, with route.id carrying the route dimension of the R-16 arrival
+     * identity (A-45: CIR 2.0.1 requires it to keep cross-route twin arrivals
+     * from colliding on the response file), and the rejecting validator's
+     * verdict so they can NACK a headerless spine (R-41/A-42). MAR carries the
+     * pain.012 reply type parsed from the filename token (T12 contract: the
+     * reply type selects the target resp table; unknown token fails closed,
+     * though DagEngine quarantines those before any launch). All
      * inputs come from durable rows (file_arrival, stage_outcome), so a
      * reconciled re-create rebuilds identical args; nothing lives only in memory
      * (same durability property clock intents get from persisted launch args).
@@ -236,10 +267,17 @@ public class JobLauncher {
             // arrival row, so a reconciled re-create rebuilds it identically.
             args.add("flow=PAY,java.lang.String,false");
         }
-        if (stage == Stage.CIR) {
-            args.add("route.id=" + cirIdentity(arrival.routeId(), "route.id", arrival) + ",java.lang.String,false");
-            args.add("client.token=" + cirIdentity(arrival.clientToken(), "client.token", arrival) + ",java.lang.String,false");
-            args.add("msg.id=" + cirIdentity(arrival.msgIdToken(), "msg.id", arrival) + ",java.lang.String,false");
+        if (stage == Stage.MAR) {
+            args.add("reply.type=" + DagEngine.replyToken(arrival.physicalFilename())
+                    .orElseThrow(() -> new IllegalStateException("arrival " + arrival.id()
+                            + " filename " + arrival.physicalFilename()
+                            + " has no pain.012 reply token: MAR launch is fail-closed"))
+                    + ",java.lang.String,false");
+        }
+        if (RESPONDERS.contains(stage)) {
+            args.add("route.id=" + responderIdentity(arrival.routeId(), "route.id", arrival) + ",java.lang.String,false");
+            args.add("client.token=" + responderIdentity(arrival.clientToken(), "client.token", arrival) + ",java.lang.String,false");
+            args.add("msg.id=" + responderIdentity(arrival.msgIdToken(), "msg.id", arrival) + ",java.lang.String,false");
             rejectionHint(outcomes).ifPresent(o ->
                     args.add("outcome.hint=" + o.name() + ",java.lang.String,false"));
         }
@@ -247,16 +285,16 @@ public class JobLauncher {
     }
 
     /**
-     * Fail-closed guard for the CIR identity params (A-45): a null field would
-     * otherwise render as the literal "null", pass CIR's has-text check, and
-     * re-create the cross-route collision class under the token "null". Today
-     * only the DB NOT NULL constraints prevent that; the launcher must not
-     * depend on them.
+     * Fail-closed guard for the responder identity params (A-45): a null field
+     * would otherwise render as the literal "null", pass the responder's
+     * has-text check, and re-create the cross-route collision class under the
+     * token "null". Today only the DB NOT NULL constraints prevent that; the
+     * launcher must not depend on them.
      */
-    private static String cirIdentity(String value, String field, FileArrival arrival) {
+    private static String responderIdentity(String value, String field, FileArrival arrival) {
         if (value == null || value.isBlank()) {
             throw new IllegalStateException("arrival " + arrival.id() + " has no " + field
-                    + ": CIR identity params are fail-closed (A-45)");
+                    + ": responder identity params are fail-closed (A-45)");
         }
         return value;
     }
@@ -286,7 +324,7 @@ public class JobLauncher {
 
     /** M2 real-service Job: Spring Batch app; program args become JobParameters. */
     private Job serviceJob(String name, String namespace, Stage stage, FileArrival arrival, String image) {
-        Map<Stage, Outcome> outcomes = stage == Stage.CIR
+        Map<Stage, Outcome> outcomes = RESPONDERS.contains(stage)
                 ? outcomeRepo.outcomesForArrival(arrival.id())
                 : Map.of();
         java.util.List<String> args = serviceArgs(stage, arrival, outcomes);
@@ -322,7 +360,7 @@ public class JobLauncher {
                                 .withImagePullPolicy("IfNotPresent")
                                 .withArgs(args.toArray(String[]::new))
                                 .addNewEnv().withName("JOB_NAME").withValue(name).endEnv()
-                                .addNewEnv().withName("DCRE_DB_URL").withValue(config.serviceDbUrl()).endEnv()
+                                .addNewEnv().withName("DCRE_DB_URL").withValue(dbUrlFor(stage)).endEnv()
                                 .addNewEnv().withName("DCRE_EXCHANGE_ROOT").withValue("/exchange").endEnv()
                                 .addAllToEnv(extraEnv)
                                 .addNewVolumeMount().withName("exchange").withMountPath("/exchange").endVolumeMount()
