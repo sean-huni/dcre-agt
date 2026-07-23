@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+        xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+        http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
+
+    <!-- SCRUM-85 (R-47, M12 piece 2): launch_intent gains a heartbeat / last-writer
+         owner stamp so AGT can detect a wedged-but-alive pod (k8s Job still Running,
+         step hung, no Failed condition, so the k8s-status orphan path never fires).
+         While a Spring Batch stage job of a pod runs, that pod writes heartbeat_at=now()
+         + owner_pod every dcre.batch.heartbeat-seconds (platform-batch HeartbeatWriter);
+         AGT stale-heartbeat orphan detection (T3) relaunches an intent whose
+         heartbeat_at fell behind dcre.agt.heartbeat-ttl-seconds.
+
+         owner_pod is a last-writer stamp, NOT a fenced lease: the write is
+         unconditional (no CAS, no fencing token), so consumers must not assume
+         mutual-exclusion semantics from it. Column-family single-writer keeps it safe
+         (same accepted pattern as the mandate-spine per-stage columns): AGT owns
+         status/attempt; the running job owns ONLY heartbeat_at + owner_pod. Both
+         columns are nullable - legacy/pre-heartbeat rows and not-yet-started intents
+         stay NULL, and a NULL heartbeat_at is "not a stale-heartbeat candidate" (the
+         existing k8s-status path still applies). -->
+    <changeSet id="008-intent-heartbeat-at" author="dcre">
+        <preConditions onFail="MARK_RAN">
+            <not><columnExists tableName="launch_intent" columnName="heartbeat_at"/></not>
+        </preConditions>
+        <addColumn tableName="launch_intent">
+            <column name="heartbeat_at" type="TIMESTAMP WITH TIME ZONE"/>
+        </addColumn>
+        <rollback>
+            <dropColumn tableName="launch_intent" columnName="heartbeat_at"/>
+        </rollback>
+    </changeSet>
+
+    <changeSet id="008-intent-heartbeat-owner-pod" author="dcre">
+        <preConditions onFail="MARK_RAN">
+            <not><columnExists tableName="launch_intent" columnName="owner_pod"/></not>
+        </preConditions>
+        <addColumn tableName="launch_intent">
+            <column name="owner_pod" type="VARCHAR(63)"/>
+        </addColumn>
+        <rollback>
+            <dropColumn tableName="launch_intent" columnName="owner_pod"/>
+        </rollback>
+    </changeSet>
+
+</databaseChangeLog>
