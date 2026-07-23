@@ -68,6 +68,41 @@ public class IntentRepo {
         }
     }
 
+    /**
+     * Write-ahead intent for a PRG IMMEDIATE report (SCRUM-90). It is BOTH
+     * arrival-scoped (arrival_id set, so the M12 orphan / stale-heartbeat sweeps
+     * recover a killed report) AND clock-shaped (run_key + durable launch_args,
+     * so a recreate rebuilds the report params, never arrival stage args). PRG is
+     * never a DAG stage, so (arrival_id, PRG) collides with no pipeline stage;
+     * the report's business identity (client, source_msg_id) is 1:1 with the
+     * arrival, so uq_intent_arrival_stage never dedups a distinct report away.
+     * ON CONFLICT DO NOTHING makes a repeated report-due scan an idempotent no-op
+     * (job_name / (stage, run_key) / (arrival_id, stage) all encode the one
+     * report). @return id, or empty when this report is already intended.
+     */
+    public Optional<UUID> insertReportIntent(final UUID arrivalId, final Stage stage, final String runKey,
+                                             final String jobName, final String launchArgs,
+                                             final String namespace) {
+        String sql = """
+                INSERT INTO launch_intent (arrival_id, stage, run_key, job_name, status, launch_args, namespace)
+                VALUES (?,?,?,?,'INTENDED',?,?)
+                ON CONFLICT DO NOTHING
+                RETURNING id""";
+        try (Connection c = ds.getConnection(); PreparedStatement p = c.prepareStatement(sql)) {
+            p.setObject(1, arrivalId);
+            p.setString(2, stage.name());
+            p.setString(3, runKey);
+            p.setString(4, jobName);
+            p.setString(5, launchArgs);
+            p.setString(6, namespace);
+            try (ResultSet r = p.executeQuery()) {
+                return r.next() ? Optional.of(r.getObject(1, UUID.class)) : Optional.empty();
+            }
+        } catch (SQLException e) {
+            throw new IllegalStateException("insertReportIntent failed", e);
+        }
+    }
+
     public void markIntentLaunched(UUID intentId, String jobUid) {
         JdbcSupport.exec(ds, "UPDATE launch_intent SET status='LAUNCHED', job_uid=? WHERE id=?", p -> {
             p.setString(1, jobUid);
@@ -223,9 +258,12 @@ public class IntentRepo {
         }
     }
 
+    /** Arrival intents for the DAG engine's intended-set. SCRUM-90: excludes the
+     *  arrival-scoped PRG IMMEDIATE report (PRG is never a DAG stage), so a late
+     *  report intent neither re-opens the DAG nor is treated as a pending stage. */
     public List<LaunchIntent> intentsForArrival(UUID arrivalId) {
         String sql = "SELECT id, arrival_id, stage, job_name, status, run_key, attempt, namespace "
-                + "FROM launch_intent WHERE arrival_id=?";
+                + "FROM launch_intent WHERE arrival_id=? AND stage <> 'PRG'";
         try (Connection c = ds.getConnection(); PreparedStatement p = c.prepareStatement(sql)) {
             p.setObject(1, arrivalId);
             try (ResultSet r = p.executeQuery()) {

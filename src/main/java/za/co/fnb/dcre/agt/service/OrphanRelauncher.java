@@ -98,9 +98,17 @@ public class OrphanRelauncher {
             // Budget exhausted: the claim consumed the final slot; record on it.
             if (outcomeRepo.insertOutcome(intent.id(), attempt, Outcome.TECH_EXHAUSTED,
                     null, "OrphanBudgetExhausted")) {
-                arrivalRepo.markDagFailed(intent.arrivalId());
-                LOG.errorf("Orphan %s exhausted %d attempts: TECH_EXHAUSTED, arrival DAG_FAILED",
-                        intent.jobName(), intent.attempt());
+                if (intent.isArrivalReport()) {
+                    // SCRUM-90: an IMMEDIATE report is downstream of DAG completion;
+                    // its exhaustion is terminal on the REPORT intent ONLY and must
+                    // never regress the parent arrival's DAG (no markDagFailed).
+                    LOG.errorf("Immediate report %s exhausted %d attempts: TECH_EXHAUSTED"
+                            + " (parent arrival DAG untouched)", intent.jobName(), intent.attempt());
+                } else {
+                    arrivalRepo.markDagFailed(intent.arrivalId());
+                    LOG.errorf("Orphan %s exhausted %d attempts: TECH_EXHAUSTED, arrival DAG_FAILED",
+                            intent.jobName(), intent.attempt());
+                }
             }
             return; // stays ABANDONED (terminal); heartbeat cleared, so never re-swept
         }
