@@ -106,6 +106,13 @@ agt:
   stage-deadline-seconds: ${AGT_STAGE_DEADLINE_SECONDS:900}
   orphan-max-attempts: ${AGT_ORPHAN_MAX_ATTEMPTS:3}
   orphan-backoff-seconds: ${AGT_ORPHAN_BACKOFF_SECONDS:60}
+  # M12/SCRUM-86 (R-47): wedged-but-alive detection. A LAUNCHED intent whose
+  # heartbeat_at fell behind this TTL is relaunched (heartbeat writes every 10s
+  # from the stage pod, so 45s ~= 4 missed beats).
+  heartbeat-ttl-seconds: ${AGT_HEARTBEAT_TTL_SECONDS:45}
+  # M12/SCRUM-87 (R-47): AGT self-liveness. The reconciler liveness probe goes
+  # DOWN if no tick within this TTL (3x the 5s reconcile interval); k8s restarts.
+  self-liveness-ttl-seconds: ${AGT_SELF_LIVENESS_TTL_SECONDS:15}
   # SCRUM-55 Task 13: Fintegrate SLA thresholds in hours (amber warn, red breach).
   sla-amber-hours: ${AGT_SLA_AMBER_HOURS:20}
   sla-red-hours: ${AGT_SLA_RED_HOURS:24}

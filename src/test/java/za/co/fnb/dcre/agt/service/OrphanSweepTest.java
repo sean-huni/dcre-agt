@@ -77,8 +77,11 @@ class OrphanSweepTest {
         assertEquals(1, attemptOf(intentId), "grace-elapsed vanish bumps the attempt (R-05 amendment)");
         assertTrue(intentRepo.lastAttemptAt(intentId).isPresent(), "relaunch stamps last_attempt_at");
         assertEquals(0, outcomeCount(intentId), "no terminal TECH_FAILED row is minted any more");
-        assertEquals(LaunchIntent.LAUNCHED, intentOf(intentId, arrivalId).status(),
-                "intent stays LAUNCHED across the relaunch");
+        // M12/SCRUM-86: the atomic claim flips LAUNCHED -> ABANDONED (write-ahead
+        // claim marker); createJob re-marks it LAUNCHED in prod, but launch is
+        // disabled in %test so it rests at the claim state.
+        assertEquals(LaunchIntent.ABANDONED, intentOf(intentId, arrivalId).status(),
+                "atomic relaunch claim leaves the intent ABANDONED until createJob re-marks LAUNCHED");
     }
 
     @Test

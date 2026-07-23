@@ -14,6 +14,7 @@ import za.co.fnb.dcre.agt.repo.OutcomeRepo;
 import io.fabric8.kubernetes.client.KubernetesClient;
 
 import java.time.Duration;
+import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -39,6 +40,15 @@ public class Reconciler {
 
     private static final Logger LOG = Logger.getLogger(Reconciler.class);
     static final Duration REAP_GRACE = Duration.ofMinutes(2);
+
+    /** Baseline for the self-liveness startup grace (M12/SCRUM-87): before the
+     *  first tick the probe measures freshness from here so boot does not flap. */
+    private final Instant startedAt = Instant.now();
+
+    /** Wall-clock of the last reconcile tick head; null until the first tick.
+     *  Read by ReconcilerLivenessCheck; volatile for cross-thread visibility
+     *  (the scheduler runs tick() on a virtual thread, the probe on another). */
+    private volatile Instant lastTickAt;
 
     @Inject
     IntentRepo intentRepo;
@@ -70,6 +80,10 @@ public class Reconciler {
     @RunOnVirtualThread
     @Scheduled(every = "5s", concurrentExecution = io.quarkus.scheduler.Scheduled.ConcurrentExecution.SKIP)
     void tick() {
+        // Recorded FIRST, before the lease/launch gates, so self-liveness tracks
+        // "the reconcile scheduler is firing" independent of leadership (a
+        // non-leader still ticks; a wedged reconciler stops ticking) (SCRUM-87).
+        lastTickAt = Instant.now();
         if (!lease.holdsLease() || !config.launchEnabled()) {
             return;
         }
@@ -83,7 +97,15 @@ public class Reconciler {
             }
         }
 
+        // Orphan relaunches (both kinds) drain within this tick before it yields.
+        // Priority ahead of new work is structural, not a same-tick barrier: new
+        // arrivals launch from a SEPARATE scheduler (DirectoryWatcher @ 2s); the
+        // orphan sweeps get their own frequent 5s loop, so a wedged/failed intent
+        // is picked up within one tick regardless of new-arrival volume. k8s-Failed
+        // sweep first, then stale-heartbeat (SCRUM-86); the shared atomic claim
+        // makes an intent flagged by both relaunch exactly once.
         orphans.sweepTechOrphans(live);
+        orphans.sweepStaleHeartbeat(live);
 
         Set<String> known = new HashSet<>(intentRepo.allIntentJobNames());
         for (String name : live.keySet()) {
@@ -138,5 +160,16 @@ public class Reconciler {
         if (created.plus(REAP_GRACE).isBefore(OffsetDateTime.now())) {
             orphans.relaunchOrExhaust(intent, null); // R-05 amendment: bounded same-identity resume
         }
+    }
+
+    /** Wall-clock of the last reconcile tick head, or null before the first tick
+     *  (self-liveness probe input, SCRUM-87). */
+    public Instant lastTickAt() {
+        return lastTickAt;
+    }
+
+    /** Baseline for the self-liveness startup grace (SCRUM-87). */
+    public Instant startedAt() {
+        return startedAt;
     }
 }
