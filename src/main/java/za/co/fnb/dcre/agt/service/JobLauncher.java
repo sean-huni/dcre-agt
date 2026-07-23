@@ -92,28 +92,29 @@ public class JobLauncher {
     }
 
     /** Create (or re-create after crash) the Job for an existing intent. The
-     *  namespace comes from the intent row (durable), never re-resolved. */
+     *  namespace comes from the intent row (durable), never re-resolved. Durable
+     *  launch args (clock windows AND SCRUM-90 arrival-scoped IMMEDIATE reports)
+     *  rebuild the SAME Job from the intent row; a DAG-stage intent has none and
+     *  rebuilds from its arrival. Driven by args presence, not arrivalId nullness:
+     *  a report intent carries BOTH an arrival_id and durable report args, and
+     *  must recreate as the report Job, never as an arrival stage Job. */
     public void createJob(UUID intentId, UUID arrivalId, Stage stage, String name, String namespace) {
-        // arrivalId == null is a clock intent: its launch args are durable on the
-        // intent row (a reconciled recreate with empty args crashed every clock
-        // job with missing identifying params; caught live 2026-07-13).
-        Job job = arrivalId == null
-                ? clockJob(name, namespace, stage, serviceImage(stage), clockArgs(intentId))
-                : serviceJob(name, namespace, stage, arrivalOf(arrivalId, name), serviceImage(stage));
-        createFromSpec(intentId, job);
+        java.util.Optional<String> durable = intentRepo.intentLaunchArgs(intentId).filter(a -> !a.isBlank());
+        if (durable.isPresent()) {
+            createFromSpec(intentId, clockJob(name, namespace, stage, serviceImage(stage),
+                    java.util.List.of(durable.get().split("\\n"))));
+            return;
+        }
+        if (arrivalId == null) {
+            throw new IllegalStateException(
+                    "intent " + intentId + " has neither durable launch args nor an arrival");
+        }
+        createFromSpec(intentId, serviceJob(name, namespace, stage, arrivalOf(arrivalId, name), serviceImage(stage)));
     }
 
     private FileArrival arrivalOf(UUID arrivalId, String context) {
         return arrivalRepo.arrivalById(arrivalId).orElseThrow(() -> new IllegalStateException(
                 "arrival " + arrivalId + " not found: cannot build Job for " + context));
-    }
-
-    private java.util.List<String> clockArgs(UUID intentId) {
-        return intentRepo.intentLaunchArgs(intentId)
-                .filter(a -> !a.isBlank())
-                .map(a -> java.util.List.of(a.split("\\n")))
-                .orElseThrow(() -> new IllegalStateException(
-                        "clock intent " + intentId + " has no durable launch args"));
     }
 
     private void createFromSpec(UUID intentId, Job job) {
@@ -198,6 +199,30 @@ public class JobLauncher {
                 intentRepo.insertClockIntent(stage, runKey, name, String.join("\n", args), namespace);
         if (intent.isEmpty()) {
             return;
+        }
+        createFromSpec(intent.get(), clockJob(name, namespace, stage, serviceImage(stage), args));
+    }
+
+    /**
+     * Arrival-scoped launch for a PRG IMMEDIATE report (SCRUM-90). Same
+     * deterministic clock name (clockJobName) and durable report args as the old
+     * launchClock path, so an in-flight FAILED PRG JobInstance resumes and the
+     * PSR file stays a single idempotent output; but the intent carries the
+     * parent's arrival_id, so the M12 orphan / stale-heartbeat sweeps recover a
+     * SIGKILLed one-shot report (a clock intent's NULL arrival_id excluded it
+     * from both sweeps, stranding a killed report forever). The Job carries
+     * JOB_NAME (clockJob), so the prg pod's HeartbeatWriter updates this intent's
+     * heartbeat_at/owner_pod and the wedged-alive path is armed too. Recreate
+     * rebuilds from durable report args (createJob), never arrival stage args.
+     */
+    public void launchArrivalReport(final Flow flow, final Stage stage, final UUID arrivalId,
+                                    final String runKey, final java.util.List<String> args) {
+        String name = clockJobName(flow, stage, runKey);
+        String namespace = flowNamespaces.namespaceOf(flow);
+        java.util.Optional<UUID> intent =
+                intentRepo.insertReportIntent(arrivalId, stage, runKey, name, String.join("\n", args), namespace);
+        if (intent.isEmpty()) {
+            return; // this report is already intended (idempotent report-due scan)
         }
         createFromSpec(intent.get(), clockJob(name, namespace, stage, serviceImage(stage), args));
     }

@@ -7,6 +7,7 @@ import jakarta.inject.Inject;
 import org.jboss.logging.Logger;
 import za.co.fnb.dcre.agt.config.AgtConfig;
 import za.co.fnb.dcre.agt.domain.Stage;
+import za.co.fnb.dcre.agt.repo.ArrivalRepo;
 import za.co.fnb.dcre.agt.repo.CollectionsReadRepo;
 import za.co.fnb.dcre.agt.repo.CollectionsReadRepo.DueParent;
 
@@ -16,7 +17,9 @@ import java.security.NoSuchAlgorithmException;
 import java.util.HashSet;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.Optional;
 import java.util.Set;
+import java.util.UUID;
 import java.util.regex.Pattern;
 
 /**
@@ -60,6 +63,9 @@ public class ReportTrigger {
 
     @Inject
     CollectionsReadRepo collections;
+
+    @Inject
+    ArrivalRepo arrivalRepo;
 
     @Inject
     JobLauncher launcher;
@@ -107,10 +113,23 @@ public class ReportTrigger {
     }
 
     private void launchImmediate(final String client, final String sourceMsgId) {
+        // SCRUM-90: resolve the parent source book's arrival so the report is
+        // launched ARRIVAL-SCOPED (the M12 sweeps recover a killed one-shot
+        // report; a clock intent's NULL arrival_id stranded it forever). Fail
+        // closed on an unresolved parent: never launch an unscoped report.
+        final Optional<UUID> arrivalId = arrivalRepo.arrivalIdForSourceMsgId(client, sourceMsgId);
+        if (arrivalId.isEmpty()) {
+            LOG.warnf("excluded stage=AGT reason=UNKNOWN_ARRIVAL client=%s parent=%s"
+                    + ": IMMEDIATE report not launched (no arrival scope, fail-closed)", client, sourceMsgId);
+            return;
+        }
         final String window = "imm-" + parentDigest(sourceMsgId);
-        LOG.infof("report-due scan: PRG IMMEDIATE for %s parent=%s window=%s", client, sourceMsgId, window);
-        // SCRUM-70: the IMMEDIATE window follows the parent client's flow (R-42 interim map).
-        launcher.launchClock(flowNamespaces.clientFlow(client), Stage.PRG, client + "-" + window, List.of(
+        LOG.infof("report-due scan: PRG IMMEDIATE for %s parent=%s window=%s arrival=%s",
+                client, sourceMsgId, window, arrivalId.get());
+        // SCRUM-70: the IMMEDIATE window follows the parent client's flow (R-42 interim map),
+        // so the job name/namespace are unchanged from the prior launchClock path.
+        launcher.launchArrivalReport(flowNamespaces.clientFlow(client), Stage.PRG, arrivalId.get(),
+                client + "-" + window, List.of(
                 "client=" + client,
                 "window=" + window,
                 "report.type=IMMEDIATE,java.lang.String,false",

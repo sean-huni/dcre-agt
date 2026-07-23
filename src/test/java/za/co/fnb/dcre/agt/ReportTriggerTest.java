@@ -12,8 +12,10 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import za.co.fnb.dcre.agt.config.AgtConfig;
+import za.co.fnb.dcre.agt.domain.ArrivalStatus;
 import za.co.fnb.dcre.agt.domain.Flow;
 import za.co.fnb.dcre.agt.domain.Stage;
+import za.co.fnb.dcre.agt.repo.ArrivalRepo;
 import za.co.fnb.dcre.agt.repo.CollectionsReadRepo;
 import za.co.fnb.dcre.agt.service.JobLauncher;
 import za.co.fnb.dcre.agt.service.LeaseService;
@@ -30,6 +32,7 @@ import java.util.HashMap;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.logging.Handler;
 import java.util.logging.Level;
@@ -55,9 +58,12 @@ import static org.mockito.Mockito.verifyNoInteractions;
  * value and Class.forName(token[1]) as the type), so parents are never joined:
  * each launch carries a single sourceMsgId and a parent-distinct window key
  * (digest of the full msgId) so JobInstances and PSR file names never collide.
- * The PRG lane's 003-reporting.xml is not on this branch yet, so the test
- * creates a minimal compatible view (contract: client, source_msg_id, reason)
- * over a seed table.
+ * SCRUM-90: the IMMEDIATE report is launched ARRIVAL-SCOPED (via
+ * launchArrivalReport) so the M12 sweeps recover a killed one-shot report; the
+ * trigger resolves the parent book's arrival by (client, source_msg_id) and
+ * fails closed when it cannot. The PRG lane's 003-reporting.xml is not on this
+ * branch yet, so the test creates a minimal compatible view (contract: client,
+ * source_msg_id, reason) over a seed table.
  */
 @QuarkusTest
 @QuarkusTestResource(CrdbTestResource.class)
@@ -85,6 +91,9 @@ class ReportTriggerTest {
     AgtConfig config;
 
     @Inject
+    ArrivalRepo arrivalRepo;
+
+    @Inject
     DataSource opsDs;
 
     @Inject
@@ -96,15 +105,20 @@ class ReportTriggerTest {
 
     private CapturingHandler warns;
 
+    /** client|sourceMsgId -> the seeded parent arrival id, for arrival-scope assertions. */
+    private final Map<String, UUID> arrivalsByKey = new HashMap<>();
+
     @BeforeEach
     void resetViewAndLease() {
         warns = new CapturingHandler();
         Logger.getLogger(ReportTrigger.class.getName()).addHandler(warns);
+        arrivalsByKey.clear();
         execCollections("CREATE TABLE IF NOT EXISTS prg_report_due_seed ("
                 + "client VARCHAR(16) NOT NULL, source_msg_id VARCHAR(35) NOT NULL, reason VARCHAR(16) NOT NULL)");
         execCollections("CREATE OR REPLACE VIEW prg_report_due AS "
                 + "SELECT client, source_msg_id, reason FROM prg_report_due_seed");
         execCollections("DELETE FROM prg_report_due_seed");
+        exec(opsDs, "DELETE FROM file_arrival");
         exec(opsDs, "UPDATE agt_lease SET expires_at = now() - INTERVAL '1 second'");
         assertTrue(lease.tryAcquire(config.holderId()), "test precondition: this instance holds the lease");
     }
@@ -116,28 +130,32 @@ class ReportTriggerTest {
 
     @Test
     void launchesOnePrgImmediatePerDueParentWithParseSafeParams() {
-        seedDue("FNBCC01", "DCRECC2026071600000001", "COMPLETE");
-        seedDue("FNBCC01", "DCRECC2026071600000002", "IDLE");
-        seedDue("FNBRF01", "DCRERF2026071600000003", "COMPLETE");
+        seedParent("FNBCC01", "DCRECC2026071600000001", "COMPLETE");
+        seedParent("FNBCC01", "DCRECC2026071600000002", "IDLE");
+        seedParent("FNBRF01", "DCRERF2026071600000003", "COMPLETE");
 
         trigger.tick();
 
         final ArgumentCaptor<Flow> flows = ArgumentCaptor.captor();
+        final ArgumentCaptor<UUID> arrivalIds = ArgumentCaptor.captor();
         final ArgumentCaptor<String> runKeys = ArgumentCaptor.captor();
         final ArgumentCaptor<List<String>> launchArgs = ArgumentCaptor.captor();
-        verify(launcher, times(3)).launchClock(flows.capture(), eq(Stage.PRG), runKeys.capture(), launchArgs.capture());
+        verify(launcher, times(3)).launchArrivalReport(
+                flows.capture(), eq(Stage.PRG), arrivalIds.capture(), runKeys.capture(), launchArgs.capture());
 
         final Map<String, List<String>> byRunKey = new HashMap<>();
         final Map<String, Flow> flowByRunKey = new HashMap<>();
+        final Map<String, UUID> arrivalByRunKey = new HashMap<>();
         for (int i = 0; i < runKeys.getAllValues().size(); i++) {
             byRunKey.put(runKeys.getAllValues().get(i), launchArgs.getAllValues().get(i));
             flowByRunKey.put(runKeys.getAllValues().get(i), flows.getAllValues().get(i));
+            arrivalByRunKey.put(runKeys.getAllValues().get(i), arrivalIds.getAllValues().get(i));
         }
         assertEquals(3, byRunKey.size(), "run keys are distinct per parent: " + byRunKey.keySet());
 
-        assertImmediateLaunch(byRunKey, "FNBCC01", "DCRECC2026071600000001");
-        assertImmediateLaunch(byRunKey, "FNBCC01", "DCRECC2026071600000002");
-        assertImmediateLaunch(byRunKey, "FNBRF01", "DCRERF2026071600000003");
+        assertImmediateLaunch(byRunKey, arrivalByRunKey, "FNBCC01", "DCRECC2026071600000001");
+        assertImmediateLaunch(byRunKey, arrivalByRunKey, "FNBCC01", "DCRECC2026071600000002");
+        assertImmediateLaunch(byRunKey, arrivalByRunKey, "FNBRF01", "DCRERF2026071600000003");
 
         // SCRUM-70: IMMEDIATE windows resolve by the parent client's flow
         // (interim R-42 pay-clients map: FNBRF01 pay, FNBCC01 collections).
@@ -155,14 +173,15 @@ class ReportTriggerTest {
         // fresh instance, and the report stays a single idempotent file. Two
         // ticks straddling an epoch-second boundary must therefore yield an
         // identical run key: pre-fix the epoch-seeded window changed every launch.
-        seedDue("FNBCC01", "DCRECC2026072300000001", "COMPLETE");
+        seedParent("FNBCC01", "DCRECC2026072300000001", "COMPLETE");
 
         trigger.tick();
         Thread.sleep(1_100L); // guarantee a wall-clock second rollover between launches
         trigger.tick();
 
         final ArgumentCaptor<String> runKeys = ArgumentCaptor.captor();
-        verify(launcher, times(2)).launchClock(any(Flow.class), eq(Stage.PRG), runKeys.capture(), anyList());
+        verify(launcher, times(2)).launchArrivalReport(
+                any(Flow.class), eq(Stage.PRG), any(UUID.class), runKeys.capture(), anyList());
         assertEquals(runKeys.getAllValues().get(0), runKeys.getAllValues().get(1),
                 "relaunch must reuse an identical IMMEDIATE window (deterministic from client+parent): "
                         + runKeys.getAllValues());
@@ -172,18 +191,20 @@ class ReportTriggerTest {
 
     @Test
     void duplicateDueRowsForOneParentLaunchOnce() {
-        seedDue("FNBCC01", "DCRECC2026071600000007", "COMPLETE");
-        seedDue("FNBCC01", "DCRECC2026071600000007", "IDLE");
+        seedParent("FNBCC01", "DCRECC2026071600000007", "COMPLETE");
+        seedDue("FNBCC01", "DCRECC2026071600000007", "IDLE"); // a second due row, same parent
         trigger.tick();
-        verify(launcher, times(1)).launchClock(any(Flow.class), eq(Stage.PRG), anyString(), anyList());
+        verify(launcher, times(1)).launchArrivalReport(
+                any(Flow.class), eq(Stage.PRG), any(UUID.class), anyString(), anyList());
     }
 
     @Test
     void runKeyStaysDnsSafeAtMaxFieldWidths() {
-        seedDue("FNBCLIENTMAX0016", "M".repeat(35), "COMPLETE");
+        seedParent("FNBCLIENTMAX0016", "M".repeat(35), "COMPLETE");
         trigger.tick();
         final ArgumentCaptor<String> runKeys = ArgumentCaptor.captor();
-        verify(launcher, times(1)).launchClock(any(Flow.class), eq(Stage.PRG), runKeys.capture(), anyList());
+        verify(launcher, times(1)).launchArrivalReport(
+                any(Flow.class), eq(Stage.PRG), any(UUID.class), runKeys.capture(), anyList());
         final String jobName = JobLauncher.clockJobName(Flow.COL, Stage.PRG, runKeys.getValue());
         assertTrue(jobName.length() <= 63, "K8s label limit: " + jobName + " (" + jobName.length() + ")");
         assertTrue(jobName.matches("[a-z0-9]([-a-z0-9]*[a-z0-9])?"), "DNS-1123: " + jobName);
@@ -194,7 +215,7 @@ class ReportTriggerTest {
         // Fail-closed guard: a comma in a view-sourced value shifts the
         // name=value,type,identifying tokens, so the parent must be excluded
         // (WARN, value sanitized then elided to 8 chars: unsafe bytes never
-        // reach the log line, CWE-117) and never reach the launcher.
+        // reach the log line, CWE-117) before any arrival lookup or launch.
         seedDue("FNBCC01", "EVIL,java.lang.Long", "COMPLETE");
 
         trigger.tick();
@@ -206,14 +227,32 @@ class ReportTriggerTest {
     }
 
     @Test
+    void unknownArrivalFailsClosedWithWarnAndNoLaunch() {
+        // SCRUM-90 fail-closed: a due parent with no resolvable source-book
+        // arrival must NOT launch an unscoped IMMEDIATE report (an unscoped
+        // clock intent is exactly what the sweeps cannot recover). No arrival is
+        // seeded for this parent.
+        seedDue("FNBCC01", "DCRECC2026072300000404", "COMPLETE");
+
+        trigger.tick();
+
+        verifyNoInteractions(launcher);
+        assertTrue(warns.lines.stream().anyMatch(w ->
+                        w.contains("reason=UNKNOWN_ARRIVAL")
+                                && w.contains("parent=DCRECC2026072300000404")),
+                "fail-closed UNKNOWN_ARRIVAL WARN, no launch: " + warns.lines);
+    }
+
+    @Test
     void validParentStillLaunchesWhenAMaliciousSiblingIsSkipped() {
-        seedDue("FNBCC01", "DCRECC2026071600000010", "COMPLETE");
+        seedParent("FNBCC01", "DCRECC2026071600000010", "COMPLETE");
         seedDue("FNBCC01", "BAD=EQUALS_SIGN", "IDLE");
 
         trigger.tick();
 
         final ArgumentCaptor<List<String>> launchArgs = ArgumentCaptor.captor();
-        verify(launcher, times(1)).launchClock(any(Flow.class), eq(Stage.PRG), anyString(), launchArgs.capture());
+        verify(launcher, times(1)).launchArrivalReport(
+                any(Flow.class), eq(Stage.PRG), any(UUID.class), anyString(), launchArgs.capture());
         assertTrue(launchArgs.getValue().contains("parents=DCRECC2026071600000010,java.lang.String,false"),
                 "only the safe parent launches: " + launchArgs.getValue());
         assertTrue(warns.lines.stream().anyMatch(w ->
@@ -238,17 +277,21 @@ class ReportTriggerTest {
 
     @Test
     void noLaunchWithoutTheLease() {
-        seedDue("FNBCC01", "DCRECC2026071600000004", "COMPLETE");
+        seedParent("FNBCC01", "DCRECC2026071600000004", "COMPLETE");
         exec(opsDs, "UPDATE agt_lease SET holder = 'other-agt', expires_at = now() + INTERVAL '120 seconds'");
         trigger.tick();
         verifyNoInteractions(launcher);
     }
 
-    private void assertImmediateLaunch(final Map<String, List<String>> byRunKey, final String client,
+    private void assertImmediateLaunch(final Map<String, List<String>> byRunKey,
+                                       final Map<String, UUID> arrivalByRunKey, final String client,
                                        final String sourceMsgId) {
         final String window = "imm-" + digest12(sourceMsgId);
-        final List<String> args = byRunKey.get(client + "-" + window);
+        final String runKey = client + "-" + window;
+        final List<String> args = byRunKey.get(runKey);
         assertNotNull(args, "one launch keyed <client>-imm-<digest12(parent)>: " + byRunKey.keySet());
+        assertEquals(arrivalsByKey.get(client + "|" + sourceMsgId), arrivalByRunKey.get(runKey),
+                "the launch is arrival-scoped to the resolved parent book");
         assertTrue(args.contains("client=" + client), args.toString());
         assertTrue(args.contains("window=" + window), args.toString());
         assertTrue(args.contains("report.type=IMMEDIATE,java.lang.String,false"), args.toString());
@@ -287,6 +330,18 @@ class ReportTriggerTest {
         } catch (NoSuchAlgorithmException e) {
             throw new IllegalStateException("SHA-256 unavailable", e);
         }
+    }
+
+    /** Seed a due row AND its matching source-book arrival (client, msgId), so
+     *  the SCRUM-90 arrival lookup resolves. Pay clients ride onhost-req-endo. */
+    private void seedParent(final String client, final String sourceMsgId, final String reason) {
+        seedDue(client, sourceMsgId, reason);
+        final String route = "FNBRF01".equals(client) ? "onhost-req-endo" : "onhost-req";
+        final UUID id = arrivalRepo.insertArrival(UUID.randomUUID(), route,
+                client + "_" + sourceMsgId + ".txt", "sha-" + client + "-" + sourceMsgId,
+                client, sourceMsgId, ArrivalStatus.DAG_COMPLETE, null,
+                "/exchange/claimed/" + client + "_" + sourceMsgId + ".txt").orElseThrow();
+        arrivalsByKey.put(client + "|" + sourceMsgId, id);
     }
 
     private void seedDue(final String client, final String sourceMsgId, final String reason) {

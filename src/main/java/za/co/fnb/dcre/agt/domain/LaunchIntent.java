@@ -23,4 +23,17 @@ public record LaunchIntent(UUID id, UUID arrivalId, Stage stage, String jobName,
     public String namespaceOr(String fallback) {
         return namespace != null ? namespace : fallback;
     }
+
+    /**
+     * SCRUM-90: an arrival-scoped PRG intent is a one-shot IMMEDIATE report, NOT
+     * a DAG stage. PRG never appears in any RouteDag, so an arrival_id + PRG row
+     * can only be an IMMEDIATE report. Arrival-scoping makes the M12 sweeps
+     * recover a killed report (a clock intent's NULL arrival_id excluded it),
+     * but the report is downstream of DAG completion: its exhaustion must never
+     * regress the parent arrival's DAG, and DAG accounting must not count it as
+     * a stage. Single source of truth for both guards.
+     */
+    public boolean isArrivalReport() {
+        return arrivalId != null && stage == Stage.PRG;
+    }
 }

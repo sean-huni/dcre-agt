@@ -166,6 +166,38 @@ public class ArrivalRepo {
         }
     }
 
+    /**
+     * The source-book arrival a PRG IMMEDIATE report is scoped to (SCRUM-90):
+     * the request-route file whose (client_token, msg_id_token) equal the
+     * report-due (client, source_msg_id). The relationship is 1:1: a source book
+     * is one non-quarantined arrival (uq_arrival_identity + content-twin dedup),
+     * and crw_emission_group's UNIQUE(client, source_msg_id, run_date) /
+     * UNIQUE(arrival_id, run_date) pin source_msg_id to that one arrival, so no
+     * distinct report ever collides on a shared arrival scope. Restricted to the
+     * source-book request routes (response legs suffix the msg id with a reply
+     * type, so they never match) and excludes QUARANTINED rows; LIMIT 1 keeps it
+     * deterministic. Empty => the caller fails closed and does not launch an
+     * unscoped report. Route literals mirror {@link #distinctClientTokens()}.
+     */
+    public Optional<UUID> arrivalIdForSourceMsgId(final String client, final String sourceMsgId) {
+        String sql = """
+                SELECT id FROM file_arrival
+                WHERE client_token=? AND msg_id_token=?
+                  AND route_id IN ('onhost-req','onhost-req-endo')
+                  AND status <> 'QUARANTINED'
+                ORDER BY arrived_at DESC
+                LIMIT 1""";
+        try (Connection c = ds.getConnection(); PreparedStatement p = c.prepareStatement(sql)) {
+            p.setString(1, client);
+            p.setString(2, sourceMsgId);
+            try (ResultSet r = p.executeQuery()) {
+                return r.next() ? Optional.of(r.getObject(1, UUID.class)) : Optional.empty();
+            }
+        } catch (SQLException e) {
+            throw new IllegalStateException("arrivalIdForSourceMsgId failed", e);
+        }
+    }
+
     public Optional<FileArrival> arrivalById(UUID id) {
         String sql = "SELECT id, route_id, physical_filename, payload_sha256, client_token, msg_id_token,"
                 + " status, quarantine_reason, claimed_path FROM file_arrival WHERE id=?";

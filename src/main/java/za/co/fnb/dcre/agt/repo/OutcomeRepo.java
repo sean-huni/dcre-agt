@@ -51,12 +51,15 @@ public class OutcomeRepo {
         }
     }
 
-    /** stage -> outcome for one arrival; reads ONLY each intent's CURRENT attempt (OrphanSweeper). */
+    /** stage -> outcome for one arrival; reads ONLY each intent's CURRENT attempt
+     *  (OrphanSweeper). SCRUM-90: excludes the arrival-scoped PRG IMMEDIATE report
+     *  (stage='PRG' under an arrival) - PRG is never a DAG stage, so the report is
+     *  never counted in DAG accounting (no double-count, no spurious terminal flip). */
     public Map<Stage, Outcome> outcomesForArrival(UUID arrivalId) {
         String sql = """
                 SELECT i.stage, o.outcome FROM launch_intent i
                 JOIN stage_outcome o ON o.intent_id = i.id AND o.attempt = i.attempt
-                WHERE i.arrival_id=?""";
+                WHERE i.arrival_id=? AND i.stage <> 'PRG'""";
         try (Connection c = ds.getConnection(); PreparedStatement p = c.prepareStatement(sql)) {
             p.setObject(1, arrivalId);
             try (ResultSet r = p.executeQuery()) {
