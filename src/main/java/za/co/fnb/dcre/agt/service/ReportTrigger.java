@@ -13,7 +13,6 @@ import za.co.fnb.dcre.agt.repo.CollectionsReadRepo.DueParent;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
-import java.time.Instant;
 import java.util.HashSet;
 import java.util.HexFormat;
 import java.util.List;
@@ -29,12 +28,16 @@ import java.util.regex.Pattern;
  * crash-loops the PRG launch (agt-12 review blocker). View-sourced client and
  * sourceMsgId are additionally validated fail-closed against SAFE_TOKEN before
  * use: a violating parent is excluded with an UNSAFE_TOKEN WARN, never
- * launched. The window key embeds a
- * digest of the FULL sourceMsgId so same-client same-second parents get
- * distinct JobInstances and distinct PSR file names, and the K8s job name
- * stays under the 63-char label limit even at Max35 msgIds. Level-triggered
- * like PrgScheduler; repeated scans of a still-due parent mint distinct window
- * keys, and PRG's delivery-ledger guard turns the extra runs into no-ops.
+ * launched. The window key is a deterministic
+ * digest of the FULL sourceMsgId so distinct same-client parents get distinct
+ * JobInstances and distinct PSR file names, and the K8s job name stays under
+ * the 63-char label limit even at Max35 msgIds. SCRUM-90: the window carries NO
+ * launch epoch, so it is stable per (client, parent): a relaunch of a killed
+ * PRG run resumes the same FAILED JobInstance (Spring Batch restart) and the
+ * <client>_PSR_<window>.txt output stays a single file (prg_report
+ * UNIQUE(file_name)). Level-triggered like PrgScheduler; repeated scans of a
+ * still-due parent mint the SAME window key, and PRG's delivery-ledger guard
+ * plus the already-complete JobInstance turn the extra runs into no-ops.
  */
 @ApplicationScoped
 public class ReportTrigger {
@@ -75,13 +78,12 @@ public class ReportTrigger {
         if (due.isEmpty()) {
             return;
         }
-        final long epochSec = Instant.now().getEpochSecond();
         final Set<String> launched = new HashSet<>();
         for (final DueParent parent : due) {
             if (launched.add(parent.client() + "|" + parent.sourceMsgId())
                     && safe("client", parent.client())
                     && safe("sourceMsgId", parent.sourceMsgId())) {
-                launchImmediate(parent.client(), parent.sourceMsgId(), epochSec);
+                launchImmediate(parent.client(), parent.sourceMsgId());
             }
         }
     }
@@ -104,8 +106,8 @@ public class ReportTrigger {
         return sanitized.length() <= 8 ? sanitized : sanitized.substring(0, 8);
     }
 
-    private void launchImmediate(final String client, final String sourceMsgId, final long epochSec) {
-        final String window = "imm-" + epochSec + "-" + parentDigest(sourceMsgId);
+    private void launchImmediate(final String client, final String sourceMsgId) {
+        final String window = "imm-" + parentDigest(sourceMsgId);
         LOG.infof("report-due scan: PRG IMMEDIATE for %s parent=%s window=%s", client, sourceMsgId, window);
         // SCRUM-70: the IMMEDIATE window follows the parent client's flow (R-42 interim map).
         launcher.launchClock(flowNamespaces.clientFlow(client), Stage.PRG, client + "-" + window, List.of(
@@ -117,9 +119,10 @@ public class ReportTrigger {
 
     /**
      * Deterministic 12-hex-char digest of the full sourceMsgId: every AGT
-     * incarnation computes the same run key for the same (client, parent,
-     * epoch) tuple, all 35 msgId chars contribute (no truncation collisions),
-     * and the derived K8s job name stays DNS-1123 safe.
+     * incarnation computes the same run key for the same (client, parent)
+     * tuple, so a relaunch resumes the prior JobInstance and emits a single
+     * PSR file (SCRUM-90: no epoch in the key). All 35 msgId chars contribute
+     * (no truncation collisions), and the derived K8s job name stays DNS-1123 safe.
      */
     static String parentDigest(final String sourceMsgId) {
         try {

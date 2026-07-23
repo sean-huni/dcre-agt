@@ -26,7 +26,6 @@ import java.security.NoSuchAlgorithmException;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
-import java.time.Instant;
 import java.util.HashMap;
 import java.util.HexFormat;
 import java.util.List;
@@ -121,9 +120,7 @@ class ReportTriggerTest {
         seedDue("FNBCC01", "DCRECC2026071600000002", "IDLE");
         seedDue("FNBRF01", "DCRERF2026071600000003", "COMPLETE");
 
-        final long before = Instant.now().getEpochSecond();
         trigger.tick();
-        final long after = Instant.now().getEpochSecond();
 
         final ArgumentCaptor<Flow> flows = ArgumentCaptor.captor();
         final ArgumentCaptor<String> runKeys = ArgumentCaptor.captor();
@@ -137,17 +134,40 @@ class ReportTriggerTest {
             flowByRunKey.put(runKeys.getAllValues().get(i), flows.getAllValues().get(i));
         }
         assertEquals(3, byRunKey.size(), "run keys are distinct per parent: " + byRunKey.keySet());
-        final long epoch = epochOf(runKeys.getAllValues().get(0), before, after);
 
-        assertImmediateLaunch(byRunKey, "FNBCC01", "DCRECC2026071600000001", epoch);
-        assertImmediateLaunch(byRunKey, "FNBCC01", "DCRECC2026071600000002", epoch);
-        assertImmediateLaunch(byRunKey, "FNBRF01", "DCRERF2026071600000003", epoch);
+        assertImmediateLaunch(byRunKey, "FNBCC01", "DCRECC2026071600000001");
+        assertImmediateLaunch(byRunKey, "FNBCC01", "DCRECC2026071600000002");
+        assertImmediateLaunch(byRunKey, "FNBRF01", "DCRERF2026071600000003");
 
         // SCRUM-70: IMMEDIATE windows resolve by the parent client's flow
         // (interim R-42 pay-clients map: FNBRF01 pay, FNBCC01 collections).
         flowByRunKey.forEach((key, flow) -> assertEquals(
                 key.startsWith("FNBRF01-") ? Flow.PAY : Flow.COL, flow,
                 "client flow routing for " + key));
+    }
+
+    @Test
+    void immediateWindowIsDeterministicAcrossRelaunches() throws InterruptedException {
+        // SCRUM-90: the IMMEDIATE window IS the Spring Batch identifying param
+        // and drives the <client>_PSR_<window>.txt output name (prg_report
+        // UNIQUE(file_name)). A relaunch of the SAME (client, parent) must mint
+        // the SAME window so a FAILED PRG instance RESUMES instead of churning a
+        // fresh instance, and the report stays a single idempotent file. Two
+        // ticks straddling an epoch-second boundary must therefore yield an
+        // identical run key: pre-fix the epoch-seeded window changed every launch.
+        seedDue("FNBCC01", "DCRECC2026072300000001", "COMPLETE");
+
+        trigger.tick();
+        Thread.sleep(1_100L); // guarantee a wall-clock second rollover between launches
+        trigger.tick();
+
+        final ArgumentCaptor<String> runKeys = ArgumentCaptor.captor();
+        verify(launcher, times(2)).launchClock(any(Flow.class), eq(Stage.PRG), runKeys.capture(), anyList());
+        assertEquals(runKeys.getAllValues().get(0), runKeys.getAllValues().get(1),
+                "relaunch must reuse an identical IMMEDIATE window (deterministic from client+parent): "
+                        + runKeys.getAllValues());
+        assertEquals("FNBCC01-imm-" + digest12("DCRECC2026072300000001"), runKeys.getAllValues().get(0),
+                "window derives only from (client, parent), never wall-clock time");
     }
 
     @Test
@@ -225,10 +245,10 @@ class ReportTriggerTest {
     }
 
     private void assertImmediateLaunch(final Map<String, List<String>> byRunKey, final String client,
-                                       final String sourceMsgId, final long epoch) {
-        final String window = "imm-" + epoch + "-" + digest12(sourceMsgId);
+                                       final String sourceMsgId) {
+        final String window = "imm-" + digest12(sourceMsgId);
         final List<String> args = byRunKey.get(client + "-" + window);
-        assertNotNull(args, "one launch keyed <client>-imm-<epochSec>-<digest12(parent)>: " + byRunKey.keySet());
+        assertNotNull(args, "one launch keyed <client>-imm-<digest12(parent)>: " + byRunKey.keySet());
         assertTrue(args.contains("client=" + client), args.toString());
         assertTrue(args.contains("window=" + window), args.toString());
         assertTrue(args.contains("report.type=IMMEDIATE,java.lang.String,false"), args.toString());
@@ -267,16 +287,6 @@ class ReportTriggerTest {
         } catch (NoSuchAlgorithmException e) {
             throw new IllegalStateException("SHA-256 unavailable", e);
         }
-    }
-
-    private long epochOf(final String runKey, final long before, final long after) {
-        final int imm = runKey.indexOf("-imm-");
-        assertTrue(imm > 0, "run key shape <client>-imm-<epochSec>-<digest12>: " + runKey);
-        final String tail = runKey.substring(imm + "-imm-".length());
-        final long epoch = Long.parseLong(tail.substring(0, tail.indexOf('-')));
-        assertTrue(epoch >= before && epoch <= after,
-                "window key derives from the scan epoch: " + runKey + " not in [" + before + "," + after + "]");
-        return epoch;
     }
 
     private void seedDue(final String client, final String sourceMsgId, final String reason) {
