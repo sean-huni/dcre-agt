@@ -218,6 +218,36 @@ class NamespaceRoutingTest {
     }
 
     @Test
+    void launchedJobsCarryTheAgtOpsDbUrlEnvOnBothServiceAndClockPaths() {
+        // M12/SCRUM-88 (R-47): every launched stage pod gets the agt_ops URL so
+        // the platform-batch heartbeat writer (T2) can reach agt_ops. FQDN like
+        // the man url (stage pods run in the flow namespaces where the short
+        // `crdb` name does not resolve) and identical for all flows; user = root.
+        String agtOps = "jdbc:postgresql://crdb.dcre.svc.cluster.local:26257/agt_ops?sslmode=disable";
+
+        // service Job path (JobLauncher.serviceJob)
+        UUID arrivalId = insertArrival("onhost-req", "FNBCC01");
+        launcher.launch(arrivalId, Stage.CRR);
+        Job svcJob = k8s.batch().v1().jobs().inNamespace("dcre-col")
+                .withName(JobLauncher.jobName(za.co.fnb.dcre.agt.domain.Flow.COL, Stage.CRR, arrivalId)).get();
+        assertNotNull(svcJob, "CRR service job created in dcre-col");
+        assertEquals(agtOps, envOf(svcJob, "DCRE_AGTOPS_DB_URL"),
+                "service job carries the agt_ops FQDN url, got " + envOf(svcJob, "DCRE_AGTOPS_DB_URL"));
+        assertEquals("root", envOf(svcJob, "DCRE_AGTOPS_DB_USER"));
+
+        // clock Job path (JobLauncher.clockJob)
+        String runKey = "agtops-" + suffix();
+        launcher.launchClock(za.co.fnb.dcre.agt.domain.Flow.COL, Stage.PRG, runKey,
+                java.util.List.of("client=FNBCC01", "window=" + runKey));
+        Job clockJob = k8s.batch().v1().jobs().inNamespace("dcre-col")
+                .withName(JobLauncher.clockJobName(za.co.fnb.dcre.agt.domain.Flow.COL, Stage.PRG, runKey)).get();
+        assertNotNull(clockJob, "PRG clock job created in dcre-col");
+        assertEquals(agtOps, envOf(clockJob, "DCRE_AGTOPS_DB_URL"),
+                "clock job carries the agt_ops FQDN url, got " + envOf(clockJob, "DCRE_AGTOPS_DB_URL"));
+        assertEquals("root", envOf(clockJob, "DCRE_AGTOPS_DB_USER"));
+    }
+
+    @Test
     void mrgSchedulerIsLaunchDisabledWithoutAnImage() {
         // M10/SCRUM-79: no agt.mrg-image in this profile -> the scheduler skips
         // entirely. Delta assertion: DB state is shared across test classes.
@@ -309,13 +339,19 @@ class NamespaceRoutingTest {
                 "/exchange/claimed/" + client + "_NRT" + tag + ".txt").orElseThrow();
     }
 
-    /** DCRE_DB_URL env value of the Job's stage container (B2 seam). */
-    static String dbUrlOf(Job job) {
+    /** Value of a named env var on the Job's stage container (0th). */
+    static String envOf(Job job, String name) {
         return job.getSpec().getTemplate().getSpec().getContainers().get(0).getEnv().stream()
-                .filter(e -> "DCRE_DB_URL".equals(e.getName()))
+                .filter(e -> name.equals(e.getName()))
                 .map(io.fabric8.kubernetes.api.model.EnvVar::getValue)
                 .findFirst()
-                .orElseThrow(() -> new IllegalStateException("no DCRE_DB_URL env on " + job.getMetadata().getName()));
+                .orElseThrow(() -> new IllegalStateException(
+                        "no " + name + " env on " + job.getMetadata().getName()));
+    }
+
+    /** DCRE_DB_URL env value of the Job's stage container (B2 seam). */
+    static String dbUrlOf(Job job) {
+        return envOf(job, "DCRE_DB_URL");
     }
 
     private long countIntentsLike(String jobNamePattern) {

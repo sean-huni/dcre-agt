@@ -126,6 +126,20 @@ public interface AgtConfig {
     @WithDefault("jdbc:postgresql://crdb.dcre.svc.cluster.local:26257/dcre_man?sslmode=disable")
     String manServiceDbUrl();
 
+    /** JDBC url every launched stage Job gets so the platform-batch heartbeat
+     *  writer (M12/SCRUM-88, R-47, T2) can reach agt_ops from the stage pod.
+     *  FQDN for the same reason as manServiceDbUrl: stage pods run in the flow
+     *  namespaces where the short `crdb` name does not resolve. Identical for
+     *  every flow (agt_ops is not sharded by flow), so it is not stage-keyed. */
+    @WithDefault("jdbc:postgresql://crdb.dcre.svc.cluster.local:26257/agt_ops?sslmode=disable")
+    String agtopsDbUrl();
+
+    /** agt_ops datasource user handed to the stage pod's heartbeat writer (dev
+     *  cluster = root). The password stays the blank datasource default; passing
+     *  the URL + user is sufficient for dev and forward-compat with a tenant role. */
+    @WithDefault("root")
+    String agtopsDbUser();
+
     /** Stage-pod memory request. Default matches the pre-load-test sizing;
      *  large-copybook runs (300k tx) need more (found live 2026-07-14: CTV OOM
      *  at 768Mi across partition workers). */
