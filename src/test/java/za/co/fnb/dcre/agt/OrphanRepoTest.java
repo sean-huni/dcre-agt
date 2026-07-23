@@ -54,7 +54,8 @@ class OrphanRepoTest {
         intentRepo.markIntentLaunched(intentId, "uid-orph1");
 
         assertTrue(outcomeRepo.insertOutcome(intentId, 0, Outcome.TECH_FAILED, 5, "Failed/Test"));
-        assertEquals(1, intentRepo.beginRelaunchAttempt(intentId));
+        // Bump the attempt through the live seam the production path uses.
+        assertEquals(1, intentRepo.claimForRelaunch(intentId).orElseThrow());
         assertTrue(intentRepo.lastAttemptAt(intentId).isPresent());
         // per-attempt insert-once: attempt 0 replay no-op, attempt 1 fresh row ok
         assertFalse(outcomeRepo.insertOutcome(intentId, 0, Outcome.TECH_FAILED, 5, "Failed/Test"));

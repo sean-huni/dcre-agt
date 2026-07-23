@@ -75,6 +75,25 @@ public class IntentRepo {
         });
     }
 
+    /**
+     * Re-adopt an ABANDONED intent onto its STILL-LIVE Job (M12/SCRUM-86): the
+     * wedged-alive crash-window recovery. A relaunch that crashed after the
+     * atomic claim (heartbeat_at nulled) but before the delete+recreate leaves
+     * the old wedged Job running; the reconciler adopts it rather than recreate,
+     * and RE-ARMS the stale-heartbeat clock (heartbeat_at = now()) so a pod that
+     * is still wedged re-goes-stale within one TTL instead of dropping to the
+     * activeDeadlineSeconds path. Distinct from markIntentLaunched precisely
+     * because the latter must NOT set a heartbeat on a fresh INTENDED promote (a
+     * slow-but-healthy boot would be false-flagged before its first real beat).
+     */
+    public void reAdoptWithHeartbeat(final UUID intentId, final String jobUid) {
+        JdbcSupport.exec(ds, "UPDATE launch_intent SET status='LAUNCHED', job_uid=?, "
+                + "heartbeat_at=now() WHERE id=?", p -> {
+            p.setString(1, jobUid);
+            p.setObject(2, intentId);
+        });
+    }
+
     /** Durable launch args of a clock intent; the Reconciler recreates from these. */
     public Optional<String> intentLaunchArgs(UUID intentId) {
         try (Connection c = ds.getConnection();
@@ -113,21 +132,6 @@ public class IntentRepo {
         }
     }
 
-    /** New attempt number after bump; stamps last_attempt_at (OrphanSweeper bookkeeping). */
-    public int beginRelaunchAttempt(final UUID intentId) {
-        String sql = "UPDATE launch_intent SET attempt = attempt + 1, last_attempt_at = now() "
-                + "WHERE id=? RETURNING attempt";
-        try (Connection c = ds.getConnection(); PreparedStatement p = c.prepareStatement(sql)) {
-            p.setObject(1, intentId);
-            try (ResultSet r = p.executeQuery()) {
-                r.next();
-                return r.getInt(1);
-            }
-        } catch (SQLException e) {
-            throw new IllegalStateException("beginRelaunchAttempt failed", e);
-        }
-    }
-
     public Optional<java.time.OffsetDateTime> lastAttemptAt(final UUID intentId) {
         try (Connection c = ds.getConnection();
              PreparedStatement p = c.prepareStatement("SELECT last_attempt_at FROM launch_intent WHERE id=?")) {
@@ -159,6 +163,63 @@ public class IntentRepo {
             return out;
         } catch (SQLException e) {
             throw new IllegalStateException("launchedArrivalIntentsWithTechCurrentAttempt failed", e);
+        }
+    }
+
+    /**
+     * Wedged-but-alive worklist (M12/SCRUM-86, R-47): LAUNCHED arrival intents
+     * whose heartbeat fell behind the TTL while the k8s Job is (or looks) still
+     * Running, so the Failed-condition path never fires. A NULL heartbeat_at is
+     * explicitly NOT stale: a never-heartbeated job (pre-migration, local, or
+     * one just claimed for relaunch) stays on the k8s-status path, never here.
+     * The cutoff is evaluated server-side against the DB clock that stamps
+     * heartbeat_at, so AGT/CRDB clock skew cannot prematurely flag a live job.
+     */
+    public List<LaunchIntent> launchedArrivalIntentsWithStaleHeartbeat(final long ttlSeconds) {
+        String sql = "SELECT id, arrival_id, stage, job_name, status, run_key, attempt, namespace"
+                + " FROM launch_intent"
+                + " WHERE status='" + LaunchIntent.LAUNCHED + "' AND arrival_id IS NOT NULL"
+                + "   AND heartbeat_at IS NOT NULL"
+                + "   AND heartbeat_at < now() - (INTERVAL '1 second' * ?)";
+        try (Connection c = ds.getConnection(); PreparedStatement p = c.prepareStatement(sql)) {
+            p.setLong(1, ttlSeconds);
+            try (ResultSet r = p.executeQuery()) {
+                List<LaunchIntent> out = new ArrayList<>();
+                while (r.next()) {
+                    out.add(map(r));
+                }
+                return out;
+            }
+        } catch (SQLException e) {
+            throw new IllegalStateException("launchedArrivalIntentsWithStaleHeartbeat failed", e);
+        }
+    }
+
+    /**
+     * Single atomic relaunch claim shared by BOTH orphan paths (k8s-Failed and
+     * stale-heartbeat) so one intent is never double-relaunched within a tick or
+     * across incarnations (M12/SCRUM-86, R-47). It flips LAUNCHED -> ABANDONED
+     * (write-ahead claim marker: the guard makes a concurrent second claim miss),
+     * consumes an attempt slot, stamps last_attempt_at, and clears heartbeat_at
+     * so the just-claimed intent is no longer a stale-heartbeat candidate even
+     * after the relaunching pod re-marks it LAUNCHED (the new incarnation
+     * re-heartbeats). 0 rows returned = another sweep/incarnation already claimed
+     * it this tick.
+     * @return the new attempt number, or empty when the claim was lost.
+     */
+    public Optional<Integer> claimForRelaunch(final UUID intentId) {
+        String sql = "UPDATE launch_intent"
+                + " SET status='" + LaunchIntent.ABANDONED + "', attempt = attempt + 1,"
+                + "     last_attempt_at = now(), heartbeat_at = NULL"
+                + " WHERE id = ? AND status = '" + LaunchIntent.LAUNCHED + "'"
+                + " RETURNING attempt";
+        try (Connection c = ds.getConnection(); PreparedStatement p = c.prepareStatement(sql)) {
+            p.setObject(1, intentId);
+            try (ResultSet r = p.executeQuery()) {
+                return r.next() ? Optional.of(r.getInt(1)) : Optional.empty();
+            }
+        } catch (SQLException e) {
+            throw new IllegalStateException("claimForRelaunch failed", e);
         }
     }
 

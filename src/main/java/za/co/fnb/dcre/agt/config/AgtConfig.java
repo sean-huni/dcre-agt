@@ -158,4 +158,24 @@ public interface AgtConfig {
     /** Minimum seconds between relaunch attempts of one intent. */
     @WithDefault("60")
     long orphanBackoffSeconds();
+
+    /** Stale-heartbeat TTL (M12/SCRUM-86, R-47): a LAUNCHED arrival intent whose
+     *  heartbeat_at fell behind this many seconds is a wedged-but-alive orphan
+     *  (k8s Job still Running, step hung, no Failed condition). The stage pod
+     *  heartbeats every 10s (platform-batch HeartbeatWriter, T2), so the default
+     *  45s is ~4 missed beats before AGT relaunches. env AGT_HEARTBEAT_TTL_SECONDS.
+     *  NOTE: the plan labels this dcre.agt.heartbeat-ttl-seconds; the actual
+     *  binding is agt.heartbeat-ttl-seconds (this ConfigMapping prefix), which is
+     *  what the specified env var AGT_HEARTBEAT_TTL_SECONDS maps to and matches
+     *  every other injected AgtConfig knob (orphan-max-attempts, ...). */
+    @WithDefault("45")
+    long heartbeatTtlSeconds();
+
+    /** AGT self-liveness TTL (M12/SCRUM-87, R-47): the reconciler liveness probe
+     *  reports DOWN when the reconcile scheduler has not ticked within this many
+     *  seconds; k8s then restarts the wedged AGT pod. Default 15s = 3x the 5s
+     *  reconcile interval. env AGT_SELF_LIVENESS_TTL_SECONDS (binds
+     *  agt.self-liveness-ttl-seconds; see heartbeatTtlSeconds note on the prefix). */
+    @WithDefault("15")
+    long selfLivenessTtlSeconds();
 }

@@ -49,13 +49,29 @@ public class OrphanRelauncher {
     @Inject
     KubernetesClient k8s;
 
-    /** OrphanSweeper (spec 2026-07-14): current attempt ended TECH -> bounded relaunch. */
+    /** OrphanSweeper (spec 2026-07-14): current attempt ended TECH -> bounded relaunch.
+     *  The k8s-Failed path: a Failed Job condition minted a TECH_FAILED outcome. */
     void sweepTechOrphans(final Map<String, Job> live) {
-        for (LaunchIntent intent : intentRepo.launchedArrivalIntentsWithTechCurrentAttempt()) {
+        sweep(intentRepo.launchedArrivalIntentsWithTechCurrentAttempt(), live, "orphan");
+    }
+
+    /** Stale-heartbeat sweep (M12/SCRUM-86, R-47): the wedged-but-alive path. A
+     *  LAUNCHED intent whose heartbeat fell behind the TTL is relaunched through
+     *  the SAME relaunchOrExhaust/claim machinery as the k8s-Failed path, so an
+     *  intent that is both k8s-Failed and stale-heartbeat is relaunched exactly
+     *  once (the atomic claim clears heartbeat_at, dropping it from this sweep). */
+    void sweepStaleHeartbeat(final Map<String, Job> live) {
+        sweep(intentRepo.launchedArrivalIntentsWithStaleHeartbeat(config.heartbeatTtlSeconds()),
+                live, "stale-heartbeat sweep");
+    }
+
+    private void sweep(final Iterable<LaunchIntent> worklist, final Map<String, Job> live,
+                       final String label) {
+        for (LaunchIntent intent : worklist) {
             try {
                 relaunchOrExhaust(intent, live.get(intent.jobName()));
             } catch (Exception e) {
-                LOG.warnf("orphan sweep %s failed: %s", intent.jobName(), e.getMessage());
+                LOG.warnf("%s %s failed: %s", label, intent.jobName(), e.getMessage());
             }
         }
     }
@@ -67,26 +83,34 @@ public class OrphanRelauncher {
         Optional<OffsetDateTime> last = intentRepo.lastAttemptAt(intent.id());
         if (last.isPresent() && last.get()
                 .plusSeconds(config.orphanBackoffSeconds()).isAfter(OffsetDateTime.now())) {
-            return; // backoff window
+            return; // backoff window (pre-check: never consume an attempt while throttled)
         }
+        // Single atomic claim shared by both orphan paths: LAUNCHED -> ABANDONED,
+        // consume an attempt slot, clear heartbeat. Empty => another sweep or
+        // incarnation already claimed this intent this tick, so skip (no
+        // double-relaunch, no double attempt bump).
+        Optional<Integer> claimed = intentRepo.claimForRelaunch(intent.id());
+        if (claimed.isEmpty()) {
+            return;
+        }
+        int attempt = claimed.get();
         if (intent.attempt() >= config.orphanMaxAttempts()) {
-            int finalAttempt = intentRepo.beginRelaunchAttempt(intent.id());
-            if (outcomeRepo.insertOutcome(intent.id(), finalAttempt, Outcome.TECH_EXHAUSTED,
+            // Budget exhausted: the claim consumed the final slot; record on it.
+            if (outcomeRepo.insertOutcome(intent.id(), attempt, Outcome.TECH_EXHAUSTED,
                     null, "OrphanBudgetExhausted")) {
                 arrivalRepo.markDagFailed(intent.arrivalId());
                 LOG.errorf("Orphan %s exhausted %d attempts: TECH_EXHAUSTED, arrival DAG_FAILED",
                         intent.jobName(), intent.attempt());
             }
-            return;
+            return; // stays ABANDONED (terminal); heartbeat cleared, so never re-swept
         }
         if (deadJob != null) {
             k8s.batch().v1().jobs().inNamespace(intent.namespaceOr(config.namespace()))
-                    .withName(intent.jobName()).delete(); // clear Failed object before same-name create
+                    .withName(intent.jobName()).delete(); // clear the object before same-name create
         }
-        int attempt = intentRepo.beginRelaunchAttempt(intent.id());
         LOG.warnf("Orphan %s: relaunch attempt %d/%d (same identity, Batch resumes from last commit)",
                 intent.jobName(), attempt, config.orphanMaxAttempts());
         launcher.createJob(intent.id(), intent.arrivalId(), intent.stage(), intent.jobName(),
-                intent.namespaceOr(config.namespace()));
+                intent.namespaceOr(config.namespace())); // re-marks the intent LAUNCHED
     }
 }

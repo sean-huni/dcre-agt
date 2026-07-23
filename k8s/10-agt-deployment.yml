@@ -66,6 +66,29 @@ spec:
               port: 8080
             initialDelaySeconds: 5
             periodSeconds: 5
+          # M12/SCRUM-87 (R-47): startupProbe decouples cold-boot latency from the
+          # liveness deadline. While it is still failing, k8s runs NEITHER the
+          # liveness nor the readiness probe, so a slow Liquibase-on-CRDB migration
+          # (budgeted up to 30 x 10s = 5 min here) cannot be liveness-killed into a
+          # crashloop. Once it passes, the livenessProbe below takes over.
+          startupProbe:
+            httpGet:
+              path: /q/health/live
+              port: 8080
+            periodSeconds: 10
+            failureThreshold: 30
+          # AGT self-liveness. ReconcilerLivenessCheck goes DOWN when the reconcile
+          # scheduler has not ticked within AGT_SELF_LIVENESS_TTL_SECONDS (default
+          # 15s); k8s restarts the wedged pod and the lease-CAS re-acquires the
+          # single-writer role. Only a BOOTED-then-wedged AGT trips this (startup
+          # gates it), so initialDelaySeconds is 0; 3 x 10s = wedged ~30s -> restart.
+          livenessProbe:
+            httpGet:
+              path: /q/health/live
+              port: 8080
+            initialDelaySeconds: 0
+            periodSeconds: 10
+            failureThreshold: 3
           resources:
             requests:
               cpu: 250m
