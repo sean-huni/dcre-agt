@@ -44,6 +44,14 @@ public class JobLauncher {
     static final java.util.Set<Stage> RESPONDERS =
             java.util.EnumSet.of(Stage.CIR, Stage.MIR);
 
+    /** M10 mandates stages persist in dcre_man (B2, SCRUM-79 review): the
+     *  DCRE_DB_URL env follows the stage's flow family. Stage-keyed so a
+     *  reconciled re-create (which has only the intent row) resolves the same
+     *  URL; COL/PAY stages keep dcre_col unchanged. */
+    static final java.util.Set<Stage> MAN_STAGES = java.util.EnumSet.of(
+            Stage.MRR, Stage.MRV, Stage.MAF, Stage.MIS, Stage.MIR,
+            Stage.MRW, Stage.MAR, Stage.MSR, Stage.MRG);
+
     @Inject
     IntentRepo intentRepo;
 
@@ -131,6 +139,11 @@ public class JobLauncher {
         intentRepo.markIntentLaunched(intentId, uid);
     }
 
+    /** DB URL for a stage's Job env: man stages get dcre_man, all else dcre_col (B2). */
+    private String dbUrlFor(Stage stage) {
+        return MAN_STAGES.contains(stage) ? config.manServiceDbUrl() : config.serviceDbUrl();
+    }
+
     /** Image for a stage; every stage is a real service since M5 (SCRUM-33:
      *  stub deleted), so a missing image is a misconfiguration, never a fallback. */
     private String serviceImage(Stage stage) {
@@ -212,7 +225,7 @@ public class JobLauncher {
                                 .withImagePullPolicy("IfNotPresent")
                                 .withArgs(args.toArray(String[]::new))
                                 .addNewEnv().withName("JOB_NAME").withValue(name).endEnv()
-                                .addNewEnv().withName("DCRE_DB_URL").withValue(config.serviceDbUrl()).endEnv()
+                                .addNewEnv().withName("DCRE_DB_URL").withValue(dbUrlFor(stage)).endEnv()
                                 .addNewEnv().withName("DCRE_EXCHANGE_ROOT").withValue("/exchange").endEnv()
                                 .addNewVolumeMount().withName("exchange").withMountPath("/exchange").endVolumeMount()
                                 .withNewResources()
@@ -347,7 +360,7 @@ public class JobLauncher {
                                 .withImagePullPolicy("IfNotPresent")
                                 .withArgs(args.toArray(String[]::new))
                                 .addNewEnv().withName("JOB_NAME").withValue(name).endEnv()
-                                .addNewEnv().withName("DCRE_DB_URL").withValue(config.serviceDbUrl()).endEnv()
+                                .addNewEnv().withName("DCRE_DB_URL").withValue(dbUrlFor(stage)).endEnv()
                                 .addNewEnv().withName("DCRE_EXCHANGE_ROOT").withValue("/exchange").endEnv()
                                 .addAllToEnv(extraEnv)
                                 .addNewVolumeMount().withName("exchange").withMountPath("/exchange").endVolumeMount()

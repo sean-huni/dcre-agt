@@ -98,6 +98,9 @@ agt:
   # pods in the FLOW namespaces (dcre-col/pay/man); `crdb` only resolves inside
   # the control namespace where the Service lives.
   service-db-url: ${AGT_SERVICE_DB_URL:jdbc:postgresql://crdb.dcre.svc.cluster.local:26257/dcre_col?sslmode=disable}
+  # B2 (SCRUM-79 review): M10 mandates stage Jobs persist in dcre_man; the DB
+  # URL follows the stage's flow family (JobLauncher), never a shared default.
+  man-service-db-url: ${AGT_MAN_SERVICE_DB_URL:jdbc:postgresql://crdb.dcre.svc.cluster.local:26257/dcre_man?sslmode=disable}
   stage-memory-request: ${AGT_STAGE_MEMORY_REQUEST:512Mi}
   stage-memory-limit: ${AGT_STAGE_MEMORY_LIMIT:768Mi}
   stage-deadline-seconds: ${AGT_STAGE_DEADLINE_SECONDS:900}

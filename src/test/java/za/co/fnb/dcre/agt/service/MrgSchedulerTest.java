@@ -4,6 +4,8 @@ import io.quarkus.test.common.QuarkusTestResource;
 import io.quarkus.test.junit.QuarkusTest;
 import io.quarkus.test.junit.QuarkusTestProfile;
 import io.quarkus.test.junit.TestProfile;
+import io.quarkus.test.kubernetes.client.KubernetesServer;
+import io.quarkus.test.kubernetes.client.KubernetesTestServer;
 import io.quarkus.test.kubernetes.client.WithKubernetesTestServer;
 import jakarta.inject.Inject;
 import org.junit.jupiter.api.BeforeEach;
@@ -55,6 +57,9 @@ class MrgSchedulerTest {
         }
     }
 
+    @KubernetesTestServer
+    KubernetesServer mockServer;
+
     @Inject
     MrgScheduler scheduler;
 
@@ -91,6 +96,23 @@ class MrgSchedulerTest {
                 "pay client rides MAN for MRG: the flow is client-independent");
         assertEquals(0, countIntentsLike("man-mrg-fnbcc02-%"),
                 "FNBCC02 is not in agt.man-clients: no MRG window");
+    }
+
+    @Test
+    void mrgClockJobCarriesTheManDbUrl() {
+        // B2 (SCRUM-79 review): MRG persists its report registry in dcre_man;
+        // the clock job env must carry the man URL, never dcre_col.
+        insertArrival("onhost-req", "FNBCC01");
+        long window = PrgScheduler.window(Instant.now().getEpochSecond(), config.mrgIntervalSeconds());
+
+        scheduler.tick();
+
+        io.fabric8.kubernetes.api.model.batch.v1.Job job = mockServer.getClient().batch().v1().jobs()
+                .inNamespace("dcre-man").withName("man-mrg-fnbcc01-w" + window).get();
+        org.junit.jupiter.api.Assertions.assertNotNull(job, "MRG clock job created in dcre-man");
+        String dbUrl = NamespaceRoutingTest.dbUrlOf(job);
+        assertTrue(dbUrl.contains("/dcre_man"),
+                "MRG clock job env carries the dcre_man URL, got " + dbUrl);
     }
 
     @Test

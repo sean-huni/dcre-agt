@@ -120,6 +120,12 @@ public interface AgtConfig {
     @WithDefault("jdbc:postgresql://crdb.dcre.svc.cluster.local:26257/dcre_col?sslmode=disable")
     String serviceDbUrl();
 
+    /** JDBC url the M10 mandates stage Jobs use for dcre_man (B2, SCRUM-79
+     *  review): the man services own their schema in dcre_man; handing them
+     *  the dcre_col URL would silently build it there. */
+    @WithDefault("jdbc:postgresql://crdb.dcre.svc.cluster.local:26257/dcre_man?sslmode=disable")
+    String manServiceDbUrl();
+
     /** Stage-pod memory request. Default matches the pre-load-test sizing;
      *  large-copybook runs (300k tx) need more (found live 2026-07-14: CTV OOM
      *  at 768Mi across partition workers). */
