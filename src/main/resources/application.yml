@@ -94,6 +94,10 @@ agt:
   prg-interval-seconds: ${AGT_PRG_INTERVAL_SECONDS:60}
   hcs-interval-hours: ${AGT_HCS_INTERVAL_HOURS:6}
   mrg-interval-seconds: ${AGT_MRG_INTERVAL_SECONDS:60}
+  # SCRUM-78 (A-71): the two MSR CLOCK sweeps (auth-window expiry, failed-collection
+  # suspension), paced independently of MRG and of each other.
+  msr-expiry-interval-seconds: ${AGT_MSR_EXPIRY_INTERVAL_SECONDS:60}
+  msr-suspend-interval-seconds: ${AGT_MSR_SUSPEND_INTERVAL_SECONDS:60}
   # SCRUM-70: FQDN, not the short service name. This URL is handed to stage
   # pods in the FLOW namespaces (dcre-col/pay/man); `crdb` only resolves inside
   # the control namespace where the Service lives.

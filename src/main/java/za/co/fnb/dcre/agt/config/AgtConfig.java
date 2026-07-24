@@ -114,6 +114,18 @@ public interface AgtConfig {
     @WithDefault("60")
     long mrgIntervalSeconds();
 
+    /** MSR expiry-sweep clock-window length (M10/SCRUM-78, A-71): PDNG mandates
+     *  past the auth window roll to EXPIRED (TM01). Its own knob so the two MSR
+     *  sweeps can be paced independently of each other and of MRG; dev default 60s. */
+    @WithDefault("60")
+    long msrExpiryIntervalSeconds();
+
+    /** MSR suspend-sweep clock-window length (M10/SCRUM-78, A-71): ACCP mandates
+     *  with too many consecutive failed collections roll to SUSPENDED (MS03);
+     *  dev default 60s. */
+    @WithDefault("60")
+    long msrSuspendIntervalSeconds();
+
     /** JDBC url the service Jobs use for dcre_col (in-cluster).
      *  SCRUM-70: FQDN, because stage pods run in the flow namespaces where the
      *  short service name `crdb` does not resolve. */

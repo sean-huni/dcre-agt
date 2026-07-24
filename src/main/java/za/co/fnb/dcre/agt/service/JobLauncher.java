@@ -34,6 +34,19 @@ public class JobLauncher {
     public static final String LABEL_STAGE = "dcre/stage";
     public static final String LABEL_ARRIVAL = "dcre/arrival";
 
+    /** Env var AGT sets on an MSR clock-sweep pod to select the Batch job it runs
+     *  (msrExpiryJob / msrSuspendJob); absent = MSR's msrJob default, i.e. the
+     *  MAR -> MSR projection DAG launch is never overridden (SCRUM-78, A-71). */
+    public static final String MSR_JOB_ENV = "DCRE_MSR_JOB_NAME";
+
+    /** Reserved durable-arg prefix carrying a pod env var rather than a Spring
+     *  Batch program arg (SCRUM-78). Encoding sweep env into the durable launch
+     *  args means the intent row alone rebuilds the same Job on a reconciled
+     *  re-create (createJob -> clockJob), exactly as serviceJob derives
+     *  DCRE_FLOW_DC from the durable arrival route; the program args MSR receives
+     *  stay clean (client, window). No real Batch arg starts with this token. */
+    static final String ENV_ARG_PREFIX = "env:";
+
     /** Boundary stages that read the claimed payload file (CRR; M4 fint-resp
      *  readers; M10 MRR instruction-book reader and MAR pain.012 reader). */
     static final java.util.Set<Stage> BOUNDARY_READERS =
@@ -193,14 +206,39 @@ public class JobLauncher {
 
     /** Clock-triggered launch (R-37 CRW; R-28 PRG in M4): identity (stage, runKey). */
     public void launchClock(Flow flow, Stage stage, String runKey, java.util.List<String> args) {
+        launchClock(flow, stage, runKey, args, java.util.Map.of());
+    }
+
+    /**
+     * Clock launch that also injects pod env vars (SCRUM-78 MSR sweeps select
+     * their Batch job via DCRE_MSR_JOB_NAME). The env is folded into the durable
+     * launch args (ENV_ARG_PREFIX) so the intent row alone rebuilds the same Job
+     * on a reconciled re-create; clockJob splits it back out, so the program args
+     * MSR sees stay clean (client, window).
+     */
+    public void launchClock(Flow flow, Stage stage, String runKey, java.util.List<String> args,
+                            java.util.Map<String, String> env) {
         String name = clockJobName(flow, stage, runKey);
         String namespace = flowNamespaces.namespaceOf(flow);
+        java.util.List<String> durable = withEnvArgs(env, args);
         java.util.Optional<UUID> intent =
-                intentRepo.insertClockIntent(stage, runKey, name, String.join("\n", args), namespace);
+                intentRepo.insertClockIntent(stage, runKey, name, String.join("\n", durable), namespace);
         if (intent.isEmpty()) {
             return;
         }
-        createFromSpec(intent.get(), clockJob(name, namespace, stage, serviceImage(stage), args));
+        createFromSpec(intent.get(), clockJob(name, namespace, stage, serviceImage(stage), durable));
+    }
+
+    /** Prepend env vars as reserved durable args ahead of the program args. */
+    private static java.util.List<String> withEnvArgs(java.util.Map<String, String> env,
+                                                      java.util.List<String> args) {
+        if (env.isEmpty()) {
+            return args;
+        }
+        java.util.List<String> out = new java.util.ArrayList<>(env.size() + args.size());
+        env.forEach((k, v) -> out.add(ENV_ARG_PREFIX + k + "=" + v));
+        out.addAll(args);
+        return out;
     }
 
     /**
@@ -227,7 +265,26 @@ public class JobLauncher {
         createFromSpec(intent.get(), clockJob(name, namespace, stage, serviceImage(stage), args));
     }
 
+    /** Partition durable clock args: ENV_ARG_PREFIX entries become pod env vars,
+     *  everything else stays a Spring Batch program arg. */
+    private static void splitEnvArgs(java.util.List<String> args,
+                                     java.util.List<io.fabric8.kubernetes.api.model.EnvVar> envOut,
+                                     java.util.List<String> argsOut) {
+        for (String arg : args) {
+            if (arg.startsWith(ENV_ARG_PREFIX)) {
+                int eq = arg.indexOf('=', ENV_ARG_PREFIX.length());
+                envOut.add(new io.fabric8.kubernetes.api.model.EnvVar(
+                        arg.substring(ENV_ARG_PREFIX.length(), eq), arg.substring(eq + 1), null));
+            } else {
+                argsOut.add(arg);
+            }
+        }
+    }
+
     private Job clockJob(String name, String namespace, Stage stage, String image, java.util.List<String> args) {
+        java.util.List<io.fabric8.kubernetes.api.model.EnvVar> extraEnv = new java.util.ArrayList<>();
+        java.util.List<String> programArgs = new java.util.ArrayList<>();
+        splitEnvArgs(args, extraEnv, programArgs);
         return new JobBuilder()
                 .withNewMetadata()
                     .withName(name)
@@ -248,12 +305,13 @@ public class JobLauncher {
                                 .withName("stage")
                                 .withImage(image)
                                 .withImagePullPolicy("IfNotPresent")
-                                .withArgs(args.toArray(String[]::new))
+                                .withArgs(programArgs.toArray(String[]::new))
                                 .addNewEnv().withName("JOB_NAME").withValue(name).endEnv()
                                 .addNewEnv().withName("DCRE_DB_URL").withValue(dbUrlFor(stage)).endEnv()
                                 .addNewEnv().withName("DCRE_EXCHANGE_ROOT").withValue("/exchange").endEnv()
                                 .addNewEnv().withName("DCRE_AGTOPS_DB_URL").withValue(config.agtopsDbUrl()).endEnv()
                                 .addNewEnv().withName("DCRE_AGTOPS_DB_USER").withValue(config.agtopsDbUser()).endEnv()
+                                .addAllToEnv(extraEnv)
                                 .addNewVolumeMount().withName("exchange").withMountPath("/exchange").endVolumeMount()
                                 .withNewResources()
                                     .addToRequests("cpu", new io.fabric8.kubernetes.api.model.Quantity("250m"))
