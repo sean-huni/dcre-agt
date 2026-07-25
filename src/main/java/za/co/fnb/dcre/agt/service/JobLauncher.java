@@ -359,6 +359,16 @@ public class JobLauncher {
                             + " has no pain.012 reply token: MAR launch is fail-closed"))
                     + ",java.lang.String,false");
         }
+        if (stage == Stage.MSR) {
+            // Response-leg projection (DAG successor of MAR): the arrival's physical
+            // filename is the response_file key MAR tagged its ISR/SBSR/PBSR resp
+            // rows with. MSR's ProjectionTasklet reads response.file and projects
+            // the correlated legs (ACCP/PDNG/RJCT). Absent, it projects null -> 0
+            // legs and silently completes ACCEPTED without landing the projection.
+            // The clock-sweep MSR jobs go through clockJob (DCRE_MSR_JOB_NAME env),
+            // never this path, so they are unaffected.
+            args.add("response.file=" + arrival.physicalFilename() + ",java.lang.String,false");
+        }
         if (RESPONDERS.contains(stage)) {
             args.add("route.id=" + responderIdentity(arrival.routeId(), "route.id", arrival) + ",java.lang.String,false");
             args.add("client.token=" + responderIdentity(arrival.clientToken(), "client.token", arrival) + ",java.lang.String,false");

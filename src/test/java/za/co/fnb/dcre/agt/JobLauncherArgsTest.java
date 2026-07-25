@@ -58,6 +58,24 @@ class JobLauncherArgsTest {
     }
 
     @Test
+    void msrCarriesResponseFileForProjection() {
+        // T16 live gate: MSR's ProjectionTasklet reads response.file to find the
+        // ISR/SBSR/PBSR resp rows MAR tagged with the arrival's physical filename.
+        // Without it MSR projects null -> 0 legs and silently completes ACCEPTED
+        // without landing the ACCP/PDNG/RJCT projection.
+        List<String> args = JobLauncher.serviceArgs(Stage.MSR, arrival(), Map.of());
+        assertTrue(args.contains("arrival.id=" + ARRIVAL_ID));
+        assertTrue(args.contains("response.file=FNBRF01_MSG1.txt,java.lang.String,false"), "got " + args);
+    }
+
+    @Test
+    void responseFileIsMsrOnly() {
+        assertFalse(JobLauncher.serviceArgs(Stage.MRV, arrival(), Map.of()).stream()
+                        .anyMatch(a -> a.startsWith("response.file=")),
+                "response.file rides the projection MSR only, not the request-leg stages");
+    }
+
+    @Test
     void cirCarriesClientTokenMsgIdAndOutcomeHint() {
         List<String> args = JobLauncher.serviceArgs(Stage.CIR, arrival(),
                 Map.of(Stage.CRR, Outcome.BUSINESS_ACCEPTED, Stage.CTV, Outcome.BUSINESS_FILE_REJECTED));
