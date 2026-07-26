@@ -27,9 +27,10 @@ import java.util.Set;
  * BUSINESS_FILE_REJECTED predecessor routes to the route family's responder
  * only (CIR, or MIR on the man route: whole-file NACK path, R-19/R-41/SPEC-DAG
  * section 3); BUSINESS_PARTIAL fans out like ACCEPTED (R-41: PASS rows
- * continue). Response routes are token-picked: fint-resp launches the single
- * reader stage (IXR/SXR/PXR, M4); fint-resp-man maps every pain.012 token to
- * the one MAR reader, which chains into MSR (SCRUM-79).
+ * continue). Response routes are token-picked and share ONE code path: the
+ * filename token selects the single leg reader, IXR/SXR/PXR on fint-resp (M4)
+ * and MIX/MSX/MPX on fint-resp-man (SCRUM-91, replacing the merged MAR reader
+ * and its MSR chain).
  * Pure decision logic lives in computeLaunches() for unit testing.
  */
 @ApplicationScoped
@@ -38,7 +39,8 @@ public class DagEngine {
     private static final Logger LOG = Logger.getLogger(DagEngine.class);
 
     /** pain.012/fint-resp reply token from the filename; empty = unknown
-     *  (fail closed). Shared with JobLauncher's MAR reply.type arg. */
+     *  (fail closed). The token selects the leg reader, nothing else: since
+     *  SCRUM-91 each reader owns exactly one leg, so no launch arg carries it. */
     public static java.util.Optional<String> replyToken(String filename) {
         if (filename.contains("_ISR")) {
             return java.util.Optional.of("ISR");
@@ -52,18 +54,34 @@ public class DagEngine {
         return java.util.Optional.empty();
     }
 
-    /** Response-route filename token -> reader stage (route-aware, SCRUM-79):
-     *  collections fint-resp keeps the per-token readers; fint-resp-man maps
-     *  ALL tokens to the single MAR service (canon singular). Empty = unknown
-     *  token (fail closed). */
+    /** Response-route filename token -> leg reader (route-aware): each route has
+     *  one reader per reply type, so the route picks the family and the token
+     *  picks the leg. Empty = unknown token (fail closed). */
     public static java.util.Optional<Stage> fintRespStage(String route, String filename) {
-        return replyToken(filename).map(token -> ArrivalService.ROUTE_FINT_RESP_MAN.equals(route)
-                ? Stage.MAR
-                : switch (token) {
-                    case "ISR" -> Stage.IXR;
-                    case "SBSR" -> Stage.SXR;
-                    default -> Stage.PXR;
-                });
+        boolean man = ArrivalService.ROUTE_FINT_RESP_MAN.equals(route);
+        return replyToken(filename).map(token -> man ? manEntryFor(token) : colEntryFor(token));
+    }
+
+    /** SCRUM-91: fint-resp-man token-picks one leg reader per reply type, exactly as
+     *  fint-resp picks IXR/SXR/PXR. An unknown token is a misrouted file and fails
+     *  closed (never a guessed default). */
+    static Stage manEntryFor(final String token) {
+        return switch (token) {
+            case "ISR" -> Stage.MIX;
+            case "SBSR" -> Stage.MSX;
+            case "PBSR" -> Stage.MPX;
+            default -> throw new IllegalArgumentException("unknown mandate reply token: " + token);
+        };
+    }
+
+    /** M4 collections leg readers, the shape SCRUM-91 made the mandates route copy. */
+    static Stage colEntryFor(final String token) {
+        return switch (token) {
+            case "ISR" -> Stage.IXR;
+            case "SBSR" -> Stage.SXR;
+            case "PBSR" -> Stage.PXR;
+            default -> throw new IllegalArgumentException("unknown collections reply token: " + token);
+        };
     }
 
     private static boolean isRespRoute(String route) {
@@ -142,17 +160,16 @@ public class DagEngine {
     }
 
     /** Route dispatch: request routes resolve their DAG from the R-36 registry;
-     *  response routes seed the token-picked reader (re-seeded level-triggered,
-     *  intents dedupe), and fint-resp-man additionally advances the MAR -> MSR
-     *  edge. Unknown routes fall back to the DC shape (as before). */
+     *  response routes seed the token-picked leg reader and nothing else
+     *  (re-seeded level-triggered, intents dedupe). SCRUM-91: both response
+     *  routes take this one path now, since neither has a successor edge.
+     *  Unknown routes fall back to the DC shape (as before). */
     public static Set<Stage> computeLaunches(String route, String filename,
                                              Map<Stage, Outcome> outcomes, Set<Stage> intended) {
         if (!isRespRoute(route)) {
             return computeLaunches(RouteDags.REQUESTS.getOrDefault(route, RouteDags.DC), outcomes, intended);
         }
-        Set<Stage> launches = ArrivalService.ROUTE_FINT_RESP_MAN.equals(route)
-                ? computeLaunches(RouteDags.FINT_RESP_MAN, outcomes, intended)
-                : EnumSet.noneOf(Stage.class);
+        Set<Stage> launches = EnumSet.noneOf(Stage.class);
         fintRespStage(route, filename)
                 .filter(stage -> !intended.contains(stage) && !outcomes.containsKey(stage))
                 .ifPresent(launches::add);
@@ -193,18 +210,28 @@ public class DagEngine {
         return launches;
     }
 
-    /** fint-resp terminal: the single reader stage BUSINESS_ACCEPTED completes
-     *  the DAG; fint-resp-man completes on its terminal fork (MSR); anything
-     *  else stays open for the reconciler (fail closed). */
+    /** Terminal verdict by route: response routes use respTerminalState, request
+     *  routes their R-36 DAG shape. */
     public static java.util.Optional<ArrivalStatus> terminalState(String route, Map<Stage, Outcome> outcomes) {
-        if (ArrivalService.ROUTE_FINT_RESP.equals(route)) {
-            boolean readerAccepted = outcomes.values().stream().anyMatch(o -> o == Outcome.BUSINESS_ACCEPTED);
-            return readerAccepted ? java.util.Optional.of(ArrivalStatus.DAG_COMPLETE) : java.util.Optional.empty();
+        if (isRespRoute(route)) {
+            return respTerminalState(RouteDags.RESPONSES.get(route), outcomes);
         }
-        RouteDag dag = ArrivalService.ROUTE_FINT_RESP_MAN.equals(route)
-                ? RouteDags.FINT_RESP_MAN
-                : RouteDags.REQUESTS.getOrDefault(route, RouteDags.DC);
-        return terminalState(dag, outcomes);
+        return terminalState(RouteDags.REQUESTS.getOrDefault(route, RouteDags.DC), outcomes);
+    }
+
+    /**
+     * Response-route terminal: the ONE token-picked leg reader for this arrival
+     * reporting BUSINESS_ACCEPTED completes the DAG. The dag's terminal set lists
+     * the legal entries (IXR/SXR/PXR, or MIX/MSX/MPX since SCRUM-91), of which
+     * exactly one ever runs, so this is an any-of test and never the all-of test
+     * a request fork gets: requiring all three would leave every response arrival
+     * permanently DAG_RUNNING. Anything short of acceptance (fatal, partial, tech
+     * failure) stays open for the reconciler: fail closed, no responder to run.
+     */
+    private static java.util.Optional<ArrivalStatus> respTerminalState(RouteDag dag, Map<Stage, Outcome> outcomes) {
+        boolean readerAccepted = dag.terminal().stream()
+                .anyMatch(stage -> outcomes.get(stage) == Outcome.BUSINESS_ACCEPTED);
+        return readerAccepted ? java.util.Optional.of(ArrivalStatus.DAG_COMPLETE) : java.util.Optional.empty();
     }
 
     /** Terminal arrival state, when reached (onhost-req). The responder must itself be

@@ -84,8 +84,10 @@ agt:
   mis-image: ${AGT_MIS_IMAGE:}
   mir-image: ${AGT_MIR_IMAGE:}
   mrw-image: ${AGT_MRW_IMAGE:}
-  mar-image: ${AGT_MAR_IMAGE:}
-  msr-image: ${AGT_MSR_IMAGE:}
+  # SCRUM-91: one reader image per pain.012 leg, replacing mar-image/msr-image.
+  mix-image: ${AGT_MIX_IMAGE:}
+  msx-image: ${AGT_MSX_IMAGE:}
+  mpx-image: ${AGT_MPX_IMAGE:}
   mrg-image: ${AGT_MRG_IMAGE:}
   # INTERIM (R-42 analog for M10): comma-separated mandate-capable client
   # tokens, until the R-14 client reference table lands.
@@ -94,10 +96,8 @@ agt:
   prg-interval-seconds: ${AGT_PRG_INTERVAL_SECONDS:60}
   hcs-interval-hours: ${AGT_HCS_INTERVAL_HOURS:6}
   mrg-interval-seconds: ${AGT_MRG_INTERVAL_SECONDS:60}
-  # SCRUM-78 (A-71): the two MSR CLOCK sweeps (auth-window expiry, failed-collection
-  # suspension), paced independently of MRG and of each other.
-  msr-expiry-interval-seconds: ${AGT_MSR_EXPIRY_INTERVAL_SECONDS:60}
-  msr-suspend-interval-seconds: ${AGT_MSR_SUSPEND_INTERVAL_SECONDS:60}
+  # SCRUM-91: expiry is a view predicate now (no sweep). Suspension moved into MRG.
+  mrg-suspend-interval-seconds: ${AGT_MRG_SUSPEND_INTERVAL_SECONDS:60}
   # SCRUM-70: FQDN, not the short service name. This URL is handed to stage
   # pods in the FLOW namespaces (dcre-col/pay/man); `crdb` only resolves inside
   # the control namespace where the Service lives.

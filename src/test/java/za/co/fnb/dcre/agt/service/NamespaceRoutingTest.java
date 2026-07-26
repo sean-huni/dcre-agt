@@ -36,6 +36,7 @@ import java.util.Set;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -62,6 +63,7 @@ class NamespaceRoutingTest {
         public Map<String, String> getConfigOverrides() {
             return Map.of("agt.launch-enabled", "true", "agt.crr-image", "dcre-crr:test",
                     "agt.mrr-image", "dcre-mrr:test",
+                    "agt.ctv-image", "dcre-ctv:test",
                     "agt.pay-clients", " fnbrf01 ");
         }
     }
@@ -215,6 +217,48 @@ class NamespaceRoutingTest {
         assertNotNull(colJob, "CRR job created in dcre-col");
         assertTrue(dbUrlOf(colJob).contains("/dcre_col"),
                 "collections stage job env keeps the dcre_col URL, got " + dbUrlOf(colJob));
+    }
+
+    @Test
+    void ctvStageJobCarriesTheMandatesProjectionDbUrlWithoutLeavingDcreCol() {
+        // SCRUM-91: CTV's projection-mode mandate gate reads man_ctv_view over a
+        // SECOND, read-only datasource (MandatesDatasourceConfig,
+        // ${DCRE_CTV_MANDATES_DB_URL}). AGT never injected it, so an in-cluster CTV
+        // fell back to ctv's localhost dev default and the gate could not work.
+        // Stage-keyed, not launch-scoped: CTV is a DAG stage with no per-launch env
+        // seam, and EVERY CTV pod runs the gate, so the url belongs to the stage.
+        // The env NAME is asserted as a literal on purpose: it is the cross-repo
+        // wire contract with ctv's placeholder, exactly like DCRE_DB_URL.
+        UUID arrivalId = insertArrival("onhost-req", "FNBCC01");
+
+        launcher.launch(arrivalId, Stage.CTV);
+
+        Job ctvJob = k8s.batch().v1().jobs().inNamespace("dcre-col")
+                .withName(JobLauncher.jobName(za.co.fnb.dcre.agt.domain.Flow.COL, Stage.CTV, arrivalId)).get();
+        assertNotNull(ctvJob, "CTV job created in dcre-col");
+        String manUrl = envOf(ctvJob, "DCRE_CTV_MANDATES_DB_URL");
+        assertEquals(config.manServiceDbUrl(), manUrl,
+                "the gate reads dcre_man over the same URL every man stage pod gets");
+        assertTrue(manUrl.contains("/dcre_man"), "got " + manUrl);
+        assertTrue(dbUrlOf(ctvJob).contains("/dcre_col"),
+                "CTV stays a collections stage: its PRIMARY datasource is dcre_col and the "
+                        + "mandates url is a second, read-only seam, got " + dbUrlOf(ctvJob));
+    }
+
+    @Test
+    void nonCtvStagesDoNotCarryTheMandatesProjectionDbUrl() {
+        // Only CTV holds the read-only man_ctv_view seam, so the url is keyed to
+        // that stage and never blanket-added to every launched pod.
+        UUID arrivalId = insertArrival("onhost-req", "FNBCC01");
+
+        launcher.launch(arrivalId, Stage.CRR);
+
+        Job crrJob = k8s.batch().v1().jobs().inNamespace("dcre-col")
+                .withName(JobLauncher.jobName(za.co.fnb.dcre.agt.domain.Flow.COL, Stage.CRR, arrivalId)).get();
+        assertNotNull(crrJob, "CRR job created in dcre-col");
+        boolean wired = crrJob.getSpec().getTemplate().getSpec().getContainers().get(0).getEnv().stream()
+                .anyMatch(e -> "DCRE_CTV_MANDATES_DB_URL".equals(e.getName()));
+        assertFalse(wired, "CRR has no mandates datasource; the url is stage-keyed to CTV");
     }
 
     @Test

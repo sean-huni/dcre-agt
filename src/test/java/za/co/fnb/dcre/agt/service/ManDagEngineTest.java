@@ -15,8 +15,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /**
  * M10/SCRUM-79 pure decision-logic tests for the mandates routes: the
  * onhost-req-man request DAG (MRR -> MRV -> MAF -> MIS -> fork {MIR, MRW},
- * responder MIR) and the fint-resp-man response DAG (token-picked MAR -> MSR,
- * no responder: failures stay open for the reconciler). No containers, no K8s.
+ * responder MIR) and the fint-resp-man response DAG (SCRUM-91: one token-picked
+ * leg reader of MIX/MSX/MPX, no chain and no responder, so failures stay open
+ * for the reconciler). No containers, no K8s.
  */
 class ManDagEngineTest {
 
@@ -37,10 +38,10 @@ class ManDagEngineTest {
     }
 
     @Test
-    void manRespRouteEntersAtMarForEveryReplyToken() {
-        assertEquals(Stage.MAR, DagEngine.initialStage(MAN_RESP, "FNBCC01_OUT1_ISR.xml").orElseThrow());
-        assertEquals(Stage.MAR, DagEngine.initialStage(MAN_RESP, "FNBCC01_OUT1_SBSR.xml").orElseThrow());
-        assertEquals(Stage.MAR, DagEngine.initialStage(MAN_RESP, "FNBCC01_OUT1_PBSR.xml").orElseThrow());
+    void manRespRouteEntersAtTheLegReaderForItsReplyToken() {
+        assertEquals(Stage.MIX, DagEngine.initialStage(MAN_RESP, "FNBCC01_OUT1_ISR.xml").orElseThrow());
+        assertEquals(Stage.MSX, DagEngine.initialStage(MAN_RESP, "FNBCC01_OUT1_SBSR.xml").orElseThrow());
+        assertEquals(Stage.MPX, DagEngine.initialStage(MAN_RESP, "FNBCC01_OUT1_PBSR.xml").orElseThrow());
         assertTrue(DagEngine.initialStage(MAN_RESP, "FNBCC01_OUT1_XXXX.xml").isEmpty(),
                 "unknown token on the man resp route stays fail-closed quarantine");
     }
@@ -51,11 +52,11 @@ class ManDagEngineTest {
     void sameTokenDifferentRoutePicksDifferentStage() {
         assertEquals(Stage.IXR, DagEngine.fintRespStage(ArrivalService.ROUTE_FINT_RESP,
                 "FNBRF01_OUT1_ISR.xml").orElseThrow());
-        assertEquals(Stage.MAR, DagEngine.fintRespStage(MAN_RESP,
+        assertEquals(Stage.MIX, DagEngine.fintRespStage(MAN_RESP,
                 "FNBRF01_OUT1_ISR.xml").orElseThrow(),
-                "ONE MAR service owns all three pain.012 legs (canon singular)");
-        assertEquals(Stage.MAR, DagEngine.fintRespStage(MAN_RESP, "FNBRF01_OUT1_SBSR.xml").orElseThrow());
-        assertEquals(Stage.MAR, DagEngine.fintRespStage(MAN_RESP, "FNBRF01_OUT1_PBSR.xml").orElseThrow());
+                "same token, different route: the mandates ISR reader is MIX, not IXR");
+        assertEquals(Stage.MSX, DagEngine.fintRespStage(MAN_RESP, "FNBRF01_OUT1_SBSR.xml").orElseThrow());
+        assertEquals(Stage.MPX, DagEngine.fintRespStage(MAN_RESP, "FNBRF01_OUT1_PBSR.xml").orElseThrow());
         assertTrue(DagEngine.fintRespStage(MAN_RESP, "FNBRF01_OUT1_XXXX.xml").isEmpty(),
                 "unknown token fails closed on the man route too");
     }
@@ -146,41 +147,57 @@ class ManDagEngineTest {
     // --- fint-resp-man DAG --------------------------------------------------
 
     @Test
-    void manRespSeedsMarThenChainsMsr() {
-        assertEquals(EnumSet.of(Stage.MAR), DagEngine.computeLaunches(MAN_RESP,
+    void manRespSeedsItsOneLegReaderAndNothingElse() {
+        assertEquals(EnumSet.of(Stage.MPX), DagEngine.computeLaunches(MAN_RESP,
                         "FNBCC01_OUT1_PBSR.xml", Map.of(), EnumSet.noneOf(Stage.class)),
                 "level-triggered re-seed of the token-picked entry reader");
         assertTrue(DagEngine.computeLaunches(MAN_RESP, "FNBCC01_OUT1_PBSR.xml",
-                        Map.of(), EnumSet.of(Stage.MAR)).isEmpty(),
-                "non-overlap: existing MAR intent suppresses relaunch");
-        assertEquals(EnumSet.of(Stage.MSR), DagEngine.computeLaunches(MAN_RESP,
-                "FNBCC01_OUT1_PBSR.xml",
-                Map.of(Stage.MAR, Outcome.BUSINESS_ACCEPTED), EnumSet.of(Stage.MAR)));
-        assertEquals(EnumSet.of(Stage.MSR), DagEngine.computeLaunches(MAN_RESP,
-                        "FNBCC01_OUT1_PBSR.xml",
-                        Map.of(Stage.MAR, Outcome.BUSINESS_PARTIAL), EnumSet.of(Stage.MAR)),
-                "PARTIAL (excluded unattributable rows) still advances to MSR");
+                        Map.of(), EnumSet.of(Stage.MPX)).isEmpty(),
+                "non-overlap: an existing MPX intent suppresses relaunch");
+        assertTrue(DagEngine.computeLaunches(MAN_RESP, "FNBCC01_OUT1_PBSR.xml",
+                        Map.of(Stage.MPX, Outcome.BUSINESS_ACCEPTED), EnumSet.of(Stage.MPX)).isEmpty(),
+                "SCRUM-91: no successor edge, an accepted leg reader chains into nothing");
+        assertTrue(DagEngine.computeLaunches(MAN_RESP, "FNBCC01_OUT1_PBSR.xml",
+                        Map.of(Stage.MPX, Outcome.BUSINESS_PARTIAL), EnumSet.of(Stage.MPX)).isEmpty(),
+                "and neither does a partial one");
     }
 
     @Test
-    void manRespCompletesOnMsrOnly() {
-        assertTrue(DagEngine.terminalState(MAN_RESP,
-                        Map.of(Stage.MAR, Outcome.BUSINESS_ACCEPTED)).isEmpty(),
-                "MAR alone never completes the response DAG");
+    void manRespCompletesOnItsOneLegReader() {
+        // The terminal set lists the three LEGAL entries, of which exactly one
+        // runs per arrival, so completion is any-of and never all-of: an all-of
+        // test would leave every response arrival permanently DAG_RUNNING.
         assertEquals(ArrivalStatus.DAG_COMPLETE, DagEngine.terminalState(MAN_RESP,
-                Map.of(Stage.MAR, Outcome.BUSINESS_ACCEPTED,
-                        Stage.MSR, Outcome.BUSINESS_ACCEPTED)).orElseThrow());
+                        Map.of(Stage.MPX, Outcome.BUSINESS_ACCEPTED)).orElseThrow(),
+                "the PBSR leg reader alone completes a PBSR arrival");
+        assertEquals(ArrivalStatus.DAG_COMPLETE, DagEngine.terminalState(MAN_RESP,
+                Map.of(Stage.MIX, Outcome.BUSINESS_ACCEPTED)).orElseThrow());
+        assertEquals(ArrivalStatus.DAG_COMPLETE, DagEngine.terminalState(MAN_RESP,
+                Map.of(Stage.MSX, Outcome.BUSINESS_ACCEPTED)).orElseThrow());
+        assertTrue(DagEngine.terminalState(MAN_RESP,
+                        Map.of(Stage.MPX, Outcome.BUSINESS_PARTIAL)).isEmpty(),
+                "partial is not acceptance: stays open, exactly as on collections fint-resp");
     }
 
     @Test
     void manRespFailuresStayOpenForTheReconciler() {
         assertTrue(DagEngine.computeLaunches(MAN_RESP, "FNBCC01_OUT1_PBSR.xml",
-                        Map.of(Stage.MAR, Outcome.BUSINESS_FILE_FATAL), EnumSet.of(Stage.MAR)).isEmpty(),
-                "no responder on the response route: a fatal MAR launches nothing");
+                        Map.of(Stage.MPX, Outcome.BUSINESS_FILE_FATAL), EnumSet.of(Stage.MPX)).isEmpty(),
+                "no responder on the response route: a fatal leg reader launches nothing");
         assertTrue(DagEngine.terminalState(MAN_RESP,
-                        Map.of(Stage.MAR, Outcome.BUSINESS_FILE_FATAL)).isEmpty(),
+                        Map.of(Stage.MPX, Outcome.BUSINESS_FILE_FATAL)).isEmpty(),
                 "fail closed: the arrival stays open, mirroring collections fint-resp");
         assertTrue(DagEngine.terminalState(MAN_RESP,
-                        Map.of(Stage.MAR, Outcome.TECH_FAILED)).isEmpty());
+                        Map.of(Stage.MPX, Outcome.TECH_FAILED)).isEmpty());
+    }
+
+    @Test
+    void retiredStagesNeverCompleteAResponseArrival() {
+        // A-75: historic MAR/MSR outcome rows stay parseable, but they are in no
+        // DAG, so a legacy row can never close a post-cutover arrival.
+        assertTrue(DagEngine.terminalState(MAN_RESP,
+                        Map.of(Stage.MAR, Outcome.BUSINESS_ACCEPTED,
+                                Stage.MSR, Outcome.BUSINESS_ACCEPTED)).isEmpty(),
+                "the retired chain is not a terminal state any more");
     }
 }

@@ -1,5 +1,6 @@
 package za.co.fnb.dcre.agt.service;
 
+import io.fabric8.kubernetes.api.model.EnvVar;
 import io.fabric8.kubernetes.api.model.batch.v1.Job;
 import io.fabric8.kubernetes.api.model.batch.v1.JobBuilder;
 import io.fabric8.kubernetes.client.KubernetesClient;
@@ -34,23 +35,51 @@ public class JobLauncher {
     public static final String LABEL_STAGE = "dcre/stage";
     public static final String LABEL_ARRIVAL = "dcre/arrival";
 
-    /** Env var AGT sets on an MSR clock-sweep pod to select the Batch job it runs
-     *  (msrExpiryJob / msrSuspendJob); absent = MSR's msrJob default, i.e. the
-     *  MAR -> MSR projection DAG launch is never overridden (SCRUM-78, A-71). */
-    public static final String MSR_JOB_ENV = "DCRE_MSR_JOB_NAME";
+    /** Env var AGT sets on an MRG clock pod to select the Batch job it runs
+     *  (mrgSuspendJob); absent = MRG's mrgJob report default, so the report
+     *  windows are never overridden (SCRUM-91, replacing DCRE_MSR_JOB_NAME). */
+    public static final String MRG_JOB_ENV = "DCRE_MRG_JOB_NAME";
+
+    /** Env var carrying the dcre_col JDBC url to a pod whose SECOND, read-only
+     *  datasource reads the collections DB. Launch-scoped, NOT stage-keyed like
+     *  DCRE_DB_URL: only the MRG suspension sweep crosses into dcre_col (the
+     *  consecutive-failed-collections signal a single-DB view cannot span), so
+     *  the MRG report windows on the same stage must not carry it. Absent, the
+     *  pod falls back to MRG's localhost dev default and every window dies with
+     *  "Connection to localhost:26257 refused" (found live 2026-07-26). */
+    public static final String COL_DB_URL_ENV = "DCRE_COL_DB_URL";
+
+    /** Env var carrying the dcre_man JDBC url to CTV's SECOND, read-only
+     *  datasource, which reads the man_ctv_view projection for the mandate gate
+     *  (SCRUM-78). STAGE-keyed, not launch-scoped like COL_DB_URL_ENV: CTV is a
+     *  DAG stage with no per-launch env seam, and every CTV pod runs the gate,
+     *  so the url belongs to the stage exactly as DCRE_DB_URL does. CTV stays
+     *  OUT of MAN_STAGES: its PRIMARY datasource is still dcre_col. Absent, the
+     *  pod falls back to ctv's localhost dev default and the projection gate
+     *  cannot reach dcre_man at all (found 2026-07-26). */
+    public static final String CTV_MANDATES_DB_URL_ENV = "DCRE_CTV_MANDATES_DB_URL";
 
     /** Reserved durable-arg prefix carrying a pod env var rather than a Spring
      *  Batch program arg (SCRUM-78). Encoding sweep env into the durable launch
      *  args means the intent row alone rebuilds the same Job on a reconciled
      *  re-create (createJob -> clockJob), exactly as serviceJob derives
-     *  DCRE_FLOW_DC from the durable arrival route; the program args MSR receives
-     *  stay clean (client, window). No real Batch arg starts with this token. */
+     *  DCRE_FLOW_DC from the durable arrival route; the program args the pod
+     *  receives stay clean (client, window). No real Batch arg starts with this token. */
     static final String ENV_ARG_PREFIX = "env:";
 
     /** Boundary stages that read the claimed payload file (CRR; M4 fint-resp
-     *  readers; M10 MRR instruction-book reader and MAR pain.012 reader). */
-    static final java.util.Set<Stage> BOUNDARY_READERS =
-            java.util.EnumSet.of(Stage.CRR, Stage.IXR, Stage.SXR, Stage.PXR, Stage.MRR, Stage.MAR);
+     *  readers; M10 MRR instruction-book reader; SCRUM-91 the three pain.012 leg
+     *  readers that replaced the merged MAR one). */
+    static final java.util.Set<Stage> BOUNDARY_READERS = java.util.EnumSet.of(
+            Stage.CRR, Stage.IXR, Stage.SXR, Stage.PXR, Stage.MRR,
+            Stage.MIX, Stage.MSX, Stage.MPX);
+
+    /** Stages AGT may launch. MAR and MSR are retained-deprecated (A-75): Stage
+     *  still parses them for historic agt_ops.stage_outcome rows, but they are in
+     *  no DAG, have no image config and no serviceArgs branch, so a launch attempt
+     *  is a bug rather than a fallback (serviceImage throws). */
+    static final java.util.Set<Stage> LAUNCHABLE = java.util.Collections.unmodifiableSet(
+            java.util.EnumSet.complementOf(java.util.EnumSet.of(Stage.MAR, Stage.MSR)));
 
     /** Whole-file responder stages: carry the A-45 arrival identity params and
      *  the rejecting validator's outcome.hint (CIR; M10 man responder MIR). */
@@ -63,7 +92,7 @@ public class JobLauncher {
      *  URL; COL/PAY stages keep dcre_col unchanged. */
     static final java.util.Set<Stage> MAN_STAGES = java.util.EnumSet.of(
             Stage.MRR, Stage.MRV, Stage.MAF, Stage.MIS, Stage.MIR,
-            Stage.MRW, Stage.MAR, Stage.MSR, Stage.MRG);
+            Stage.MRW, Stage.MIX, Stage.MSX, Stage.MPX, Stage.MRG);
 
     @Inject
     IntentRepo intentRepo;
@@ -179,9 +208,12 @@ public class JobLauncher {
             case MIS -> config.misImage();
             case MIR -> config.mirImage();
             case MRW -> config.mrwImage();
-            case MAR -> config.marImage();
-            case MSR -> config.msrImage();
+            case MIX -> config.mixImage();
+            case MSX -> config.msxImage();
+            case MPX -> config.mpxImage();
             case MRG -> config.mrgImage();
+            case MAR, MSR -> throw new IllegalStateException("stage " + stage
+                    + " is retired (SCRUM-91): parseable for historic outcome rows, never launched");
         };
         return image.orElseThrow(() -> new IllegalStateException(
                 "no image configured for stage " + stage + ": set AGT_" + stage.name() + "_IMAGE"));
@@ -210,11 +242,11 @@ public class JobLauncher {
     }
 
     /**
-     * Clock launch that also injects pod env vars (SCRUM-78 MSR sweeps select
-     * their Batch job via DCRE_MSR_JOB_NAME). The env is folded into the durable
-     * launch args (ENV_ARG_PREFIX) so the intent row alone rebuilds the same Job
-     * on a reconciled re-create; clockJob splits it back out, so the program args
-     * MSR sees stay clean (client, window).
+     * Clock launch that also injects pod env vars (the MRG suspension sweep
+     * selects its Batch job via DCRE_MRG_JOB_NAME). The env is folded into the
+     * durable launch args (ENV_ARG_PREFIX) so the intent row alone rebuilds the
+     * same Job on a reconciled re-create; clockJob splits it back out, so the
+     * program args the pod sees stay clean (client, window).
      */
     public void launchClock(Flow flow, Stage stage, String runKey, java.util.List<String> args,
                             java.util.Map<String, String> env) {
@@ -331,10 +363,11 @@ public class JobLauncher {
      * identity, with route.id carrying the route dimension of the R-16 arrival
      * identity (A-45: CIR 2.0.1 requires it to keep cross-route twin arrivals
      * from colliding on the response file), and the rejecting validator's
-     * verdict so they can NACK a headerless spine (R-41/A-42). MAR carries the
-     * pain.012 reply type parsed from the filename token (T12 contract: the
-     * reply type selects the target resp table; unknown token fails closed,
-     * though DagEngine quarantines those before any launch). All
+     * verdict so they can NACK a headerless spine (R-41/A-42). SCRUM-91: the
+     * mandate leg readers take input.file and original.name like every other
+     * boundary reader and nothing else, because each owns exactly one reply
+     * type, so neither the old MAR reply.type arg nor the MSR response.file arg
+     * has anything left to select. All
      * inputs come from durable rows (file_arrival, stage_outcome), so a
      * reconciled re-create rebuilds identical args; nothing lives only in memory
      * (same durability property clock intents get from persisted launch args).
@@ -351,23 +384,6 @@ public class JobLauncher {
             // non-identifying arg (absent = COL); the route is durable on the
             // arrival row, so a reconciled re-create rebuilds it identically.
             args.add("flow=PAY,java.lang.String,false");
-        }
-        if (stage == Stage.MAR) {
-            args.add("reply.type=" + DagEngine.replyToken(arrival.physicalFilename())
-                    .orElseThrow(() -> new IllegalStateException("arrival " + arrival.id()
-                            + " filename " + arrival.physicalFilename()
-                            + " has no pain.012 reply token: MAR launch is fail-closed"))
-                    + ",java.lang.String,false");
-        }
-        if (stage == Stage.MSR) {
-            // Response-leg projection (DAG successor of MAR): the arrival's physical
-            // filename is the response_file key MAR tagged its ISR/SBSR/PBSR resp
-            // rows with. MSR's ProjectionTasklet reads response.file and projects
-            // the correlated legs (ACCP/PDNG/RJCT). Absent, it projects null -> 0
-            // legs and silently completes ACCEPTED without landing the projection.
-            // The clock-sweep MSR jobs go through clockJob (DCRE_MSR_JOB_NAME env),
-            // never this path, so they are unaffected.
-            args.add("response.file=" + arrival.physicalFilename() + ",java.lang.String,false");
         }
         if (RESPONDERS.contains(stage)) {
             args.add("route.id=" + responderIdentity(arrival.routeId(), "route.id", arrival) + ",java.lang.String,false");
@@ -417,18 +433,33 @@ public class JobLauncher {
         return Optional.ofNullable(hint);
     }
 
+    /**
+     * Stage-keyed extra pod env for a DAG stage Job; only CTV has any. It always
+     * carries the dcre_man url of its SECOND, read-only projection datasource
+     * (CTV_MANDATES_DB_URL_ENV), reusing the same manServiceDbUrl knob every man
+     * stage pod gets rather than a second URL knob to keep in step. On ENDO it
+     * also switches the DC flow off: ENDO reuses the DC CTV image (M5, R-36) and
+     * only the extra env differs; DC arrivals keep the yml default (flow-dc true).
+     */
+    private java.util.List<EnvVar> stageEnv(Stage stage, FileArrival arrival) {
+        if (stage != Stage.CTV) {
+            return java.util.List.of();
+        }
+        java.util.List<EnvVar> env = new java.util.ArrayList<>(2);
+        env.add(new EnvVar(CTV_MANDATES_DB_URL_ENV, config.manServiceDbUrl(), null));
+        if (ArrivalService.ROUTE_ONHOST_REQ_ENDO.equals(arrival.routeId())) {
+            env.add(new EnvVar("DCRE_FLOW_DC", "false", null));
+        }
+        return env;
+    }
+
     /** M2 real-service Job: Spring Batch app; program args become JobParameters. */
     private Job serviceJob(String name, String namespace, Stage stage, FileArrival arrival, String image) {
         Map<Stage, Outcome> outcomes = RESPONDERS.contains(stage)
                 ? outcomeRepo.outcomesForArrival(arrival.id())
                 : Map.of();
         java.util.List<String> args = serviceArgs(stage, arrival, outcomes);
-        // ENDO reuses the DC CTV image with the DC flow switched off (M5, R-36):
-        // only the extra env differs; DC arrivals keep the yml default (flow-dc true).
-        java.util.List<io.fabric8.kubernetes.api.model.EnvVar> extraEnv =
-                stage == Stage.CTV && ArrivalService.ROUTE_ONHOST_REQ_ENDO.equals(arrival.routeId())
-                        ? java.util.List.of(new io.fabric8.kubernetes.api.model.EnvVar("DCRE_FLOW_DC", "false", null))
-                        : java.util.List.of();
+        java.util.List<EnvVar> extraEnv = stageEnv(stage, arrival);
         return new JobBuilder()
                 .withNewMetadata()
                     .withName(name)

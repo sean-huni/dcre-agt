@@ -47,20 +47,40 @@ final class RouteDags {
             EnumSet.of(Stage.MIR, Stage.MRW),
             Optional.of(Stage.MIR));
 
-    /** fint-resp-man: the token-picked MAR entry (all three pain.012 legs, one
-     *  service) chains into the MSR projection writer; no responder. */
+    /** M4 fint-resp: one token-picked leg reader per pain.002 reply, no successor
+     *  edges and no responder. Exactly one of the terminal entries ever runs on a
+     *  given arrival, so the terminal set is the set of LEGAL entries, not a fork
+     *  that must all complete (DagEngine.respTerminalState). */
+    static final RouteDag FINT_RESP = new RouteDag(
+            Map.of(),
+            EnumSet.of(Stage.IXR, Stage.SXR, Stage.PXR),
+            Optional.empty());
+
+    /** fint-resp-man: three token-picked leg readers, NO successor edges and no
+     *  responder, mirroring collections fint-resp exactly (SCRUM-91: the single
+     *  MAR entry chained to MSR was the deviation). Nothing answers OnHost on a
+     *  response route, so a whole-file failure launches nothing and the arrival
+     *  stays open for the reconciler: fail closed. */
     static final RouteDag FINT_RESP_MAN = new RouteDag(
-            new EnumMap<>(Map.of(Stage.MAR, EnumSet.of(Stage.MSR))),
-            EnumSet.of(Stage.MSR),
+            Map.of(),
+            EnumSet.of(Stage.MIX, Stage.MSX, Stage.MPX),
             Optional.empty());
 
     /** R-36 route-based registry for REQUEST routes: the route -> shape mapping
      *  is data, not code; new request routes add an entry here, never a new
-     *  code path. Response routes are token-picked (DagEngine). */
+     *  code path. */
     static final Map<String, RouteDag> REQUESTS = Map.of(
             ArrivalService.ROUTE_ONHOST_REQ, DC,
             ArrivalService.ROUTE_ONHOST_REQ_ENDO, ENDO,
             ArrivalService.ROUTE_ONHOST_REQ_MAN, MAN);
+
+    /** R-36 registry for RESPONSE routes (SCRUM-91): same data-not-code rule. The
+     *  entry stage is token-picked from the filename (DagEngine), and both routes
+     *  now share one code path: collections and mandates differ only by the leg
+     *  readers listed here. */
+    static final Map<String, RouteDag> RESPONSES = Map.of(
+            ArrivalService.ROUTE_FINT_RESP, FINT_RESP,
+            ArrivalService.ROUTE_FINT_RESP_MAN, FINT_RESP_MAN);
 
     private RouteDags() { }
 }

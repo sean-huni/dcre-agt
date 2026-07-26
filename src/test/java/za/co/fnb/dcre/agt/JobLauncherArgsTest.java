@@ -58,21 +58,15 @@ class JobLauncherArgsTest {
     }
 
     @Test
-    void msrCarriesResponseFileForProjection() {
-        // T16 live gate: MSR's ProjectionTasklet reads response.file to find the
-        // ISR/SBSR/PBSR resp rows MAR tagged with the arrival's physical filename.
-        // Without it MSR projects null -> 0 legs and silently completes ACCEPTED
-        // without landing the ACCP/PDNG/RJCT projection.
-        List<String> args = JobLauncher.serviceArgs(Stage.MSR, arrival(), Map.of());
-        assertTrue(args.contains("arrival.id=" + ARRIVAL_ID));
-        assertTrue(args.contains("response.file=FNBRF01_MSG1.txt,java.lang.String,false"), "got " + args);
-    }
-
-    @Test
-    void responseFileIsMsrOnly() {
-        assertFalse(JobLauncher.serviceArgs(Stage.MRV, arrival(), Map.of()).stream()
-                        .anyMatch(a -> a.startsWith("response.file=")),
-                "response.file rides the projection MSR only, not the request-leg stages");
+    void noStageCarriesAResponseFileArgAnyMore() {
+        // SCRUM-91: response.file existed only to point the MSR projection at the
+        // rows MAR had tagged. The projection is a view now, so the arg is gone
+        // from every stage, including the leg readers that replaced MAR.
+        for (Stage stage : List.of(Stage.MIX, Stage.MSX, Stage.MPX, Stage.MRV)) {
+            assertFalse(JobLauncher.serviceArgs(stage, arrival(), Map.of()).stream()
+                            .anyMatch(a -> a.startsWith("response.file=")),
+                    "no response.file on " + stage);
+        }
     }
 
     @Test
@@ -188,23 +182,26 @@ class JobLauncherArgsTest {
     }
 
     @Test
-    void marCarriesTheReplyTypeParsedFromTheFilenameToken() {
-        // T12 contract: reply-type selects the target resp table; MAR also
-        // reads the claimed pain.012 payload (IXR clone).
-        for (String token : List.of("ISR", "SBSR", "PBSR")) {
-            List<String> args = JobLauncher.serviceArgs(Stage.MAR, manRespArrival(token), Map.of());
-            assertTrue(args.contains("input.file=/exchange/claimed/FNBCC01_OUT1_" + token
-                    + ".xml,java.lang.String,false"), "boundary reader args, got " + args);
-            assertTrue(args.contains("reply.type=" + token + ",java.lang.String,false"),
-                    "reply.type from the filename token, got " + args);
-        }
+    void eachLegReaderIsAPlainBoundaryReader() {
+        // SCRUM-91: the reply type selected MAR's target table via a reply.type
+        // arg; each leg reader owns exactly one table now, so there is nothing
+        // left to select and the args are the plain boundary-reader trio.
+        Map<Stage, String> legs = Map.of(Stage.MIX, "ISR", Stage.MSX, "SBSR", Stage.MPX, "PBSR");
+        legs.forEach((stage, token) -> assertEquals(List.of(
+                "arrival.id=" + ARRIVAL_ID,
+                "input.file=/exchange/claimed/FNBCC01_OUT1_" + token + ".xml,java.lang.String,false",
+                "original.name=FNBCC01_OUT1_" + token + ".xml,java.lang.String,false"),
+                JobLauncher.serviceArgs(stage, manRespArrival(token), Map.of()),
+                stage + " reads the claimed pain.012 payload and nothing else"));
     }
 
     @Test
-    void marFailsClosedOnAnUnknownReplyToken() {
-        IllegalStateException e = assertThrows(IllegalStateException.class,
-                () -> JobLauncher.serviceArgs(Stage.MAR, manRespArrival("XXXX"), Map.of()));
-        assertTrue(e.getMessage().contains(ARRIVAL_ID.toString()), "got: " + e.getMessage());
+    void noLegReaderCarriesAReplyTypeArg() {
+        for (Stage stage : List.of(Stage.MIX, Stage.MSX, Stage.MPX)) {
+            assertFalse(JobLauncher.serviceArgs(stage, manRespArrival("ISR"), Map.of()).stream()
+                            .anyMatch(a -> a.startsWith("reply.type=")),
+                    "the leg is the service now, not a launch arg: " + stage);
+        }
     }
 
     @Test

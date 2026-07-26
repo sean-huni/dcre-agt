@@ -10,7 +10,6 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import za.co.fnb.dcre.agt.CrdbTestResource;
 import za.co.fnb.dcre.agt.config.AgtConfig;
-import za.co.fnb.dcre.agt.repo.ArrivalRepo;
 
 import javax.sql.DataSource;
 import java.sql.Connection;
@@ -23,31 +22,27 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * M10/SCRUM-78 (A-71): with the msr-image unset the two GLOBAL MSR sweeps stay
+ * SCRUM-91: with the mrg-image unset the GLOBAL suspension sweep stays
  * launch-disabled (SCRUM-33 semantics, no stub fallback) even with the lease held:
- * no expiry/suspend clock intents are minted.
+ * no suspend clock intents are minted.
  */
 @QuarkusTest
 @QuarkusTestResource(CrdbTestResource.class)
 @WithKubernetesTestServer(crud = true)
-@TestProfile(MsrSweepDisabledTest.MsrImageUnsetProfile.class)
-class MsrSweepDisabledTest {
+@TestProfile(MrgSuspendDisabledTest.MrgImageUnsetProfile.class)
+class MrgSuspendDisabledTest {
 
-    /** launch-enabled but NO msr-image: launch-disabled. */
-    public static class MsrImageUnsetProfile implements QuarkusTestProfile {
+    /** launch-enabled but NO mrg-image: launch-disabled. */
+    public static class MrgImageUnsetProfile implements QuarkusTestProfile {
         @Override
         public Map<String, String> getConfigOverrides() {
             return Map.of("agt.launch-enabled", "true",
-                    "agt.msr-expiry-interval-seconds", "3600",
-                    "agt.msr-suspend-interval-seconds", "3600");
+                    "agt.mrg-suspend-interval-seconds", "3600");
         }
     }
 
     @Inject
-    MsrExpiryScheduler expiryScheduler;
-
-    @Inject
-    MsrSuspendScheduler suspendScheduler;
+    MrgSuspendScheduler suspendScheduler;
 
     @Inject
     LeaseService lease;
@@ -56,29 +51,23 @@ class MsrSweepDisabledTest {
     AgtConfig config;
 
     @Inject
-    ArrivalRepo arrivalRepo;
-
-    @Inject
     DataSource ds;
 
     @BeforeEach
     void holdLease() {
         exec("UPDATE agt_lease SET expires_at = now() - INTERVAL '1 second'");
         assertTrue(lease.tryAcquire(config.holderId()), "test precondition: lease held");
-        assertTrue(config.msrImage().isEmpty(), "test precondition: msr-image unset");
+        assertTrue(config.mrgImage().isEmpty(), "test precondition: mrg-image unset");
     }
 
     @Test
-    void sweepsMintNoWindowsWhileMsrImageUnset() {
-        // The global sweeps run on a pure clock regardless of arrivals; the
-        // msr-image guard, not an empty client set, is what disables them.
-        expiryScheduler.tick();
+    void sweepMintsNoWindowsWhileMrgImageUnset() {
+        // The global sweep runs on a pure clock regardless of arrivals; the
+        // mrg-image guard, not an empty client set, is what disables it.
         suspendScheduler.tick();
 
-        assertEquals(0, countIntentsLike("man-msr-expiry-%"),
-                "no msr-image: expiry sweep launch-disabled");
-        assertEquals(0, countIntentsLike("man-msr-suspend-%"),
-                "no msr-image: suspend sweep launch-disabled");
+        assertEquals(0, countIntentsLike("man-mrg-suspend-%"),
+                "no mrg-image: suspend sweep launch-disabled");
     }
 
     private long countIntentsLike(String pattern) {
