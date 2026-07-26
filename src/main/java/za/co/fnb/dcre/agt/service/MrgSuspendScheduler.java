@@ -20,8 +20,9 @@ import java.util.Map;
  * a CockroachDB view cannot span, so that one stays a job and moved into MRG.
  *
  * <p>Once per window it launches ONE MRG pod selecting mrgSuspendJob via
- * DCRE_MRG_JOB_NAME. GLOBAL, not per-client (the sweep scans every mandate), so
- * the run key is client-free and the K8s Job name is deterministic; the window
+ * DCRE_MRG_JOB_NAME, and pointing its second read-only datasource at dcre_col via
+ * DCRE_COL_DB_URL (the cross-database signal above). GLOBAL, not per-client (the
+ * sweep scans every mandate), so the run key is client-free and the K8s Job name is deterministic; the window
  * derives from the epoch, so every AGT incarnation computes the same key and the
  * clock-intent unique key dedupes (HcsScheduler / CrwScheduler pattern).
  */
@@ -55,8 +56,15 @@ public class MrgSuspendScheduler {
         // identity, so it needs no sweep token), and without an identifying
         // parameter the second window would restart the first COMPLETED instance
         // instead of starting a new one.
+        // Two launch-scoped env vars: the Batch job selector, and the dcre_col url
+        // for MRG's SECOND, read-only datasource. The suspension signal is the only
+        // thing on this leg that lives in the collections DB, so the url is attached
+        // to THIS launch rather than to Stage.MRG (which would also hand it to the
+        // report windows). serviceDbUrl is the same dcre_col url every col stage pod
+        // gets, so a different cluster resolves correctly with no second knob.
         launcher.launchClock(Flow.MAN, Stage.MRG, "suspend-w" + window,
                 List.of("window=w" + window),
-                Map.of(JobLauncher.MRG_JOB_ENV, MRG_SUSPEND_JOB));
+                Map.of(JobLauncher.MRG_JOB_ENV, MRG_SUSPEND_JOB,
+                        JobLauncher.COL_DB_URL_ENV, config.serviceDbUrl()));
     }
 }

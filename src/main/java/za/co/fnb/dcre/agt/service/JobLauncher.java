@@ -39,6 +39,15 @@ public class JobLauncher {
      *  windows are never overridden (SCRUM-91, replacing DCRE_MSR_JOB_NAME). */
     public static final String MRG_JOB_ENV = "DCRE_MRG_JOB_NAME";
 
+    /** Env var carrying the dcre_col JDBC url to a pod whose SECOND, read-only
+     *  datasource reads the collections DB. Launch-scoped, NOT stage-keyed like
+     *  DCRE_DB_URL: only the MRG suspension sweep crosses into dcre_col (the
+     *  consecutive-failed-collections signal a single-DB view cannot span), so
+     *  the MRG report windows on the same stage must not carry it. Absent, the
+     *  pod falls back to MRG's localhost dev default and every window dies with
+     *  "Connection to localhost:26257 refused" (found live 2026-07-26). */
+    public static final String COL_DB_URL_ENV = "DCRE_COL_DB_URL";
+
     /** Reserved durable-arg prefix carrying a pod env var rather than a Spring
      *  Batch program arg (SCRUM-78). Encoding sweep env into the durable launch
      *  args means the intent row alone rebuilds the same Job on a reconciled

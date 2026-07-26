@@ -133,6 +133,26 @@ class MrgSuspendSchedulerTest {
     }
 
     @Test
+    void suspendSweepClockJobCarriesTheCollectionsDbUrl() {
+        // The suspension signal (consecutive terminal-failed collections) lives
+        // cross-database in dcre_col, which MRG reads over its SECOND, read-only
+        // datasource (ColDatasourceConfig, ${DCRE_COL_DB_URL}). AGT never injected
+        // it, so every sweep window died in-cluster with
+        // "Connection to localhost:26257 refused" (found live 2026-07-26).
+        // The env NAME is asserted as a literal on purpose: it is the cross-repo
+        // wire contract with mrg's placeholder, exactly like DCRE_DB_URL above.
+        long window = suspendWindow();
+
+        suspendScheduler.tick();
+
+        Job job = job("dcre-man", "man-mrg-suspend-w" + window);
+        String colUrl = NamespaceRoutingTest.envOf(job, "DCRE_COL_DB_URL");
+        assertEquals(config.serviceDbUrl(), colUrl,
+                "the sweep reads dcre_col over the same URL every col stage pod gets");
+        assertTrue(colUrl.contains("/dcre_col"), "got " + colUrl);
+    }
+
+    @Test
     void sweepWindowIdentityIsStableAcrossTicks() {
         long window = suspendWindow();
 
@@ -161,6 +181,9 @@ class MrgSuspendSchedulerTest {
         assertNotNull(recreated, "sweep job re-created from the durable intent");
         assertEquals("mrgSuspendJob", NamespaceRoutingTest.envOf(recreated, JobLauncher.MRG_JOB_ENV),
                 "recreate must reproduce the job-name override from the intent row");
+        assertEquals(config.serviceDbUrl(), NamespaceRoutingTest.envOf(recreated, "DCRE_COL_DB_URL"),
+                "the dcre_col URL rides the same durable env args, so a re-created sweep "
+                        + "still reaches the collections DB instead of falling back to localhost");
         List<String> args = recreated.getSpec().getTemplate().getSpec().getContainers().get(0).getArgs();
         assertEquals(List.of("window=w" + window), args,
                 "recreated program args stay the same identifying window, got " + args);
@@ -181,6 +204,10 @@ class MrgSuspendSchedulerTest {
         boolean overridden = job.getSpec().getTemplate().getSpec().getContainers().get(0).getEnv().stream()
                 .anyMatch(e -> JobLauncher.MRG_JOB_ENV.equals(e.getName()));
         assertFalse(overridden, "report window must not carry the DCRE_MRG_JOB_NAME override");
+        boolean colWired = job.getSpec().getTemplate().getSpec().getContainers().get(0).getEnv().stream()
+                .anyMatch(e -> "DCRE_COL_DB_URL".equals(e.getName()));
+        assertFalse(colWired, "only the suspension sweep reads dcre_col; the report window "
+                + "stays on dcre_man alone, so the col URL is launch-scoped, never stage-blanket");
     }
 
     private long suspendWindow() {
