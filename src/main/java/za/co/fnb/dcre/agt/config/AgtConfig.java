@@ -86,9 +86,13 @@ public interface AgtConfig {
 
     java.util.Optional<String> mrwImage();
 
-    java.util.Optional<String> marImage();
+    /** SCRUM-91 response-leg images: one reader per pain.012 leg (ISR/SBSR/PBSR),
+     *  replacing the merged mar-image and the msr-image projection writer. */
+    java.util.Optional<String> mixImage();
 
-    java.util.Optional<String> msrImage();
+    java.util.Optional<String> msxImage();
+
+    java.util.Optional<String> mpxImage();
 
     java.util.Optional<String> mrgImage();
 
@@ -114,17 +118,13 @@ public interface AgtConfig {
     @WithDefault("60")
     long mrgIntervalSeconds();
 
-    /** MSR expiry-sweep clock-window length (M10/SCRUM-78, A-71): PDNG mandates
-     *  past the auth window roll to EXPIRED (TM01). Its own knob so the two MSR
-     *  sweeps can be paced independently of each other and of MRG; dev default 60s. */
+    /** MRG suspend-sweep clock-window length (SCRUM-91): ACCP mandates with too
+     *  many consecutive failed collections get a SUSPENDED override (MS03). Its
+     *  own knob so the sweep is paced independently of the MRG report windows;
+     *  dev default 60s. There is no expiry knob any more: the auth window is a
+     *  predicate of mandate_effective_status, so nothing sweeps it. */
     @WithDefault("60")
-    long msrExpiryIntervalSeconds();
-
-    /** MSR suspend-sweep clock-window length (M10/SCRUM-78, A-71): ACCP mandates
-     *  with too many consecutive failed collections roll to SUSPENDED (MS03);
-     *  dev default 60s. */
-    @WithDefault("60")
-    long msrSuspendIntervalSeconds();
+    long mrgSuspendIntervalSeconds();
 
     /** JDBC url the service Jobs use for dcre_col (in-cluster).
      *  SCRUM-70: FQDN, because stage pods run in the flow namespaces where the

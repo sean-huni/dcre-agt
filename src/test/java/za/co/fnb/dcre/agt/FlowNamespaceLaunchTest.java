@@ -106,8 +106,19 @@ class FlowNamespaceLaunchTest {
     void manRespArrivalIntentTargetsTheManNamespace() {
         UUID arrivalId = insertArrival("fint-resp-man", "FNBRF01", "FLN6");
         org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException.class,
-                () -> launcher.launch(arrivalId, Stage.MAR), "no MAR image: fail fast");
-        assertIntent(arrivalId, "man-mar-", "dcre-man");
+                () -> launcher.launch(arrivalId, Stage.MIX), "no MIX image: fail fast");
+        assertIntent(arrivalId, "man-mix-", "dcre-man");
+    }
+
+    @Test
+    void retiredResponseStagesAreNeverLaunchable() {
+        // A-75: Stage still parses MAR/MSR for historic stage_outcome rows, but
+        // AGT must never build a Job for one; the write-ahead intent still lands,
+        // so the attempt is visible rather than silent.
+        UUID arrivalId = insertArrival("fint-resp-man", "FNBRF01", "FLN7");
+        IllegalStateException e = org.junit.jupiter.api.Assertions.assertThrows(
+                IllegalStateException.class, () -> launcher.launch(arrivalId, Stage.MAR));
+        assertTrue(e.getMessage().contains("retired"), "got: " + e.getMessage());
     }
 
     @Test
