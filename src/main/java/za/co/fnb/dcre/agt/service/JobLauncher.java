@@ -1,5 +1,6 @@
 package za.co.fnb.dcre.agt.service;
 
+import io.fabric8.kubernetes.api.model.EnvVar;
 import io.fabric8.kubernetes.api.model.batch.v1.Job;
 import io.fabric8.kubernetes.api.model.batch.v1.JobBuilder;
 import io.fabric8.kubernetes.client.KubernetesClient;
@@ -47,6 +48,16 @@ public class JobLauncher {
      *  pod falls back to MRG's localhost dev default and every window dies with
      *  "Connection to localhost:26257 refused" (found live 2026-07-26). */
     public static final String COL_DB_URL_ENV = "DCRE_COL_DB_URL";
+
+    /** Env var carrying the dcre_man JDBC url to CTV's SECOND, read-only
+     *  datasource, which reads the man_ctv_view projection for the mandate gate
+     *  (SCRUM-78). STAGE-keyed, not launch-scoped like COL_DB_URL_ENV: CTV is a
+     *  DAG stage with no per-launch env seam, and every CTV pod runs the gate,
+     *  so the url belongs to the stage exactly as DCRE_DB_URL does. CTV stays
+     *  OUT of MAN_STAGES: its PRIMARY datasource is still dcre_col. Absent, the
+     *  pod falls back to ctv's localhost dev default and the projection gate
+     *  cannot reach dcre_man at all (found 2026-07-26). */
+    public static final String CTV_MANDATES_DB_URL_ENV = "DCRE_CTV_MANDATES_DB_URL";
 
     /** Reserved durable-arg prefix carrying a pod env var rather than a Spring
      *  Batch program arg (SCRUM-78). Encoding sweep env into the durable launch
@@ -422,18 +433,33 @@ public class JobLauncher {
         return Optional.ofNullable(hint);
     }
 
+    /**
+     * Stage-keyed extra pod env for a DAG stage Job; only CTV has any. It always
+     * carries the dcre_man url of its SECOND, read-only projection datasource
+     * (CTV_MANDATES_DB_URL_ENV), reusing the same manServiceDbUrl knob every man
+     * stage pod gets rather than a second URL knob to keep in step. On ENDO it
+     * also switches the DC flow off: ENDO reuses the DC CTV image (M5, R-36) and
+     * only the extra env differs; DC arrivals keep the yml default (flow-dc true).
+     */
+    private java.util.List<EnvVar> stageEnv(Stage stage, FileArrival arrival) {
+        if (stage != Stage.CTV) {
+            return java.util.List.of();
+        }
+        java.util.List<EnvVar> env = new java.util.ArrayList<>(2);
+        env.add(new EnvVar(CTV_MANDATES_DB_URL_ENV, config.manServiceDbUrl(), null));
+        if (ArrivalService.ROUTE_ONHOST_REQ_ENDO.equals(arrival.routeId())) {
+            env.add(new EnvVar("DCRE_FLOW_DC", "false", null));
+        }
+        return env;
+    }
+
     /** M2 real-service Job: Spring Batch app; program args become JobParameters. */
     private Job serviceJob(String name, String namespace, Stage stage, FileArrival arrival, String image) {
         Map<Stage, Outcome> outcomes = RESPONDERS.contains(stage)
                 ? outcomeRepo.outcomesForArrival(arrival.id())
                 : Map.of();
         java.util.List<String> args = serviceArgs(stage, arrival, outcomes);
-        // ENDO reuses the DC CTV image with the DC flow switched off (M5, R-36):
-        // only the extra env differs; DC arrivals keep the yml default (flow-dc true).
-        java.util.List<io.fabric8.kubernetes.api.model.EnvVar> extraEnv =
-                stage == Stage.CTV && ArrivalService.ROUTE_ONHOST_REQ_ENDO.equals(arrival.routeId())
-                        ? java.util.List.of(new io.fabric8.kubernetes.api.model.EnvVar("DCRE_FLOW_DC", "false", null))
-                        : java.util.List.of();
+        java.util.List<EnvVar> extraEnv = stageEnv(stage, arrival);
         return new JobBuilder()
                 .withNewMetadata()
                     .withName(name)
