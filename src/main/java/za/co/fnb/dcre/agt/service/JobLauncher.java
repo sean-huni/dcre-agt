@@ -59,6 +59,17 @@ public class JobLauncher {
      *  cannot reach dcre_man at all (found 2026-07-26). */
     public static final String CTV_MANDATES_DB_URL_ENV = "DCRE_CTV_MANDATES_DB_URL";
 
+    /** Env var selecting WHICH mandate store CTV's DC-flow gate reads
+     *  (legacy|projection, ctv MandateSource). STAGE-keyed for the same reason as
+     *  CTV_MANDATES_DB_URL_ENV: every CTV pod runs the gate and there is no
+     *  per-launch env seam. Absent, the pod is frozen on ctv's yml default
+     *  `legacy`, which reads `FROM mandate` in dcre_col - a table only
+     *  env-reset.sh --seed creates - so the projection gate was unreachable
+     *  in-cluster no matter what dcre_man held (SCRUM-91 Task 11 Step 8).
+     *  The token is carried verbatim from agt.ctv-mandate-source and never
+     *  interpreted here; ctv owns the vocabulary. */
+    public static final String CTV_MANDATE_SOURCE_ENV = "DCRE_CTV_MANDATE_SOURCE";
+
     /** Reserved durable-arg prefix carrying a pod env var rather than a Spring
      *  Batch program arg (SCRUM-78). Encoding sweep env into the durable launch
      *  args means the intent row alone rebuilds the same Job on a reconciled
@@ -435,18 +446,26 @@ public class JobLauncher {
 
     /**
      * Stage-keyed extra pod env for a DAG stage Job; only CTV has any. It always
-     * carries the dcre_man url of its SECOND, read-only projection datasource
-     * (CTV_MANDATES_DB_URL_ENV), reusing the same manServiceDbUrl knob every man
-     * stage pod gets rather than a second URL knob to keep in step. On ENDO it
-     * also switches the DC flow off: ENDO reuses the DC CTV image (M5, R-36) and
-     * only the extra env differs; DC arrivals keep the yml default (flow-dc true).
+     * carries the two halves of the mandate gate: the dcre_man url of CTV's
+     * SECOND, read-only projection datasource (CTV_MANDATES_DB_URL_ENV), reusing
+     * the same manServiceDbUrl knob every man stage pod gets rather than a second
+     * URL knob to keep in step, and WHICH store the gate reads
+     * (CTV_MANDATE_SOURCE_ENV) from agt.ctv-mandate-source. Pointing CTV at
+     * dcre_man was never enough on its own: without the source token the pod
+     * stayed on ctv's `legacy` default and never opened that datasource at all.
+     * On ENDO it also switches the DC flow off: ENDO reuses the DC CTV image
+     * (M5, R-36) and only the extra env differs; DC arrivals keep the yml default
+     * (flow-dc true). ENDO still gets both mandate vars: they are inert there
+     * (R-20 skips the gate), and a stage-keyed seam that stayed uniform is one
+     * less way for a reconciled re-create to rebuild a different pod.
      */
     private java.util.List<EnvVar> stageEnv(Stage stage, FileArrival arrival) {
         if (stage != Stage.CTV) {
             return java.util.List.of();
         }
-        java.util.List<EnvVar> env = new java.util.ArrayList<>(2);
+        java.util.List<EnvVar> env = new java.util.ArrayList<>(3);
         env.add(new EnvVar(CTV_MANDATES_DB_URL_ENV, config.manServiceDbUrl(), null));
+        env.add(new EnvVar(CTV_MANDATE_SOURCE_ENV, config.ctvMandateSource(), null));
         if (ArrivalService.ROUTE_ONHOST_REQ_ENDO.equals(arrival.routeId())) {
             env.add(new EnvVar("DCRE_FLOW_DC", "false", null));
         }

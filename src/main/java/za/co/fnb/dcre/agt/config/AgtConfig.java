@@ -138,6 +138,18 @@ public interface AgtConfig {
     @WithDefault("jdbc:postgresql://crdb.dcre.svc.cluster.local:26257/dcre_man?sslmode=disable")
     String manServiceDbUrl();
 
+    /** Which mandate store CTV's DC-flow gate reads (SCRUM-91, Task 11 Step 8).
+     *  Handed to every CTV stage pod as DCRE_CTV_MANDATE_SOURCE, so the gate is
+     *  switchable from AGT instead of being frozen at ctv's yml default: nothing
+     *  else injects it, so an in-cluster CTV always ran `legacy`, which reads
+     *  `FROM mandate` in dcre_col, a table only env-reset.sh --seed creates.
+     *  Values are ctv's MandateSource enum (legacy|projection), parsed there and
+     *  never interpreted here: AGT only carries the token, so a new mode needs no
+     *  AGT change. The default is `legacy`, matching ctv's own application.yml
+     *  default, so wiring the seam changes nothing until it is set. */
+    @WithDefault("legacy")
+    String ctvMandateSource();
+
     /** JDBC url every launched stage Job gets so the platform-batch heartbeat
      *  writer (M12/SCRUM-88, R-47, T2) can reach agt_ops from the stage pod.
      *  FQDN for the same reason as manServiceDbUrl: stage pods run in the flow

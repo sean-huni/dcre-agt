@@ -262,6 +262,50 @@ class NamespaceRoutingTest {
     }
 
     @Test
+    void ctvStageJobCarriesTheConfiguredMandateSource() {
+        // SCRUM-91 Task 11 Step 8: CTV picks its mandate store from
+        // ${DCRE_CTV_MANDATE_SOURCE} (ctv MandateGate, legacy|projection). Nothing
+        // injected it, so an in-cluster CTV was frozen on ctv's yml default
+        // `legacy`, which reads `FROM mandate` in dcre_col - a table only
+        // env-reset.sh --seed creates and which is absent. The acceptance step
+        // (ACCP mandate PASSes, SUSPENDED one FAIL_MANDATE_NOT_ACTIVE) was
+        // therefore not drivable in-cluster at all.
+        // Stage-keyed for the same reason as the mandates url: CTV is a DAG stage
+        // with no per-launch env seam, and EVERY CTV pod runs the gate.
+        // The env NAME is asserted as a literal on purpose: it is the cross-repo
+        // wire contract with ctv's placeholder, exactly like DCRE_DB_URL.
+        UUID arrivalId = insertArrival("onhost-req", "FNBCC01");
+
+        launcher.launch(arrivalId, Stage.CTV);
+
+        Job ctvJob = k8s.batch().v1().jobs().inNamespace("dcre-col")
+                .withName(JobLauncher.jobName(za.co.fnb.dcre.agt.domain.Flow.COL, Stage.CTV, arrivalId)).get();
+        assertNotNull(ctvJob, "CTV job created in dcre-col");
+        assertEquals(config.ctvMandateSource(), envOf(ctvJob, "DCRE_CTV_MANDATE_SOURCE"),
+                "the CTV pod runs the mandate store AGT is configured for, not ctv's frozen yml default");
+        // The shipped default must be ctv's own effective behaviour, so wiring the
+        // seam changes nothing for anyone who never sets the knob.
+        assertEquals("legacy", config.ctvMandateSource(),
+                "default mirrors ctv application.yml (dcre.ctv.mandate-source:legacy)");
+    }
+
+    @Test
+    void nonCtvStagesDoNotCarryTheMandateSource() {
+        // Only CTV has a mandate gate, so the source token is keyed to that stage
+        // and never blanket-added to every launched pod.
+        UUID arrivalId = insertArrival("onhost-req", "FNBCC01");
+
+        launcher.launch(arrivalId, Stage.CRR);
+
+        Job crrJob = k8s.batch().v1().jobs().inNamespace("dcre-col")
+                .withName(JobLauncher.jobName(za.co.fnb.dcre.agt.domain.Flow.COL, Stage.CRR, arrivalId)).get();
+        assertNotNull(crrJob, "CRR job created in dcre-col");
+        boolean wired = crrJob.getSpec().getTemplate().getSpec().getContainers().get(0).getEnv().stream()
+                .anyMatch(e -> "DCRE_CTV_MANDATE_SOURCE".equals(e.getName()));
+        assertFalse(wired, "CRR has no mandate gate; the source is stage-keyed to CTV");
+    }
+
+    @Test
     void launchedJobsCarryTheAgtOpsDbUrlEnvOnBothServiceAndClockPaths() {
         // M12/SCRUM-88 (R-47): every launched stage pod gets the agt_ops URL so
         // the platform-batch heartbeat writer (T2) can reach agt_ops. FQDN like
