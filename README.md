@@ -48,7 +48,7 @@ AGT resolves `agt.exchange-root` (default `../../../../../infra/dcre-infra/excha
 | `AGT_NAMESPACE` | `dcre` | AGT's own CONTROL namespace only (K8s client, deployment, crdb/lgtm shared infra); stage Jobs launch into the flow namespaces below (SCRUM-70) |
 | `AGT_NAMESPACE_COL` | `dcre-col` | Flow namespace for Collections stage Jobs (`col-*`: onhost-req, CRW window, HCS, collections-client PRG/fint-resp) |
 | `AGT_NAMESPACE_PAY` | `dcre-pay` | Flow namespace for Payments stage Jobs (`pay-*`: onhost-req-endo, pay-client PRG/fint-resp) |
-| `AGT_NAMESPACE_MAN` | `dcre-man` | Flow namespace for Mandates stage Jobs (`man-*`); dormant until M10 |
+| `AGT_NAMESPACE_MAN` | `dcre-man` | Flow namespace for Mandates stage Jobs (`man-*`: onhost-req-man, fint-resp-man, MRG windows) |
 | `AGT_PAY_CLIENTS` | `FNBRF01` | INTERIM (R-42) comma-separated client tokens on the pay flow, until the R-14 client table lands; trimmed + uppercased on read |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://localhost:4317` | OTLP endpoint for traces/metrics export |
 | `AGT_LAUNCH_ENABLED` | `true` | Gate for K8s Job creation; observation stays on independently |
@@ -67,8 +67,8 @@ AGT resolves `agt.exchange-root` (default `../../../../../infra/dcre-infra/excha
 | `AGT_MRG_INTERVAL_SECONDS` | `60` | MRG mandates-report clock-window length |
 | `AGT_MRG_SUSPEND_INTERVAL_SECONDS` | `60` | MRG suspension-sweep clock-window length (SCRUM-91); mandate expiry is a view predicate and has no sweep |
 | `AGT_SERVICE_DB_URL` | `jdbc:postgresql://crdb.dcre.svc.cluster.local:26257/dcre_col?sslmode=disable` | JDBC URL handed to launched stage Jobs for `dcre_col` (FQDN: stage pods run in the flow namespaces, where the short `crdb` name does not resolve) |
-| `AGT_MAN_SERVICE_DB_URL` | `jdbc:postgresql://crdb.dcre.svc.cluster.local:26257/dcre_man?sslmode=disable` | JDBC URL handed to the M10 mandates stage Jobs (`MRR`..`MRG`) for `dcre_man`; the DB URL follows the stage's flow family |
-| `AGT_STAGE_MEMORY_REQUEST` | `512Mi` | Stage-pod memory request |
+| `AGT_MAN_SERVICE_DB_URL` | `jdbc:postgresql://crdb.dcre.svc.cluster.local:26257/dcre_man?sslmode=disable` | JDBC URL for `dcre_man`; the DB URL follows the stage's flow family. Handed to the M10 mandates stage Jobs (`MRR`..`MRG`) as their primary DB, AND to every CTV stage pod as `DCRE_CTV_MANDATES_DB_URL` for CTV's second, read-only projection datasource: CTV stays on `dcre_col` primarily, so it reuses this knob rather than a second URL to keep in step. CTV fails at startup in-cluster if that variable is unset, so this value is load-bearing on the collections flow too |
+| `AGT_CTV_MANDATE_SOURCE` | `legacy` | Which mandate store CTV's DC-flow gate reads, handed to every CTV stage pod as `DCRE_CTV_MANDATE_SOURCE` (SCRUM-91). `legacy` reads the `mandate` table in `dcre_col`; `projection` reads `man_ctv_view` in `dcre_man`. The token is carried verbatim and never interpreted here: CTV owns the vocabulary, so a new mode needs no AGT change. The default matches CTV's own yml default, so the seam is inert until it is set; nothing else injects it, so without it an in-cluster CTV is frozen on `legacy` |
 | `AGT_STAGE_MEMORY_LIMIT` | `768Mi` | Stage-pod memory limit |
 | `AGT_STAGE_DEADLINE_SECONDS` | `900` | Stage Job `activeDeadlineSeconds` |
 | `AGT_ORPHAN_MAX_ATTEMPTS` | `3` | OrphanSweeper: bounded same-identity relaunch attempts |
