@@ -201,9 +201,11 @@ public class DagEngine {
                     dag.responder()
                             .filter(responder -> !intended.contains(responder))
                             .ifPresent(launches::add);
-                case TECH_FAILED -> {
+                case TECH_FAILED, TECH_CONFIG_FAILED -> {
                     // Process death is never a business verdict (R-33): no successors;
-                    // relaunch policy is the reconciler's/operator's call.
+                    // relaunch policy is the reconciler's/operator's call. A
+                    // pre-runner config failure (exit 78) is even less of a verdict:
+                    // the stage never ran, so it fans out to nothing either.
                 }
             }
         }

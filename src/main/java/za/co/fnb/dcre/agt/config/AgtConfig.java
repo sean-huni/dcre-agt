@@ -193,6 +193,17 @@ public interface AgtConfig {
     @WithDefault("3")
     int orphanMaxAttempts();
 
+    /** OrphanSweeper ceiling for TECH_CONFIG_FAILED (pod exit 78: a platform-batch
+     *  pre-runner startup failure). Infrastructure, not a job outcome, so it gets
+     *  its own, larger budget: the first relaunch is immediate and later ones are
+     *  spaced by orphan-backoff-seconds, so 10 covers ~9 minutes of config-plane
+     *  outage (a cfg rolling restart or a Vault re-seed is minutes, not seconds),
+     *  roughly 3x a realistic recovery with margin. Deliberately BOUNDED: on
+     *  exhaustion the intent still mints TECH_EXHAUSTED and the arrival still goes
+     *  DAG_FAILED, never a silent unbounded wedge. env AGT_INFRA_MAX_ATTEMPTS. */
+    @WithDefault("10")
+    int infraMaxAttempts();
+
     /** Minimum seconds between relaunch attempts of one intent. */
     @WithDefault("60")
     long orphanBackoffSeconds();

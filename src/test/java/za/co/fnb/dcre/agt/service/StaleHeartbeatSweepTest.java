@@ -14,6 +14,7 @@ import jakarta.inject.Inject;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import za.co.fnb.dcre.agt.CrdbTestResource;
+import za.co.fnb.dcre.agt.config.AgtConfig;
 import za.co.fnb.dcre.agt.domain.ArrivalStatus;
 import za.co.fnb.dcre.agt.domain.LaunchIntent;
 import za.co.fnb.dcre.agt.domain.Outcome;
@@ -70,6 +71,9 @@ class StaleHeartbeatSweepTest {
 
     @Inject
     OrphanRelauncher relauncher;
+
+    @Inject
+    AgtConfig config;
 
     @Inject
     Reconciler reconciler;
@@ -170,8 +174,35 @@ class StaleHeartbeatSweepTest {
         assertEquals(1, attemptOf(intentId),
                 "the shared atomic claim keeps the second (stale-heartbeat) sweep from re-relaunching: 1, not 2");
         assertFalse(intentRepo.launchedArrivalIntentsWithStaleHeartbeat(45).stream()
-                        .anyMatch(i -> i.id().equals(intentId)),
+                        .anyMatch(c -> c.intent().id().equals(intentId)),
                 "a just-relaunched intent (heartbeat cleared) is off the stale worklist");
+    }
+
+    @Test
+    void staleHeartbeatHonoursTheConfigFailureCeilingNotTheOrphanOne() {
+        // Path 2 of the three into relaunchOrExhaust. This intent's CURRENT
+        // attempt recorded TECH_CONFIG_FAILED (pod exit 78, a pre-runner startup
+        // failure) AND its heartbeat lapsed, so the stale sweep is the one that
+        // finds it. It must draw on the same infra ceiling the k8s-Failed sweep
+        // would have used: the budget follows the CLASS of the evidence, never
+        // the sweep that happened to get there first. At the orphan ceiling (3)
+        // a TECH_FAILED here would exhaust; this must relaunch instead.
+        String name = "col-crr-" + suffix();
+        UUID arrivalId = insertArrival();
+        UUID intentId = launchedWithJob(arrivalId, name);
+        int orphanCeiling = config.orphanMaxAttempts();
+        assertTrue(config.infraMaxAttempts() > orphanCeiling, "test precondition: infra budget is the larger one");
+        setAttempt(intentId, orphanCeiling);
+        assertTrue(outcomeRepo.insertOutcome(intentId, orphanCeiling, Outcome.TECH_CONFIG_FAILED,
+                78, "Failed/BackoffLimitExceeded/InfraStartup"));
+        setHeartbeat(intentId, "now() - INTERVAL '60 seconds'");
+
+        relauncher.sweepStaleHeartbeat(Map.of(name, jobOf(name)));
+
+        assertEquals(orphanCeiling + 1, attemptOf(intentId),
+                "the stale sweep carried the outcome class through: relaunched on the infra budget");
+        assertNotEquals(ArrivalStatus.DAG_FAILED, arrivalRepo.arrivalById(arrivalId).orElseThrow().status(),
+                "a config-plane hiccup must not fail a defect-free arrival at the orphan ceiling");
     }
 
     @Test
@@ -216,7 +247,7 @@ class StaleHeartbeatSweepTest {
         // The still-wedged pod never beats, so the re-armed clock lapses in one TTL.
         setHeartbeat(intentId, "now() - INTERVAL '60 seconds'");
         assertTrue(intentRepo.launchedArrivalIntentsWithStaleHeartbeat(45).stream()
-                        .anyMatch(i -> i.id().equals(intentId)),
+                        .anyMatch(c -> c.intent().id().equals(intentId)),
                 "the re-adopted wedge is re-detected within one TTL, not stranded to 900s");
     }
 
@@ -253,6 +284,10 @@ class StaleHeartbeatSweepTest {
 
     private void setHeartbeat(final UUID intentId, final String expr) {
         exec("UPDATE launch_intent SET heartbeat_at = " + expr + " WHERE id=?", intentId);
+    }
+
+    private void setAttempt(final UUID intentId, final int attempt) {
+        exec("UPDATE launch_intent SET attempt=" + attempt + " WHERE id=?", intentId);
     }
 
     private int attemptOf(final UUID intentId) {

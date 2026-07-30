@@ -4,6 +4,8 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import javax.sql.DataSource;
 import za.co.fnb.dcre.agt.domain.LaunchIntent;
+import za.co.fnb.dcre.agt.domain.Outcome;
+import za.co.fnb.dcre.agt.domain.RelaunchCandidate;
 import za.co.fnb.dcre.agt.domain.Stage;
 
 import java.sql.Connection;
@@ -181,19 +183,27 @@ public class IntentRepo {
         }
     }
 
-    /** Arrival intents whose CURRENT attempt ended TECH-class: the orphan-sweep worklist. */
-    public List<LaunchIntent> launchedArrivalIntentsWithTechCurrentAttempt() {
+    /**
+     * Arrival intents whose CURRENT attempt ended TECH-class: the orphan-sweep
+     * worklist. The IN-list is the SINGLE lever deciding whether an outcome class
+     * is retried at all, so TECH_CONFIG_FAILED belongs in it: left out, the intent
+     * would stay LAUNCHED forever (nothing else moves it) and its arrival would sit
+     * in DAG_RUNNING for good, re-ticked every 2s. Each row carries its outcome
+     * class so the relauncher can pick the per-class ceiling without a second query.
+     */
+    public List<RelaunchCandidate> launchedArrivalIntentsWithTechCurrentAttempt() {
         String sql = """
-                SELECT i.id, i.arrival_id, i.stage, i.job_name, i.status, i.run_key, i.attempt, i.namespace
+                SELECT i.id, i.arrival_id, i.stage, i.job_name, i.status, i.run_key, i.attempt,
+                       i.namespace, o.outcome
                 FROM launch_intent i JOIN stage_outcome o
                   ON o.intent_id = i.id AND o.attempt = i.attempt
                 WHERE i.status='LAUNCHED' AND i.arrival_id IS NOT NULL
-                  AND o.outcome IN ('TECH_FAILED')""";
+                  AND o.outcome IN ('TECH_FAILED', 'TECH_CONFIG_FAILED')""";
         try (Connection c = ds.getConnection(); PreparedStatement p = c.prepareStatement(sql);
              ResultSet r = p.executeQuery()) {
-            List<LaunchIntent> out = new ArrayList<>();
+            List<RelaunchCandidate> out = new ArrayList<>();
             while (r.next()) {
-                out.add(map(r));
+                out.add(mapCandidate(r));
             }
             return out;
         } catch (SQLException e) {
@@ -209,19 +219,25 @@ public class IntentRepo {
      * one just claimed for relaunch) stays on the k8s-status path, never here.
      * The cutoff is evaluated server-side against the DB clock that stamps
      * heartbeat_at, so AGT/CRDB clock skew cannot prematurely flag a live job.
+     * The LEFT JOIN carries the CURRENT attempt's outcome class (NULL when it
+     * recorded none, the usual wedged-but-alive shape) so an intent flagged by
+     * both sweeps gets the SAME ceiling either way: the budget follows the class
+     * of the evidence, never the sweep that happened to find it first.
      */
-    public List<LaunchIntent> launchedArrivalIntentsWithStaleHeartbeat(final long ttlSeconds) {
-        String sql = "SELECT id, arrival_id, stage, job_name, status, run_key, attempt, namespace"
-                + " FROM launch_intent"
-                + " WHERE status='" + LaunchIntent.LAUNCHED + "' AND arrival_id IS NOT NULL"
-                + "   AND heartbeat_at IS NOT NULL"
-                + "   AND heartbeat_at < now() - (INTERVAL '1 second' * ?)";
+    public List<RelaunchCandidate> launchedArrivalIntentsWithStaleHeartbeat(final long ttlSeconds) {
+        String sql = "SELECT i.id, i.arrival_id, i.stage, i.job_name, i.status, i.run_key, i.attempt,"
+                + "       i.namespace, o.outcome"
+                + " FROM launch_intent i LEFT JOIN stage_outcome o"
+                + "   ON o.intent_id = i.id AND o.attempt = i.attempt"
+                + " WHERE i.status='" + LaunchIntent.LAUNCHED + "' AND i.arrival_id IS NOT NULL"
+                + "   AND i.heartbeat_at IS NOT NULL"
+                + "   AND i.heartbeat_at < now() - (INTERVAL '1 second' * ?)";
         try (Connection c = ds.getConnection(); PreparedStatement p = c.prepareStatement(sql)) {
             p.setLong(1, ttlSeconds);
             try (ResultSet r = p.executeQuery()) {
-                List<LaunchIntent> out = new ArrayList<>();
+                List<RelaunchCandidate> out = new ArrayList<>();
                 while (r.next()) {
-                    out.add(map(r));
+                    out.add(mapCandidate(r));
                 }
                 return out;
             }
@@ -309,6 +325,13 @@ public class IntentRepo {
         } catch (SQLException e) {
             throw new IllegalStateException("allIntentJobNames failed", e);
         }
+    }
+
+    /** Sweep worklist row: the 8 intent columns plus the current attempt's
+     *  outcome class in column 9 (NULL when that attempt recorded none). */
+    private static RelaunchCandidate mapCandidate(ResultSet r) throws SQLException {
+        String outcome = r.getString(9);
+        return new RelaunchCandidate(map(r), outcome != null ? Outcome.valueOf(outcome) : null);
     }
 
     private static LaunchIntent map(ResultSet r) throws SQLException {

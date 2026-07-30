@@ -119,6 +119,13 @@ agt:
   stage-memory-limit: ${AGT_STAGE_MEMORY_LIMIT:768Mi}
   stage-deadline-seconds: ${AGT_STAGE_DEADLINE_SECONDS:900}
   orphan-max-attempts: ${AGT_ORPHAN_MAX_ATTEMPTS:3}
+  # Ceiling for TECH_CONFIG_FAILED (stage pod exit 78 = platform-batch pre-runner
+  # startup failure: config import / binding / secret fetch). Infrastructure, not
+  # a job outcome, so the work is still retried but on its own budget: the first
+  # relaunch is immediate and later ones are spaced by orphan-backoff-seconds, so
+  # 10 covers ~9 minutes, roughly 3x a cfg rolling restart or a Vault re-seed.
+  # Bounded on purpose: exhaustion still mints TECH_EXHAUSTED and fails the DAG.
+  infra-max-attempts: ${AGT_INFRA_MAX_ATTEMPTS:10}
   orphan-backoff-seconds: ${AGT_ORPHAN_BACKOFF_SECONDS:60}
   # M12/SCRUM-86 (R-47): wedged-but-alive detection. A LAUNCHED intent whose
   # heartbeat_at fell behind this TTL is relaunched (heartbeat writes every 10s

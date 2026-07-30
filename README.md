@@ -83,7 +83,9 @@ Per-client inbound exchange layout (clients `FNBCC01`, `FNBCC02`, `FNBRF01`, eac
 ./gradlew test
 ```
 
-Runs against a real `cockroachdb/cockroach:v26.2.3` Testcontainer (ledger constraints, lease CAS/takeover, arrival dedup/quarantine, OrphanSweeper relaunch/exhaustion) plus pure DAG-logic unit tests (`DagEngineTest`, `ClockJobNameTest`). Broader e2e and chaos (kill/resume) runs live in the sprint runbook in `dcre-infra`.
+Runs against a real `cockroachdb/cockroach:v26.2.3` Testcontainer (ledger constraints, lease CAS/takeover, arrival dedup/quarantine, OrphanSweeper relaunch/exhaustion, infrastructure-vs-job failure classification) plus pure DAG-logic unit tests (`DagEngineTest`, `ClockJobNameTest`). Broader e2e and chaos (kill/resume) runs live in the sprint runbook in `dcre-infra`.
+
+`ConfigFailureClassificationTest` covers the `TECH_CONFIG_FAILED` class: a Failed Job whose pod exited **78** (`EX_CONFIG`, platform-batch's reserved code for a failure before the runner phase) is an infrastructure startup failure, not a job outcome. It is still retried, but on `agt.infra-max-attempts` instead of the 3-attempt `agt.orphan-max-attempts` budget, so a cfg restart or a Vault re-seed cannot turn a defect-free arrival into a terminal `DAG_FAILED` in minutes. The ceiling stays bounded: exhaustion still mints `TECH_EXHAUSTED` and fails the DAG (`OrphanSweepTest`, `StaleHeartbeatSweepTest`).
 
 ## Local cluster deployment
 
