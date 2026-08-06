@@ -58,5 +58,7 @@ class ManRespDagTest {
         // stage_outcome rows parse; it must be as unlaunchable as MAR/MSR.
         assertFalse(JobLauncher.LAUNCHABLE.contains(Stage.MIS));
         assertTrue(JobLauncher.LAUNCHABLE.contains(Stage.MIT));
+        assertFalse(JobLauncher.LAUNCHABLE.contains(Stage.MAF));
+        assertTrue(JobLauncher.LAUNCHABLE.contains(Stage.MAS));
     }
 }

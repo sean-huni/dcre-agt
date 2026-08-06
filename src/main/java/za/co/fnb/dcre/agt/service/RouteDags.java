@@ -36,13 +36,13 @@ final class RouteDags {
             EnumSet.of(Stage.CIR),
             Optional.of(Stage.CIR));
 
-    /** M10 (SCRUM-79): MRR -> MRV -> MAF -> MIT -> fork {MIR, MRW}; the man
+    /** M10 (SCRUM-79): MRR -> MRV -> MAS -> MIT -> fork {MIR, MRW}; the man
      *  responder is MIR (R-41 switch-case extension: rejections never see CIR). */
     static final RouteDag MAN = new RouteDag(
             new EnumMap<>(Map.of(
                     Stage.MRR, EnumSet.of(Stage.MRV),
-                    Stage.MRV, EnumSet.of(Stage.MAF),
-                    Stage.MAF, EnumSet.of(Stage.MIT),
+                    Stage.MRV, EnumSet.of(Stage.MAS),
+                    Stage.MAS, EnumSet.of(Stage.MIT),
                     Stage.MIT, EnumSet.of(Stage.MIR, Stage.MRW))),
             EnumSet.of(Stage.MIR, Stage.MRW),
             Optional.of(Stage.MIR));

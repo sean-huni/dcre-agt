@@ -14,7 +14,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * M10/SCRUM-79 pure decision-logic tests for the mandates routes: the
- * onhost-req-man request DAG (MRR -> MRV -> MAF -> MIT -> fork {MIR, MRW},
+ * onhost-req-man request DAG (MRR -> MRV -> MAS -> MIT -> fork {MIR, MRW},
  * responder MIR) and the fint-resp-man response DAG (SCRUM-91: one token-picked
  * leg reader of MIX/MSX/MPX, no chain and no responder, so failures stay open
  * for the reconciler). No containers, no K8s.
@@ -67,21 +67,21 @@ class ManDagEngineTest {
     void manDagChainsMrrMrvMafMis() {
         assertEquals(EnumSet.of(Stage.MRV), DagEngine.computeLaunches(MAN_REQ, BOOK,
                 Map.of(Stage.MRR, Outcome.BUSINESS_ACCEPTED), EnumSet.of(Stage.MRR)));
-        assertEquals(EnumSet.of(Stage.MAF), DagEngine.computeLaunches(MAN_REQ, BOOK,
+        assertEquals(EnumSet.of(Stage.MAS), DagEngine.computeLaunches(MAN_REQ, BOOK,
                 Map.of(Stage.MRR, Outcome.BUSINESS_ACCEPTED, Stage.MRV, Outcome.BUSINESS_ACCEPTED),
                 EnumSet.of(Stage.MRR, Stage.MRV)));
         assertEquals(EnumSet.of(Stage.MIT), DagEngine.computeLaunches(MAN_REQ, BOOK,
                 Map.of(Stage.MRR, Outcome.BUSINESS_ACCEPTED, Stage.MRV, Outcome.BUSINESS_ACCEPTED,
-                        Stage.MAF, Outcome.BUSINESS_ACCEPTED),
-                EnumSet.of(Stage.MRR, Stage.MRV, Stage.MAF)));
+                        Stage.MAS, Outcome.BUSINESS_ACCEPTED),
+                EnumSet.of(Stage.MRR, Stage.MRV, Stage.MAS)));
     }
 
     @Test
     void misAcceptedForksMirAndMrwTogether() {
         Set<Stage> launches = DagEngine.computeLaunches(MAN_REQ, BOOK,
                 Map.of(Stage.MRR, Outcome.BUSINESS_ACCEPTED, Stage.MRV, Outcome.BUSINESS_ACCEPTED,
-                        Stage.MAF, Outcome.BUSINESS_ACCEPTED, Stage.MIT, Outcome.BUSINESS_ACCEPTED),
-                EnumSet.of(Stage.MRR, Stage.MRV, Stage.MAF, Stage.MIT));
+                        Stage.MAS, Outcome.BUSINESS_ACCEPTED, Stage.MIT, Outcome.BUSINESS_ACCEPTED),
+                EnumSet.of(Stage.MRR, Stage.MRV, Stage.MAS, Stage.MIT));
         assertEquals(EnumSet.of(Stage.MIR, Stage.MRW), launches,
                 "MIT fans out to the responder AND the pain writer");
     }
@@ -89,13 +89,13 @@ class ManDagEngineTest {
     @Test
     void manPartialProceedsLikeAccepted() {
         // R-41 semantics carry over: PARTIAL continues PASS rows.
-        assertEquals(EnumSet.of(Stage.MAF), DagEngine.computeLaunches(MAN_REQ, BOOK,
+        assertEquals(EnumSet.of(Stage.MAS), DagEngine.computeLaunches(MAN_REQ, BOOK,
                 Map.of(Stage.MRR, Outcome.BUSINESS_ACCEPTED, Stage.MRV, Outcome.BUSINESS_PARTIAL),
                 EnumSet.of(Stage.MRR, Stage.MRV)));
         assertEquals(EnumSet.of(Stage.MIR, Stage.MRW), DagEngine.computeLaunches(MAN_REQ, BOOK,
                 Map.of(Stage.MRR, Outcome.BUSINESS_ACCEPTED, Stage.MRV, Outcome.BUSINESS_PARTIAL,
-                        Stage.MAF, Outcome.BUSINESS_ACCEPTED, Stage.MIT, Outcome.BUSINESS_PARTIAL),
-                EnumSet.of(Stage.MRR, Stage.MRV, Stage.MAF, Stage.MIT)));
+                        Stage.MAS, Outcome.BUSINESS_ACCEPTED, Stage.MIT, Outcome.BUSINESS_PARTIAL),
+                EnumSet.of(Stage.MRR, Stage.MRV, Stage.MAS, Stage.MIT)));
     }
 
     @Test
@@ -104,10 +104,10 @@ class ManDagEngineTest {
         assertEquals(EnumSet.of(Stage.MIR), DagEngine.computeLaunches(MAN_REQ, BOOK,
                 Map.of(Stage.MRR, Outcome.BUSINESS_ACCEPTED, Stage.MRV, Outcome.BUSINESS_FILE_REJECTED),
                 EnumSet.of(Stage.MRR, Stage.MRV)),
-                "whole-file policy rejection: MIR only, never MAF/MIT/MRW");
+                "whole-file policy rejection: MIR only, never MAS/MIT/MRW");
         assertEquals(EnumSet.of(Stage.MIR), DagEngine.computeLaunches(MAN_REQ, BOOK,
-                Map.of(Stage.MRR, Outcome.BUSINESS_ACCEPTED, Stage.MAF, Outcome.BUSINESS_FILE_FATAL),
-                EnumSet.of(Stage.MRR, Stage.MRV, Stage.MAF)),
+                Map.of(Stage.MRR, Outcome.BUSINESS_ACCEPTED, Stage.MAS, Outcome.BUSINESS_FILE_FATAL),
+                EnumSet.of(Stage.MRR, Stage.MRV, Stage.MAS)),
                 "whole-file fatal: MIR only");
     }
 
@@ -124,12 +124,12 @@ class ManDagEngineTest {
     void manCompletesOnlyWhenMirAndMrwBothReport() {
         assertTrue(DagEngine.terminalState(MAN_REQ, Map.of(
                         Stage.MRR, Outcome.BUSINESS_ACCEPTED, Stage.MRV, Outcome.BUSINESS_ACCEPTED,
-                        Stage.MAF, Outcome.BUSINESS_ACCEPTED, Stage.MIT, Outcome.BUSINESS_ACCEPTED,
+                        Stage.MAS, Outcome.BUSINESS_ACCEPTED, Stage.MIT, Outcome.BUSINESS_ACCEPTED,
                         Stage.MIR, Outcome.BUSINESS_ACCEPTED)).isEmpty(),
                 "MRW still in flight: no terminal verdict");
         assertEquals(ArrivalStatus.DAG_COMPLETE, DagEngine.terminalState(MAN_REQ, Map.of(
                 Stage.MRR, Outcome.BUSINESS_ACCEPTED, Stage.MRV, Outcome.BUSINESS_ACCEPTED,
-                Stage.MAF, Outcome.BUSINESS_ACCEPTED, Stage.MIT, Outcome.BUSINESS_ACCEPTED,
+                Stage.MAS, Outcome.BUSINESS_ACCEPTED, Stage.MIT, Outcome.BUSINESS_ACCEPTED,
                 Stage.MIR, Outcome.BUSINESS_ACCEPTED, Stage.MRW, Outcome.BUSINESS_ACCEPTED)).orElseThrow());
     }
 

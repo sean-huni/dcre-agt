@@ -78,7 +78,7 @@ public interface AgtConfig {
 
     java.util.Optional<String> mrvImage();
 
-    java.util.Optional<String> mafImage();
+    java.util.Optional<String> masImage();
 
     java.util.Optional<String> mitImage();
 

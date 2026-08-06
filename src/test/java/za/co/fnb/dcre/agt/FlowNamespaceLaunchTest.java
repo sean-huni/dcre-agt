@@ -117,7 +117,7 @@ class FlowNamespaceLaunchTest {
         // never build a Job for one; the write-ahead intent still lands, so the
         // attempt is visible rather than silent.
         UUID arrivalId = insertArrival("fint-resp-man", "FNBRF01", "FLN7");
-        for (Stage retired : java.util.List.of(Stage.MAR, Stage.MSR, Stage.MIS)) {
+        for (Stage retired : java.util.List.of(Stage.MAR, Stage.MSR, Stage.MIS, Stage.MAF)) {
             IllegalStateException e = org.junit.jupiter.api.Assertions.assertThrows(
                     IllegalStateException.class, () -> launcher.launch(arrivalId, retired),
                     "retired stage " + retired + " must never launch");
