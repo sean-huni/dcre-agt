@@ -10,12 +10,14 @@ import za.co.fnb.dcre.agt.domain.FileArrival;
 import za.co.fnb.dcre.agt.domain.Outcome;
 import za.co.fnb.dcre.agt.domain.Stage;
 import za.co.fnb.dcre.agt.repo.ArrivalRepo;
+import za.co.fnb.dcre.agt.repo.CollectionsReadRepo;
 import za.co.fnb.dcre.agt.repo.IntentRepo;
 import za.co.fnb.dcre.agt.repo.OutcomeRepo;
 import za.co.fnb.dcre.agt.service.RouteDags.RouteDag;
 
 import java.util.EnumSet;
 import java.util.Map;
+import java.util.function.BooleanSupplier;
 import java.util.Set;
 
 /**
@@ -84,11 +86,6 @@ public class DagEngine {
         };
     }
 
-    /** SCRUM-107: reads the registry rather than repeating the route list. This
-     *  was a FIFTH encoding of "which routes exist": a response route added to
-     *  INBOUND and RESPONSES but missed here took the REQUEST branch, found no
-     *  REQUESTS entry, and silently QUARANTINED every file on that route. Derived,
-     *  so the drift is now impossible rather than merely tested for. */
     /** Whether this route's terminal verdict depends on a CRW emission at all, so a
      *  route that never emits does not pay for the query. */
     private static boolean emissionRequired(String route) {
@@ -96,6 +93,11 @@ public class DagEngine {
         return dag != null && dag.requiresEmission();
     }
 
+    /** SCRUM-107: reads the registry rather than repeating the route list. This
+     *  was a FIFTH encoding of "which routes exist": a response route added to
+     *  INBOUND and RESPONSES but missed here took the REQUEST branch, found no
+     *  REQUESTS entry, and silently QUARANTINED every file on that route. Derived,
+     *  so the drift is now impossible rather than merely tested for. */
     private static boolean isRespRoute(String route) {
         return RouteDags.RESPONSES.containsKey(route);
     }
@@ -142,7 +144,7 @@ public class DagEngine {
     JobLauncher launcher;
 
     @Inject
-    za.co.fnb.dcre.agt.repo.CollectionsReadRepo collectionsRead;
+    CollectionsReadRepo collectionsRead;
 
     @RunOnVirtualThread
     @Scheduled(every = "2s", concurrentExecution = io.quarkus.scheduler.Scheduled.ConcurrentExecution.SKIP)
@@ -189,11 +191,13 @@ public class DagEngine {
                 for (Stage next : computeLaunches(arrival.routeId(), arrival.physicalFilename(), outcomes, intended)) {
                     launcher.launch(arrival.id(), next);
                 }
-                // SCRUM-107: only consulted once every stage is done, so the extra read
-                // costs one query per arrival per tick at most, and only on the routes
-                // that actually emit.
+                // SCRUM-107: a SUPPLIER, so the cross-database read happens only if every
+                // stage is already done. Passing a boolean evaluated it eagerly, which
+                // charged one connection + round trip per DAG_RUNNING arrival per 2s
+                // tick for the arrival's whole life, and this change deliberately keeps
+                // warehoused arrivals in DAG_RUNNING for days, so it grew its own N.
                 terminalState(arrival.routeId(), outcomes,
-                        emissionRequired(arrival.routeId()) && collectionsRead.emissionVisibleFor(arrival.id()))
+                        () -> collectionsRead.emissionOwedFor(arrival.id()))
                         .ifPresent(
                         s -> arrivalRepo.transitionArrival(arrival.id(), ArrivalStatus.DAG_RUNNING, s));
             } catch (IllegalArgumentException e) {
@@ -248,10 +252,6 @@ public class DagEngine {
     }
 
     /** Successor stages to launch now, given recorded outcomes and existing intents (onhost-req). */
-    public static Set<Stage> computeLaunches(Map<Stage, Outcome> outcomes, Set<Stage> intended) {
-        return computeLaunches(RouteDags.DC, outcomes, intended);
-    }
-
     private static Set<Stage> computeLaunches(RouteDag dag, Map<Stage, Outcome> outcomes, Set<Stage> intended) {
         Set<Stage> launches = EnumSet.noneOf(Stage.class);
         for (Map.Entry<Stage, Outcome> done : outcomes.entrySet()) {
@@ -286,11 +286,11 @@ public class DagEngine {
     /** Terminal verdict by route: response routes use respTerminalState, request
      *  routes their R-36 DAG shape. */
     public static java.util.Optional<ArrivalStatus> terminalState(String route, Map<Stage, Outcome> outcomes,
-                                                                  boolean emissionVisible) {
+                                                                  BooleanSupplier emissionOwed) {
         if (isRespRoute(route)) {
             return respTerminalState(RouteDags.RESPONSES.get(route), outcomes);
         }
-        return terminalState(requestDag(route), outcomes, emissionVisible);
+        return terminalState(requestDag(route), outcomes, emissionOwed);
     }
 
     /**
@@ -312,7 +312,7 @@ public class DagEngine {
      *  business-done before any terminal verdict (Fugu F6: a tech-failed responder
      *  means the NACK never left; the arrival stays open for the reconciler). */
     private static java.util.Optional<ArrivalStatus> terminalState(RouteDag dag, Map<Stage, Outcome> outcomes,
-                                                                   boolean emissionVisible) {
+                                                                   BooleanSupplier emissionOwed) {
         // R-41: BUSINESS_FILE_REJECTED terminates exactly like BUSINESS_FILE_FATAL
         // (responder acceptance closes the DAG; the whole file never debits).
         boolean anyFatal = outcomes.values().stream()
@@ -331,14 +331,20 @@ public class DagEngine {
             return java.util.Optional.empty();
         }
         // SCRUM-107 (Sean, 2026-08-06): every stage is done, but on a CRW-emitting
-        // route the request has not actually reached Fintegrate until an emission is
-        // VISIBLE for this arrival. Claiming DAG_COMPLETE before that is a status the
-        // system cannot back up. R-37's warehousing is untouched: the arrival simply
-        // stays DAG_RUNNING, correctly, until its process_date comes round.
-        // Only reached when nothing fatal occurred, so a NACKed file (which emits
-        // nothing by design) terminates through the anyFatal branch above and is
-        // never stranded here.
-        if (dag.requiresEmission() && !emissionVisible) {
+        // route the request has not reached Fintegrate while an emission is still
+        // OWED. Claiming DAG_COMPLETE then is a status the system cannot back up.
+        // R-37's warehousing is untouched: the arrival stays DAG_RUNNING, correctly,
+        // until its process_date comes round.
+        //
+        // OWED, not EMITTED. "An emission exists" completes a 3-batch arrival after
+        // batch 1, completes a multi-process-date arrival on day 1 with the futured
+        // remainder unsent, and strands forever an arrival whose rows all failed
+        // validation and which will therefore never emit at all. The view answers
+        // all three. A NACKed file terminates through the anyFatal branch above and
+        // never reaches here.
+        // Evaluated LAST and only on emitting routes, so the read is charged once per
+        // arrival at the moment it would otherwise complete.
+        if (dag.requiresEmission() && emissionOwed.getAsBoolean()) {
             return java.util.Optional.empty();
         }
         return java.util.Optional.of(ArrivalStatus.DAG_COMPLETE);

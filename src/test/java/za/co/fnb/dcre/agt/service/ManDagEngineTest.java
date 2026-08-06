@@ -125,22 +125,22 @@ class ManDagEngineTest {
         assertTrue(DagEngine.terminalState(MAN_REQ, Map.of(
                         Stage.MRR, Outcome.BUSINESS_ACCEPTED, Stage.MRV, Outcome.BUSINESS_ACCEPTED,
                         Stage.MAS, Outcome.BUSINESS_ACCEPTED, Stage.MIT, Outcome.BUSINESS_ACCEPTED,
-                        Stage.MIR, Outcome.BUSINESS_ACCEPTED), true).isEmpty(),
+                        Stage.MIR, Outcome.BUSINESS_ACCEPTED), () -> false).isEmpty(),
                 "MRW still in flight: no terminal verdict");
         assertEquals(ArrivalStatus.DAG_COMPLETE, DagEngine.terminalState(MAN_REQ, Map.of(
                 Stage.MRR, Outcome.BUSINESS_ACCEPTED, Stage.MRV, Outcome.BUSINESS_ACCEPTED,
                 Stage.MAS, Outcome.BUSINESS_ACCEPTED, Stage.MIT, Outcome.BUSINESS_ACCEPTED,
-                Stage.MIR, Outcome.BUSINESS_ACCEPTED, Stage.MRW, Outcome.BUSINESS_ACCEPTED), true).orElseThrow());
+                Stage.MIR, Outcome.BUSINESS_ACCEPTED, Stage.MRW, Outcome.BUSINESS_ACCEPTED), () -> false).orElseThrow());
     }
 
     @Test
     void manRejectedTerminalRequiresTheMirNack() {
         assertEquals(ArrivalStatus.DAG_FAILED, DagEngine.terminalState(MAN_REQ, Map.of(
                 Stage.MRR, Outcome.BUSINESS_ACCEPTED, Stage.MRV, Outcome.BUSINESS_FILE_REJECTED,
-                Stage.MIR, Outcome.BUSINESS_ACCEPTED), true).orElseThrow());
+                Stage.MIR, Outcome.BUSINESS_ACCEPTED), () -> false).orElseThrow());
         assertTrue(DagEngine.terminalState(MAN_REQ, Map.of(
                         Stage.MRR, Outcome.BUSINESS_ACCEPTED, Stage.MRV, Outcome.BUSINESS_FILE_REJECTED,
-                        Stage.MIR, Outcome.TECH_FAILED), true).isEmpty(),
+                        Stage.MIR, Outcome.TECH_FAILED), () -> false).isEmpty(),
                 "a NACK that never left OnHost keeps the arrival open (F6 analog)");
     }
 
@@ -168,14 +168,14 @@ class ManDagEngineTest {
         // runs per arrival, so completion is any-of and never all-of: an all-of
         // test would leave every response arrival permanently DAG_RUNNING.
         assertEquals(ArrivalStatus.DAG_COMPLETE, DagEngine.terminalState(MAN_RESP,
-                        Map.of(Stage.MPX, Outcome.BUSINESS_ACCEPTED), true).orElseThrow(),
+                        Map.of(Stage.MPX, Outcome.BUSINESS_ACCEPTED), () -> false).orElseThrow(),
                 "the PBSR leg reader alone completes a PBSR arrival");
         assertEquals(ArrivalStatus.DAG_COMPLETE, DagEngine.terminalState(MAN_RESP,
-                Map.of(Stage.MIX, Outcome.BUSINESS_ACCEPTED), true).orElseThrow());
+                Map.of(Stage.MIX, Outcome.BUSINESS_ACCEPTED), () -> false).orElseThrow());
         assertEquals(ArrivalStatus.DAG_COMPLETE, DagEngine.terminalState(MAN_RESP,
-                Map.of(Stage.MSX, Outcome.BUSINESS_ACCEPTED), true).orElseThrow());
+                Map.of(Stage.MSX, Outcome.BUSINESS_ACCEPTED), () -> false).orElseThrow());
         assertTrue(DagEngine.terminalState(MAN_RESP,
-                        Map.of(Stage.MPX, Outcome.BUSINESS_PARTIAL), true).isEmpty(),
+                        Map.of(Stage.MPX, Outcome.BUSINESS_PARTIAL), () -> false).isEmpty(),
                 "partial is not acceptance: stays open, exactly as on collections fint-resp");
     }
 
@@ -185,10 +185,10 @@ class ManDagEngineTest {
                         Map.of(Stage.MPX, Outcome.BUSINESS_FILE_FATAL), EnumSet.of(Stage.MPX)).isEmpty(),
                 "no responder on the response route: a fatal leg reader launches nothing");
         assertTrue(DagEngine.terminalState(MAN_RESP,
-                        Map.of(Stage.MPX, Outcome.BUSINESS_FILE_FATAL), true).isEmpty(),
+                        Map.of(Stage.MPX, Outcome.BUSINESS_FILE_FATAL), () -> false).isEmpty(),
                 "fail closed: the arrival stays open, mirroring collections fint-resp");
         assertTrue(DagEngine.terminalState(MAN_RESP,
-                        Map.of(Stage.MPX, Outcome.TECH_FAILED), true).isEmpty());
+                        Map.of(Stage.MPX, Outcome.TECH_FAILED), () -> false).isEmpty());
     }
 
     @Test
@@ -198,7 +198,7 @@ class ManDagEngineTest {
         // never close a post-cutover arrival.
         assertTrue(DagEngine.terminalState(MAN_RESP,
                         Map.of(Stage.MAR, Outcome.BUSINESS_ACCEPTED,
-                                Stage.MSR, Outcome.BUSINESS_ACCEPTED), true).isEmpty(),
+                                Stage.MSR, Outcome.BUSINESS_ACCEPTED), () -> false).isEmpty(),
                 "the retired chain is not a terminal state any more");
         assertTrue(DagEngine.computeLaunches(MAN_REQ, BOOK,
                         Map.of(Stage.MIS, Outcome.BUSINESS_ACCEPTED),
