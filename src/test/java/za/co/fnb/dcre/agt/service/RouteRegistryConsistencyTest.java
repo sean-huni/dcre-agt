@@ -2,7 +2,6 @@ package za.co.fnb.dcre.agt.service;
 
 import org.junit.jupiter.api.Test;
 import za.co.fnb.dcre.agt.domain.Outcome;
-import za.co.fnb.dcre.agt.service.FlowNamespaces;
 import za.co.fnb.dcre.agt.domain.Stage;
 
 import java.util.EnumSet;
@@ -127,10 +126,10 @@ class RouteRegistryConsistencyTest {
     @Test
     void anUnknownRouteHasNoFlowInsteadOfDefaultingToCollections() {
         assertThrows(IllegalArgumentException.class,
-                () -> FlowNamespaces.flowForRoute("totally-unknown-route", "FNBRF01", java.util.Set.of()),
+                () -> FlowNamespaces.flowForRoute("totally-unknown-route", "FNBRF01", Set.of()),
                 "an unknown route must not resolve to the collections namespace");
         assertThrows(IllegalArgumentException.class,
-                () -> FlowNamespaces.flowForRoute(null, "FNBRF01", java.util.Set.of()),
+                () -> FlowNamespaces.flowForRoute(null, "FNBRF01", Set.of()),
                 "a null route must not resolve to the collections namespace either");
     }
 
@@ -138,12 +137,17 @@ class RouteRegistryConsistencyTest {
     @Test
     void everyInboundRequestRouteResolvesAnInitialStageAndFlow() {
         for (String route : DirectoryWatcher.inboundRoutes()) {
+            // EVERY inbound route needs a flow: JobLauncher.launch resolves one for
+            // response routes too, and an unmapped one throws there and leaves the
+            // arrival CLAIMED forever. This used to sit below the continue and so
+            // covered only 3 of the 5 inbound routes.
+            assertDoesNotThrow(() -> FlowNamespaces.flowForRoute(route, "FNBRF01", Set.of()),
+                    "inbound route '" + route + "' must resolve a flow");
             if (!RouteDags.REQUESTS.containsKey(route)) {
                 continue; // response routes are token-picked from the filename
             }
             assertTrue(DagEngine.initialStage(route, "FNBRF01_MSG.txt").isPresent(),
                     "request route '" + route + "' must resolve a first stage");
-            FlowNamespaces.flowForRoute(route, "FNBRF01", java.util.Set.of());
         }
     }
 

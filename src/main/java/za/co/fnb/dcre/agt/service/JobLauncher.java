@@ -386,17 +386,21 @@ public class JobLauncher {
      * reconciled re-create rebuilds identical args; nothing lives only in memory
      * (same durability property clock intents get from persisted launch args).
      */
-    public static java.util.List<String> serviceArgs(Stage stage, FileArrival arrival, Map<Stage, Outcome> outcomes) {
+    public static java.util.List<String> serviceArgs(Stage stage, FileArrival arrival,
+                                                    Map<Stage, Outcome> outcomes, Flow flow) {
         java.util.List<String> args = new java.util.ArrayList<>(java.util.List.of(
                 "arrival.id=" + arrival.id()));
         if (BOUNDARY_READERS.contains(stage)) {
             args.add("input.file=" + arrival.claimedPath() + ",java.lang.String,false");
             args.add("original.name=" + arrival.physicalFilename() + ",java.lang.String,false");
         }
-        if (stage == Stage.CRR && ArrivalService.ROUTE_ONHOST_REQ_ENDO.equals(arrival.routeId())) {
-            // SCRUM-69: ENDO = Payments. CRR stamps tx_header.flow from this
-            // non-identifying arg (absent = COL); the route is durable on the
-            // arrival row, so a reconciled re-create rebuilds it identically.
+        if (stage == Stage.CRR && flow == Flow.PAY) {
+            // SCRUM-69: CRR stamps tx_header.flow from this non-identifying arg
+            // (absent = COL). SCRUM-107: keyed on the RESOLVED flow, not on a
+            // route-string equality test whose implicit else was collections; a
+            // second PAY request route would otherwise have stamped COL on every
+            // row of a payments file. The flow comes from the intent's durable
+            // namespace, so a reconciled re-create rebuilds it identically.
             args.add("flow=PAY,java.lang.String,false");
         }
         if (RESPONDERS.contains(stage)) {
@@ -462,14 +466,16 @@ public class JobLauncher {
      * (R-20 skips the gate), and a stage-keyed seam that stayed uniform is one
      * less way for a reconciled re-create to rebuild a different pod.
      */
-    private java.util.List<EnvVar> stageEnv(Stage stage, FileArrival arrival) {
+    private java.util.List<EnvVar> stageEnv(Stage stage, FileArrival arrival, Flow flow) {
         if (stage != Stage.CTV) {
             return java.util.List.of();
         }
         java.util.List<EnvVar> env = new java.util.ArrayList<>(3);
         env.add(new EnvVar(CTV_MANDATES_DB_URL_ENV, config.manServiceDbUrl(), null));
         env.add(new EnvVar(CTV_MANDATE_SOURCE_ENV, config.ctvMandateSource(), null));
-        if (ArrivalService.ROUTE_ONHOST_REQ_ENDO.equals(arrival.routeId())) {
+        // SCRUM-107: resolved flow, not a route-string test with an implicit
+        // collections else (see FlowNamespaces.flowForNamespace).
+        if (flow == Flow.PAY) {
             env.add(new EnvVar("DCRE_FLOW_DC", "false", null));
         }
         return env;
@@ -480,8 +486,9 @@ public class JobLauncher {
         Map<Stage, Outcome> outcomes = RESPONDERS.contains(stage)
                 ? outcomeRepo.outcomesForArrival(arrival.id())
                 : Map.of();
-        java.util.List<String> args = serviceArgs(stage, arrival, outcomes);
-        java.util.List<EnvVar> extraEnv = stageEnv(stage, arrival);
+        final Flow flow = flowNamespaces.flowForNamespace(namespace);
+        java.util.List<String> args = serviceArgs(stage, arrival, outcomes, flow);
+        java.util.List<EnvVar> extraEnv = stageEnv(stage, arrival, flow);
         return new JobBuilder()
                 .withNewMetadata()
                     .withName(name)

@@ -61,6 +61,45 @@ public class FlowNamespaces {
         return flowForRoute(ArrivalService.ROUTE_FINT_RESP, clientToken, payClients());
     }
 
+    /**
+     * Inverse of {@link #namespaceOf}: the flow a DURABLE namespace belongs to.
+     *
+     * <p>SCRUM-107. Job specs used to re-derive payments-ness from a route-string
+     * equality test ({@code ROUTE_ONHOST_REQ_ENDO.equals(routeId)}) whose implicit
+     * else was collections, in the DATA plane: the {@code flow=PAY} program arg and
+     * {@code DCRE_FLOW_DC}. A second PAY request route would have stamped
+     * {@code tx_header.flow=COL} on every row of a payments file and run it through
+     * the DC flow, with the namespace correct and nothing logged.
+     *
+     * <p>Resolving from the namespace rather than re-resolving from the client list
+     * also makes the recreate path stable: the namespace is durable on the intent
+     * row, so a payClients config change between launch and recreate cannot rebuild
+     * a pod with a different flow.
+     */
+    public Flow flowForNamespace(final String namespace) {
+        if (config.namespaceCol().equals(namespace)) {
+            return Flow.COL;
+        }
+        if (config.namespacePay().equals(namespace)) {
+            return Flow.PAY;
+        }
+        if (config.namespaceMan().equals(namespace)) {
+            return Flow.MAN;
+        }
+        if (config.namespace().equals(namespace)) {
+            // Pre-SCRUM-70 legacy: intents written before flow namespaces existed
+            // carry a null namespace and fall back to the CONTROL namespace
+            // (intent.namespaceOr). Everything in that era was collections, so
+            // that is the flow their Job specs must be rebuilt with. Enumerated
+            // rather than left to the catch-all, so a genuinely unknown namespace
+            // still fails. Caught by NamespaceRoutingTest's two legacy relaunch
+            // cases, which went red when this arm was missing.
+            return Flow.COL;
+        }
+        throw new IllegalArgumentException("namespace '" + namespace
+                + "' maps to no flow: cannot build a Job spec for it.");
+    }
+
     public String namespaceOf(Flow flow) {
         return switch (flow) {
             case COL -> config.namespaceCol();
