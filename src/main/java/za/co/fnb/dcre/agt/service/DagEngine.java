@@ -84,9 +84,13 @@ public class DagEngine {
         };
     }
 
+    /** SCRUM-107: reads the registry rather than repeating the route list. This
+     *  was a FIFTH encoding of "which routes exist": a response route added to
+     *  INBOUND and RESPONSES but missed here took the REQUEST branch, found no
+     *  REQUESTS entry, and silently QUARANTINED every file on that route. Derived,
+     *  so the drift is now impossible rather than merely tested for. */
     private static boolean isRespRoute(String route) {
-        return ArrivalService.ROUTE_FINT_RESP.equals(route)
-                || ArrivalService.ROUTE_FINT_RESP_MAN.equals(route);
+        return RouteDags.RESPONSES.containsKey(route);
     }
 
     /**
@@ -152,6 +156,13 @@ public class DagEngine {
                 }
                 launcher.launch(arrival.id(), first.get());
                 arrivalRepo.transitionArrival(arrival.id(), ArrivalStatus.CLAIMED, ArrivalStatus.DAG_RUNNING);
+            } catch (IllegalArgumentException e) {
+                // SCRUM-107: same reasoning as the DAG_RUNNING loop below. An
+                // unresolvable route or namespace never becomes resolvable by
+                // waiting, so retrying it every 2s is a permanent WARN loop.
+                LOG.errorf("QUARANTINED %s: unresolvable route %s: %s",
+                        arrival.id(), arrival.routeId(), e.getMessage());
+                arrivalRepo.transitionArrival(arrival.id(), ArrivalStatus.CLAIMED, ArrivalStatus.QUARANTINED);
             } catch (Exception e) {
                 LOG.warnf("start DAG for %s failed: %s", arrival.id(), e.getMessage());
             }
@@ -170,6 +181,15 @@ public class DagEngine {
                 }
                 terminalState(arrival.routeId(), outcomes).ifPresent(
                         s -> arrivalRepo.transitionArrival(arrival.id(), ArrivalStatus.DAG_RUNNING, s));
+            } catch (IllegalArgumentException e) {
+                // SCRUM-107: an unresolvable route/namespace is not transient, so a
+                // WARN-and-retry would re-throw every 2s forever: loud, never
+                // terminal, ~43k log lines a day and no alert. Quarantine makes it
+                // terminal and alertable, exactly as initialStage's empty does on
+                // the CLAIMED loop.
+                LOG.errorf("QUARANTINED %s: unresolvable route %s: %s",
+                        arrival.id(), arrival.routeId(), e.getMessage());
+                arrivalRepo.transitionArrival(arrival.id(), ArrivalStatus.DAG_RUNNING, ArrivalStatus.QUARANTINED);
             } catch (Exception e) {
                 LOG.warnf("advance DAG for %s failed: %s", arrival.id(), e.getMessage()); // one poisoned arrival never wedges the loop (F10)
             }

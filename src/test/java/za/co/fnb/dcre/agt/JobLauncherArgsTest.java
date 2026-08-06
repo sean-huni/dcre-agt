@@ -3,6 +3,7 @@ package za.co.fnb.dcre.agt;
 import org.junit.jupiter.api.Test;
 import za.co.fnb.dcre.agt.domain.ArrivalStatus;
 import za.co.fnb.dcre.agt.domain.FileArrival;
+import za.co.fnb.dcre.agt.domain.Flow;
 import za.co.fnb.dcre.agt.domain.Outcome;
 import za.co.fnb.dcre.agt.domain.Stage;
 import za.co.fnb.dcre.agt.service.JobLauncher;
@@ -43,16 +44,16 @@ class JobLauncherArgsTest {
         // SCRUM-69: CRR stamps tx_header.flow from the launch arg; ENDO
         // arrivals ride the pay flow. Plain non-identifying param, mirroring
         // the existing CIR identity args.
-        List<String> args = JobLauncher.serviceArgs(Stage.CRR, endoArrival(), Map.of());
+        List<String> args = JobLauncher.serviceArgs(Stage.CRR, endoArrival(), Map.of(), Flow.PAY);
         assertTrue(args.contains("flow=PAY,java.lang.String,false"), "got " + args);
     }
 
     @Test
     void flowArgIsEndoCrrOnly() {
-        assertFalse(JobLauncher.serviceArgs(Stage.CTV, endoArrival(), Map.of()).stream()
+        assertFalse(JobLauncher.serviceArgs(Stage.CTV, endoArrival(), Map.of(), Flow.PAY).stream()
                         .anyMatch(a -> a.startsWith("flow=")),
                 "flow rides the boundary reader only; CTV keeps env-based flow switching");
-        assertFalse(JobLauncher.serviceArgs(Stage.CRR, arrival(), Map.of()).stream()
+        assertFalse(JobLauncher.serviceArgs(Stage.CRR, arrival(), Map.of(), Flow.COL).stream()
                         .anyMatch(a -> a.startsWith("flow=")),
                 "DC arrivals carry no flow arg; CRR defaults to COL");
     }
@@ -63,7 +64,7 @@ class JobLauncherArgsTest {
         // rows MAR had tagged. The projection is a view now, so the arg is gone
         // from every stage, including the leg readers that replaced MAR.
         for (Stage stage : List.of(Stage.MIX, Stage.MSX, Stage.MPX, Stage.MRV)) {
-            assertFalse(JobLauncher.serviceArgs(stage, arrival(), Map.of()).stream()
+            assertFalse(JobLauncher.serviceArgs(stage, arrival(), Map.of(), Flow.COL).stream()
                             .anyMatch(a -> a.startsWith("response.file=")),
                     "no response.file on " + stage);
         }
@@ -72,7 +73,7 @@ class JobLauncherArgsTest {
     @Test
     void cirCarriesClientTokenMsgIdAndOutcomeHint() {
         List<String> args = JobLauncher.serviceArgs(Stage.CIR, arrival(),
-                Map.of(Stage.CRR, Outcome.BUSINESS_ACCEPTED, Stage.CTV, Outcome.BUSINESS_FILE_REJECTED));
+                Map.of(Stage.CRR, Outcome.BUSINESS_ACCEPTED, Stage.CTV, Outcome.BUSINESS_FILE_REJECTED), Flow.COL);
         assertTrue(args.contains("arrival.id=" + ARRIVAL_ID));
         assertTrue(args.contains("route.id=onhost-req,java.lang.String,false"),
                 "A-45: CIR 2.0.1 fails closed without the route dimension; got " + args);
@@ -85,7 +86,7 @@ class JobLauncherArgsTest {
     void cirOmitsHintWhenOnlyBoundaryReaderFailed() {
         // CRR fatal: no spine/verdicts exist; CIR NACKs from fatal.reason, so no hint.
         List<String> args = JobLauncher.serviceArgs(Stage.CIR, arrival(),
-                Map.of(Stage.CRR, Outcome.BUSINESS_FILE_FATAL));
+                Map.of(Stage.CRR, Outcome.BUSINESS_FILE_FATAL), Flow.COL);
         assertTrue(args.contains("client.token=FNBRF01,java.lang.String,false"));
         assertTrue(args.contains("msg.id=DCRERF2026071313500102,java.lang.String,false"));
         assertFalse(args.stream().anyMatch(a -> a.startsWith("outcome.hint=")),
@@ -99,7 +100,7 @@ class JobLauncherArgsTest {
         List<String> args = JobLauncher.serviceArgs(Stage.CIR, arrival(),
                 Map.of(Stage.CRR, Outcome.BUSINESS_ACCEPTED,
                         Stage.CTV, Outcome.BUSINESS_ACCEPTED,
-                        Stage.AIS, Outcome.BUSINESS_FILE_FATAL));
+                        Stage.AIS, Outcome.BUSINESS_FILE_FATAL), Flow.COL);
         assertTrue(args.contains("outcome.hint=BUSINESS_FILE_FATAL,java.lang.String,false"),
                 "got " + args);
     }
@@ -108,7 +109,7 @@ class JobLauncherArgsTest {
     void cirOmitsHintOnPartialAck() {
         // PARTIAL is an ACK-with-partials launch: no rejecting stage, no hint.
         List<String> args = JobLauncher.serviceArgs(Stage.CIR, arrival(),
-                Map.of(Stage.CRR, Outcome.BUSINESS_ACCEPTED, Stage.CTV, Outcome.BUSINESS_PARTIAL));
+                Map.of(Stage.CRR, Outcome.BUSINESS_ACCEPTED, Stage.CTV, Outcome.BUSINESS_PARTIAL), Flow.COL);
         assertFalse(args.stream().anyMatch(a -> a.startsWith("outcome.hint=")),
                 "got " + args);
     }
@@ -116,7 +117,7 @@ class JobLauncherArgsTest {
     @Test
     void nonCirStagesCarryNoIdentityParams() {
         List<String> args = JobLauncher.serviceArgs(Stage.CDE, arrival(),
-                Map.of(Stage.CTV, Outcome.BUSINESS_PARTIAL));
+                Map.of(Stage.CTV, Outcome.BUSINESS_PARTIAL), Flow.COL);
         assertEquals(List.of("arrival.id=" + ARRIVAL_ID), args);
     }
 
@@ -130,7 +131,7 @@ class JobLauncherArgsTest {
                 "sha", "FNBRF01", "DCRERF2026071313500102",
                 ArrivalStatus.DAG_RUNNING, null, "/exchange/claimed/FNBRF01_MSG1.txt");
         IllegalStateException e = assertThrows(IllegalStateException.class,
-                () -> JobLauncher.serviceArgs(Stage.CIR, nullRoute, Map.of()));
+                () -> JobLauncher.serviceArgs(Stage.CIR, nullRoute, Map.of(), Flow.COL));
         assertTrue(e.getMessage().contains("route.id"), "got: " + e.getMessage());
         assertTrue(e.getMessage().contains(ARRIVAL_ID.toString()), "got: " + e.getMessage());
 
@@ -138,18 +139,18 @@ class JobLauncherArgsTest {
                 "sha", " ", "DCRERF2026071313500102",
                 ArrivalStatus.DAG_RUNNING, null, "/exchange/claimed/FNBRF01_MSG1.txt");
         assertThrows(IllegalStateException.class,
-                () -> JobLauncher.serviceArgs(Stage.CIR, blankClient, Map.of()));
+                () -> JobLauncher.serviceArgs(Stage.CIR, blankClient, Map.of(), Flow.COL));
 
         FileArrival nullMsgId = new FileArrival(ARRIVAL_ID, "onhost-req", "FNBRF01_MSG1.txt",
                 "sha", "FNBRF01", null,
                 ArrivalStatus.DAG_RUNNING, null, "/exchange/claimed/FNBRF01_MSG1.txt");
         assertThrows(IllegalStateException.class,
-                () -> JobLauncher.serviceArgs(Stage.CIR, nullMsgId, Map.of()));
+                () -> JobLauncher.serviceArgs(Stage.CIR, nullMsgId, Map.of(), Flow.COL));
     }
 
     @Test
     void boundaryReaderArgsUnchanged() {
-        List<String> args = JobLauncher.serviceArgs(Stage.CRR, arrival(), Map.of());
+        List<String> args = JobLauncher.serviceArgs(Stage.CRR, arrival(), Map.of(), Flow.COL);
         assertEquals(List.of(
                 "arrival.id=" + ARRIVAL_ID,
                 "input.file=/exchange/claimed/FNBRF01_MSG1.txt,java.lang.String,false",
@@ -173,7 +174,7 @@ class JobLauncherArgsTest {
 
     @Test
     void mrrIsABoundaryReader() {
-        List<String> args = JobLauncher.serviceArgs(Stage.MRR, manArrival(), Map.of());
+        List<String> args = JobLauncher.serviceArgs(Stage.MRR, manArrival(), Map.of(), Flow.MAN);
         assertEquals(List.of(
                 "arrival.id=" + ARRIVAL_ID,
                 "input.file=/exchange/claimed/FNBCC01_MANB1.txt,java.lang.String,false",
@@ -191,14 +192,14 @@ class JobLauncherArgsTest {
                 "arrival.id=" + ARRIVAL_ID,
                 "input.file=/exchange/claimed/FNBCC01_OUT1_" + token + ".xml,java.lang.String,false",
                 "original.name=FNBCC01_OUT1_" + token + ".xml,java.lang.String,false"),
-                JobLauncher.serviceArgs(stage, manRespArrival(token), Map.of()),
+                JobLauncher.serviceArgs(stage, manRespArrival(token), Map.of(), Flow.MAN),
                 stage + " reads the claimed pain.012 payload and nothing else"));
     }
 
     @Test
     void noLegReaderCarriesAReplyTypeArg() {
         for (Stage stage : List.of(Stage.MIX, Stage.MSX, Stage.MPX)) {
-            assertFalse(JobLauncher.serviceArgs(stage, manRespArrival("ISR"), Map.of()).stream()
+            assertFalse(JobLauncher.serviceArgs(stage, manRespArrival("ISR"), Map.of(), Flow.MAN).stream()
                             .anyMatch(a -> a.startsWith("reply.type=")),
                     "the leg is the service now, not a launch arg: " + stage);
         }
@@ -209,7 +210,7 @@ class JobLauncherArgsTest {
         // MIR is the man-route responder (CIR clone, T7): same A-45 identity
         // params and the rejecting validator's verdict as outcome.hint.
         List<String> args = JobLauncher.serviceArgs(Stage.MIR, manArrival(),
-                Map.of(Stage.MRR, Outcome.BUSINESS_ACCEPTED, Stage.MRV, Outcome.BUSINESS_FILE_REJECTED));
+                Map.of(Stage.MRR, Outcome.BUSINESS_ACCEPTED, Stage.MRV, Outcome.BUSINESS_FILE_REJECTED), Flow.MAN);
         assertTrue(args.contains("arrival.id=" + ARRIVAL_ID));
         assertTrue(args.contains("route.id=onhost-req-man,java.lang.String,false"), "got " + args);
         assertTrue(args.contains("client.token=FNBCC01,java.lang.String,false"));
@@ -221,7 +222,7 @@ class JobLauncherArgsTest {
     void mirOmitsHintWhenOnlyTheBoundaryReaderFailed() {
         // MRR fatal: no spine/verdicts exist; MIR NACKs from fatal.reason.
         List<String> args = JobLauncher.serviceArgs(Stage.MIR, manArrival(),
-                Map.of(Stage.MRR, Outcome.BUSINESS_FILE_FATAL));
+                Map.of(Stage.MRR, Outcome.BUSINESS_FILE_FATAL), Flow.MAN);
         assertTrue(args.contains("client.token=FNBCC01,java.lang.String,false"));
         assertFalse(args.stream().anyMatch(a -> a.startsWith("outcome.hint=")), "got " + args);
     }
