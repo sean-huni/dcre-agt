@@ -50,6 +50,14 @@ public class DirectoryWatcher {
 
     private record InboundChannel(String route, Function<InboundChannels, ChannelDirs> dirs) { }
 
+    /** The routes this watcher can produce. Exposed so RouteRegistryConsistencyTest
+     *  can assert every one of them resolves to a real DAG: INBOUND and the
+     *  RouteDags registries are two hand-maintained copies of one fact
+     *  (SCRUM-107). */
+    static java.util.List<String> inboundRoutes() {
+        return INBOUND.stream().map(InboundChannel::route).toList();
+    }
+
     @Inject
     AgtConfig config;
 

@@ -18,10 +18,16 @@ import java.util.Set;
 final class RouteDags {
 
     /** A route's DAG shape: successor edges, terminal fork, optional responder. */
-    record RouteDag(Map<Stage, Set<Stage>> edges, Set<Stage> terminal, Optional<Stage> responder) { }
+    /** SCRUM-107: {@code entry} is the DAG's own first stage, so the route ->
+     *  first-stage mapping lives HERE with the rest of the shape instead of in a
+     *  ternary in DagEngine. Response DAGs have no fixed entry (the leg reader is
+     *  token-picked from the filename), so theirs is empty. */
+    record RouteDag(Optional<Stage> entry, Map<Stage, Set<Stage>> edges,
+                    Set<Stage> terminal, Optional<Stage> responder) { }
 
     // R-37: CRW is a clock-driven Process-Date Executor, not a DAG successor.
     static final RouteDag DC = new RouteDag(
+            Optional.of(Stage.CRR),
             new EnumMap<>(Map.of(
                     Stage.CRR, EnumSet.of(Stage.CTV),
                     Stage.CTV, EnumSet.of(Stage.CDE, Stage.CIR))),
@@ -29,6 +35,7 @@ final class RouteDags {
             Optional.of(Stage.CIR));
 
     static final RouteDag ENDO = new RouteDag(
+            Optional.of(Stage.CRR),
             new EnumMap<>(Map.of(
                     Stage.CRR, EnumSet.of(Stage.CTV),
                     Stage.CTV, EnumSet.of(Stage.AIS),
@@ -39,6 +46,7 @@ final class RouteDags {
     /** M10 (SCRUM-79): MRR -> MRV -> MAS -> MIT -> fork {MIR, MRW}; the man
      *  responder is MIR (R-41 switch-case extension: rejections never see CIR). */
     static final RouteDag MAN = new RouteDag(
+            Optional.of(Stage.MRR),
             new EnumMap<>(Map.of(
                     Stage.MRR, EnumSet.of(Stage.MRV),
                     Stage.MRV, EnumSet.of(Stage.MAS),
@@ -52,6 +60,7 @@ final class RouteDags {
      *  given arrival, so the terminal set is the set of LEGAL entries, not a fork
      *  that must all complete (DagEngine.respTerminalState). */
     static final RouteDag FINT_RESP = new RouteDag(
+            Optional.empty(),
             Map.of(),
             EnumSet.of(Stage.IXR, Stage.SXR, Stage.PXR),
             Optional.empty());
@@ -62,6 +71,7 @@ final class RouteDags {
      *  response route, so a whole-file failure launches nothing and the arrival
      *  stays open for the reconciler: fail closed. */
     static final RouteDag FINT_RESP_MAN = new RouteDag(
+            Optional.empty(),
             Map.of(),
             EnumSet.of(Stage.MIX, Stage.MSX, Stage.MPX),
             Optional.empty());
