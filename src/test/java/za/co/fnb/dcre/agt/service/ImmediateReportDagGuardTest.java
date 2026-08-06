@@ -85,7 +85,7 @@ class ImmediateReportDagGuardTest {
                 "the report intent is excluded from the DAG intended-set (intentsForArrival)");
         // The report's presence cannot change the computed terminal verdict.
         assertEquals(ArrivalStatus.DAG_COMPLETE,
-                DagEngine.terminalState("onhost-req", dagOutcomes).orElseThrow(),
+                DagEngine.terminalState("onhost-req", dagOutcomes, true).orElseThrow(),
                 "terminalState over the report-excluded outcomes still resolves DAG_COMPLETE");
     }
 

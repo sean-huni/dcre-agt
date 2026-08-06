@@ -85,7 +85,7 @@ class RouteRegistryConsistencyTest {
     void anUnknownRouteAlsoFailsClosedOnTheTerminalVerdictPath() {
         assertThrows(IllegalArgumentException.class,
                 () -> DagEngine.terminalState("totally-unknown-route",
-                        Map.of(Stage.CRR, Outcome.BUSINESS_ACCEPTED)),
+                        Map.of(Stage.CRR, Outcome.BUSINESS_ACCEPTED), true),
                 "terminalState must not judge an unknown route by the collections shape");
     }
 

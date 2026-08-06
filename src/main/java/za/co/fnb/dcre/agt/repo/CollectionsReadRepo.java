@@ -3,6 +3,7 @@ package za.co.fnb.dcre.agt.repo;
 import io.agroal.api.AgroalDataSource;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import org.jboss.logging.Logger;
 
 import java.sql.Connection;
 import java.sql.PreparedStatement;
@@ -21,6 +22,8 @@ import java.util.List;
 @ApplicationScoped
 public class CollectionsReadRepo {
 
+    private static final Logger LOG = Logger.getLogger(CollectionsReadRepo.class);
+
     /** One parent whose immediate report is due. */
     public record DueParent(String client, String sourceMsgId, String reason) {
     }
@@ -34,6 +37,15 @@ public class CollectionsReadRepo {
             FROM prg_report_due
             ORDER BY client, source_msg_id
             LIMIT 50""";
+
+    /** SCRUM-107: has CRW made an emission VISIBLE for this arrival? R-37's own
+     *  phrase ("once an emission is VISIBLE for (arrival, run_date)"). A per-arrival
+     *  CRW stage outcome cannot serve as the signal, because CRW's job identity is
+     *  (date, window) and one run serves many arrivals. */
+    private static final String EMISSION_VISIBLE_SQL = """
+            SELECT 1 FROM crw_emission
+            WHERE arrival_id = ? AND state = 'VISIBLE'
+            LIMIT 1""";
 
     private static final String SLA_PENDING_SQL = """
             SELECT client, e2e, age_hours
@@ -83,5 +95,27 @@ public class CollectionsReadRepo {
             throw new IllegalStateException("prg_report_due scan failed", e);
         }
         return due;
+    }
+
+    /**
+     * True once CRW has an emission VISIBLE for this arrival (SCRUM-107).
+     *
+     * <p>Fails CLOSED: any SQL error returns false, which keeps the arrival
+     * DAG_RUNNING and retried rather than letting a transient read failure
+     * declare it complete. The false claim is the one that cannot be walked back;
+     * staying open costs another tick.
+     */
+    public boolean emissionVisibleFor(final java.util.UUID arrivalId) {
+        try (Connection c = collectionsDs.getConnection();
+             PreparedStatement p = c.prepareStatement(EMISSION_VISIBLE_SQL)) {
+            p.setObject(1, arrivalId);
+            try (ResultSet r = p.executeQuery()) {
+                return r.next();
+            }
+        } catch (SQLException e) {
+            LOG.warnf("emission-visible check failed for %s (treating as not emitted): %s",
+                    arrivalId, e.getMessage());
+            return false;
+        }
     }
 }

@@ -68,36 +68,36 @@ class DagEngineTest {
     @Test
     void techFailedResponderBlocksTerminalVerdict() {
         // Fugu F6: a NACK that never left OnHost must keep the arrival open.
-        assertTrue(DagEngine.terminalState(Map.of(
+        assertTrue(DagEngine.terminalState(ArrivalService.ROUTE_ONHOST_REQ, Map.of(
                 Stage.CRR, Outcome.BUSINESS_ACCEPTED, Stage.CTV, Outcome.BUSINESS_FILE_FATAL,
-                Stage.CIR, Outcome.TECH_FAILED)).isEmpty());
+                Stage.CIR, Outcome.TECH_FAILED), true).isEmpty());
     }
 
     @Test
     void partialCompletesOnlyWhenAllTerminalsReport() {
         // R-41: PARTIAL continues PASS rows, so CDE is in flight; CIR alone no
         // longer completes the arrival.
-        assertTrue(DagEngine.terminalState(Map.of(
+        assertTrue(DagEngine.terminalState(ArrivalService.ROUTE_ONHOST_REQ, Map.of(
                 Stage.CRR, Outcome.BUSINESS_ACCEPTED, Stage.CTV, Outcome.BUSINESS_PARTIAL,
-                Stage.CIR, Outcome.BUSINESS_ACCEPTED)).isEmpty());
-        assertEquals(ArrivalStatus.DAG_COMPLETE, DagEngine.terminalState(Map.of(
+                Stage.CIR, Outcome.BUSINESS_ACCEPTED), true).isEmpty());
+        assertEquals(ArrivalStatus.DAG_COMPLETE, DagEngine.terminalState(ArrivalService.ROUTE_ONHOST_REQ, Map.of(
                 Stage.CRR, Outcome.BUSINESS_ACCEPTED, Stage.CTV, Outcome.BUSINESS_PARTIAL,
                 Stage.CDE, Outcome.BUSINESS_ACCEPTED,
-                Stage.CIR, Outcome.BUSINESS_ACCEPTED)).orElseThrow());
+                Stage.CIR, Outcome.BUSINESS_ACCEPTED), true).orElseThrow());
     }
 
     @Test
     void fileRejectedTerminalMirrorsFatal() {
         // R-41: whole-file policy rejection terminates like FILE_FATAL once the
         // responder has reported; a tech-failed responder keeps the arrival open.
-        assertEquals(ArrivalStatus.DAG_FAILED, DagEngine.terminalState(Map.of(
+        assertEquals(ArrivalStatus.DAG_FAILED, DagEngine.terminalState(ArrivalService.ROUTE_ONHOST_REQ, Map.of(
                 Stage.CRR, Outcome.BUSINESS_ACCEPTED, Stage.CTV, Outcome.BUSINESS_FILE_REJECTED,
-                Stage.CIR, Outcome.BUSINESS_ACCEPTED)).orElseThrow());
-        assertTrue(DagEngine.terminalState(Map.of(
+                Stage.CIR, Outcome.BUSINESS_ACCEPTED), true).orElseThrow());
+        assertTrue(DagEngine.terminalState(ArrivalService.ROUTE_ONHOST_REQ, Map.of(
                 Stage.CRR, Outcome.BUSINESS_ACCEPTED, Stage.CTV, Outcome.BUSINESS_FILE_REJECTED,
-                Stage.CIR, Outcome.TECH_FAILED)).isEmpty());
-        assertTrue(DagEngine.terminalState(Map.of(
-                        Stage.CRR, Outcome.BUSINESS_ACCEPTED, Stage.CTV, Outcome.BUSINESS_FILE_REJECTED))
+                Stage.CIR, Outcome.TECH_FAILED), true).isEmpty());
+        assertTrue(DagEngine.terminalState(ArrivalService.ROUTE_ONHOST_REQ, Map.of(
+                        Stage.CRR, Outcome.BUSINESS_ACCEPTED, Stage.CTV, Outcome.BUSINESS_FILE_REJECTED), true)
                         .isEmpty(),
                 "mid-flight rejection (no CIR row yet) has no terminal state");
     }
@@ -151,10 +151,8 @@ class DagEngineTest {
 
     @Test
     void fintRespCompletesOnReaderAcceptanceOnly() {
-        assertEquals(ArrivalStatus.DAG_COMPLETE, DagEngine.terminalState(ArrivalService.ROUTE_FINT_RESP,
-                Map.of(Stage.PXR, Outcome.BUSINESS_ACCEPTED)).orElseThrow());
-        assertTrue(DagEngine.terminalState(ArrivalService.ROUTE_FINT_RESP,
-                        Map.of(Stage.PXR, Outcome.TECH_FAILED)).isEmpty(),
+        assertEquals(ArrivalStatus.DAG_COMPLETE, DagEngine.terminalState(ArrivalService.ROUTE_FINT_RESP, Map.of(Stage.PXR, Outcome.BUSINESS_ACCEPTED), true).orElseThrow());
+        assertTrue(DagEngine.terminalState(ArrivalService.ROUTE_FINT_RESP, Map.of(Stage.PXR, Outcome.TECH_FAILED), true).isEmpty(),
                 "tech failure keeps the arrival open for the reconciler");
     }
 
@@ -196,13 +194,11 @@ class DagEngineTest {
     void endoCompletesOnCirAlone() {
         // SCRUM-69 terminal set is {CIR}: the responder's acceptance completes
         // the pay-flow DAG without any CDE outcome.
-        assertEquals(ArrivalStatus.DAG_COMPLETE, DagEngine.terminalState(ArrivalService.ROUTE_ONHOST_REQ_ENDO,
-                Map.of(Stage.CRR, Outcome.BUSINESS_ACCEPTED, Stage.CTV, Outcome.BUSINESS_ACCEPTED,
+        assertEquals(ArrivalStatus.DAG_COMPLETE, DagEngine.terminalState(ArrivalService.ROUTE_ONHOST_REQ_ENDO, Map.of(Stage.CRR, Outcome.BUSINESS_ACCEPTED, Stage.CTV, Outcome.BUSINESS_ACCEPTED,
                         Stage.AIS, Outcome.BUSINESS_ACCEPTED,
-                        Stage.CIR, Outcome.BUSINESS_ACCEPTED)).orElseThrow());
-        assertTrue(DagEngine.terminalState(ArrivalService.ROUTE_ONHOST_REQ_ENDO,
-                        Map.of(Stage.CRR, Outcome.BUSINESS_ACCEPTED, Stage.CTV, Outcome.BUSINESS_ACCEPTED,
-                                Stage.AIS, Outcome.BUSINESS_ACCEPTED)).isEmpty(),
+                        Stage.CIR, Outcome.BUSINESS_ACCEPTED), true).orElseThrow());
+        assertTrue(DagEngine.terminalState(ArrivalService.ROUTE_ONHOST_REQ_ENDO, Map.of(Stage.CRR, Outcome.BUSINESS_ACCEPTED, Stage.CTV, Outcome.BUSINESS_ACCEPTED,
+                                Stage.AIS, Outcome.BUSINESS_ACCEPTED), true).isEmpty(),
                 "mid-flight ENDO arrival has no terminal state");
     }
 
@@ -228,14 +224,14 @@ class DagEngineTest {
 
     @Test
     void terminalStates() {
-        assertEquals(ArrivalStatus.DAG_COMPLETE, DagEngine.terminalState(Map.of(
+        assertEquals(ArrivalStatus.DAG_COMPLETE, DagEngine.terminalState(ArrivalService.ROUTE_ONHOST_REQ, Map.of(
                 Stage.CRR, Outcome.BUSINESS_ACCEPTED, Stage.CTV, Outcome.BUSINESS_ACCEPTED,
                 Stage.CDE, Outcome.BUSINESS_ACCEPTED, Stage.CRW, Outcome.BUSINESS_ACCEPTED,
-                Stage.CIR, Outcome.BUSINESS_ACCEPTED)).orElseThrow());
-        assertEquals(ArrivalStatus.DAG_FAILED, DagEngine.terminalState(Map.of(
+                Stage.CIR, Outcome.BUSINESS_ACCEPTED), true).orElseThrow());
+        assertEquals(ArrivalStatus.DAG_FAILED, DagEngine.terminalState(ArrivalService.ROUTE_ONHOST_REQ, Map.of(
                 Stage.CRR, Outcome.BUSINESS_ACCEPTED, Stage.CTV, Outcome.BUSINESS_FILE_FATAL,
-                Stage.CIR, Outcome.BUSINESS_ACCEPTED)).orElseThrow());
-        assertTrue(DagEngine.terminalState(Map.of(
-                Stage.CRR, Outcome.BUSINESS_ACCEPTED)).isEmpty(), "mid-flight has no terminal state");
+                Stage.CIR, Outcome.BUSINESS_ACCEPTED), true).orElseThrow());
+        assertTrue(DagEngine.terminalState(ArrivalService.ROUTE_ONHOST_REQ, Map.of(
+                Stage.CRR, Outcome.BUSINESS_ACCEPTED), true).isEmpty(), "mid-flight has no terminal state");
     }
 }
