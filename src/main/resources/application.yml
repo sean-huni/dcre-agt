@@ -81,7 +81,7 @@ agt:
   mrr-image: ${AGT_MRR_IMAGE:}
   mrv-image: ${AGT_MRV_IMAGE:}
   maf-image: ${AGT_MAF_IMAGE:}
-  mis-image: ${AGT_MIS_IMAGE:}
+  mit-image: ${AGT_MIT_IMAGE:}
   mir-image: ${AGT_MIR_IMAGE:}
   mrw-image: ${AGT_MRW_IMAGE:}
   # SCRUM-91: one reader image per pain.012 leg, replacing mar-image/msr-image.

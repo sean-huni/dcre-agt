@@ -14,7 +14,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * M10/SCRUM-79 pure decision-logic tests for the mandates routes: the
- * onhost-req-man request DAG (MRR -> MRV -> MAF -> MIS -> fork {MIR, MRW},
+ * onhost-req-man request DAG (MRR -> MRV -> MAF -> MIT -> fork {MIR, MRW},
  * responder MIR) and the fint-resp-man response DAG (SCRUM-91: one token-picked
  * leg reader of MIX/MSX/MPX, no chain and no responder, so failures stay open
  * for the reconciler). No containers, no K8s.
@@ -70,7 +70,7 @@ class ManDagEngineTest {
         assertEquals(EnumSet.of(Stage.MAF), DagEngine.computeLaunches(MAN_REQ, BOOK,
                 Map.of(Stage.MRR, Outcome.BUSINESS_ACCEPTED, Stage.MRV, Outcome.BUSINESS_ACCEPTED),
                 EnumSet.of(Stage.MRR, Stage.MRV)));
-        assertEquals(EnumSet.of(Stage.MIS), DagEngine.computeLaunches(MAN_REQ, BOOK,
+        assertEquals(EnumSet.of(Stage.MIT), DagEngine.computeLaunches(MAN_REQ, BOOK,
                 Map.of(Stage.MRR, Outcome.BUSINESS_ACCEPTED, Stage.MRV, Outcome.BUSINESS_ACCEPTED,
                         Stage.MAF, Outcome.BUSINESS_ACCEPTED),
                 EnumSet.of(Stage.MRR, Stage.MRV, Stage.MAF)));
@@ -80,10 +80,10 @@ class ManDagEngineTest {
     void misAcceptedForksMirAndMrwTogether() {
         Set<Stage> launches = DagEngine.computeLaunches(MAN_REQ, BOOK,
                 Map.of(Stage.MRR, Outcome.BUSINESS_ACCEPTED, Stage.MRV, Outcome.BUSINESS_ACCEPTED,
-                        Stage.MAF, Outcome.BUSINESS_ACCEPTED, Stage.MIS, Outcome.BUSINESS_ACCEPTED),
-                EnumSet.of(Stage.MRR, Stage.MRV, Stage.MAF, Stage.MIS));
+                        Stage.MAF, Outcome.BUSINESS_ACCEPTED, Stage.MIT, Outcome.BUSINESS_ACCEPTED),
+                EnumSet.of(Stage.MRR, Stage.MRV, Stage.MAF, Stage.MIT));
         assertEquals(EnumSet.of(Stage.MIR, Stage.MRW), launches,
-                "MIS fans out to the responder AND the pain writer");
+                "MIT fans out to the responder AND the pain writer");
     }
 
     @Test
@@ -94,8 +94,8 @@ class ManDagEngineTest {
                 EnumSet.of(Stage.MRR, Stage.MRV)));
         assertEquals(EnumSet.of(Stage.MIR, Stage.MRW), DagEngine.computeLaunches(MAN_REQ, BOOK,
                 Map.of(Stage.MRR, Outcome.BUSINESS_ACCEPTED, Stage.MRV, Outcome.BUSINESS_PARTIAL,
-                        Stage.MAF, Outcome.BUSINESS_ACCEPTED, Stage.MIS, Outcome.BUSINESS_PARTIAL),
-                EnumSet.of(Stage.MRR, Stage.MRV, Stage.MAF, Stage.MIS)));
+                        Stage.MAF, Outcome.BUSINESS_ACCEPTED, Stage.MIT, Outcome.BUSINESS_PARTIAL),
+                EnumSet.of(Stage.MRR, Stage.MRV, Stage.MAF, Stage.MIT)));
     }
 
     @Test
@@ -104,7 +104,7 @@ class ManDagEngineTest {
         assertEquals(EnumSet.of(Stage.MIR), DagEngine.computeLaunches(MAN_REQ, BOOK,
                 Map.of(Stage.MRR, Outcome.BUSINESS_ACCEPTED, Stage.MRV, Outcome.BUSINESS_FILE_REJECTED),
                 EnumSet.of(Stage.MRR, Stage.MRV)),
-                "whole-file policy rejection: MIR only, never MAF/MIS/MRW");
+                "whole-file policy rejection: MIR only, never MAF/MIT/MRW");
         assertEquals(EnumSet.of(Stage.MIR), DagEngine.computeLaunches(MAN_REQ, BOOK,
                 Map.of(Stage.MRR, Outcome.BUSINESS_ACCEPTED, Stage.MAF, Outcome.BUSINESS_FILE_FATAL),
                 EnumSet.of(Stage.MRR, Stage.MRV, Stage.MAF)),
@@ -124,12 +124,12 @@ class ManDagEngineTest {
     void manCompletesOnlyWhenMirAndMrwBothReport() {
         assertTrue(DagEngine.terminalState(MAN_REQ, Map.of(
                         Stage.MRR, Outcome.BUSINESS_ACCEPTED, Stage.MRV, Outcome.BUSINESS_ACCEPTED,
-                        Stage.MAF, Outcome.BUSINESS_ACCEPTED, Stage.MIS, Outcome.BUSINESS_ACCEPTED,
+                        Stage.MAF, Outcome.BUSINESS_ACCEPTED, Stage.MIT, Outcome.BUSINESS_ACCEPTED,
                         Stage.MIR, Outcome.BUSINESS_ACCEPTED)).isEmpty(),
                 "MRW still in flight: no terminal verdict");
         assertEquals(ArrivalStatus.DAG_COMPLETE, DagEngine.terminalState(MAN_REQ, Map.of(
                 Stage.MRR, Outcome.BUSINESS_ACCEPTED, Stage.MRV, Outcome.BUSINESS_ACCEPTED,
-                Stage.MAF, Outcome.BUSINESS_ACCEPTED, Stage.MIS, Outcome.BUSINESS_ACCEPTED,
+                Stage.MAF, Outcome.BUSINESS_ACCEPTED, Stage.MIT, Outcome.BUSINESS_ACCEPTED,
                 Stage.MIR, Outcome.BUSINESS_ACCEPTED, Stage.MRW, Outcome.BUSINESS_ACCEPTED)).orElseThrow());
     }
 
@@ -193,11 +193,16 @@ class ManDagEngineTest {
 
     @Test
     void retiredStagesNeverCompleteAResponseArrival() {
-        // A-75: historic MAR/MSR outcome rows stay parseable, but they are in no
-        // DAG, so a legacy row can never close a post-cutover arrival.
+        // A-75: historic MAR/MSR outcome rows stay parseable, and SCRUM-107 adds
+        // MIS after the rename to MIT, but they are in no DAG, so a legacy row can
+        // never close a post-cutover arrival.
         assertTrue(DagEngine.terminalState(MAN_RESP,
                         Map.of(Stage.MAR, Outcome.BUSINESS_ACCEPTED,
                                 Stage.MSR, Outcome.BUSINESS_ACCEPTED)).isEmpty(),
                 "the retired chain is not a terminal state any more");
+        assertTrue(DagEngine.computeLaunches(MAN_REQ, BOOK,
+                        Map.of(Stage.MIS, Outcome.BUSINESS_ACCEPTED),
+                        EnumSet.of(Stage.MIS)).isEmpty(),
+                "SCRUM-107: a historic MIS outcome row launches nothing after the MIT rename");
     }
 }

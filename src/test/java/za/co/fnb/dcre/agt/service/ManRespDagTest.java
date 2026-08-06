@@ -54,5 +54,9 @@ class ManRespDagTest {
         assertFalse(RouteDags.FINT_RESP_MAN.terminal().contains(Stage.MSR));
         assertFalse(JobLauncher.LAUNCHABLE.contains(Stage.MAR));
         assertFalse(JobLauncher.LAUNCHABLE.contains(Stage.MSR));
+        // SCRUM-107: MIS was renamed to MIT and is retained only so historic
+        // stage_outcome rows parse; it must be as unlaunchable as MAR/MSR.
+        assertFalse(JobLauncher.LAUNCHABLE.contains(Stage.MIS));
+        assertTrue(JobLauncher.LAUNCHABLE.contains(Stage.MIT));
     }
 }

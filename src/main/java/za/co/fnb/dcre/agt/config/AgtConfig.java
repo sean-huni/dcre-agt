@@ -80,7 +80,7 @@ public interface AgtConfig {
 
     java.util.Optional<String> mafImage();
 
-    java.util.Optional<String> misImage();
+    java.util.Optional<String> mitImage();
 
     java.util.Optional<String> mirImage();
 
