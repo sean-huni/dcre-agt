@@ -112,13 +112,17 @@ class FlowNamespaceLaunchTest {
 
     @Test
     void retiredResponseStagesAreNeverLaunchable() {
-        // A-75: Stage still parses MAR/MSR for historic stage_outcome rows, but
-        // AGT must never build a Job for one; the write-ahead intent still lands,
-        // so the attempt is visible rather than silent.
+        // A-75: Stage still parses MAR/MSR for historic stage_outcome rows, and
+        // SCRUM-107 adds MIS the same way after the rename to MIT, but AGT must
+        // never build a Job for one; the write-ahead intent still lands, so the
+        // attempt is visible rather than silent.
         UUID arrivalId = insertArrival("fint-resp-man", "FNBRF01", "FLN7");
-        IllegalStateException e = org.junit.jupiter.api.Assertions.assertThrows(
-                IllegalStateException.class, () -> launcher.launch(arrivalId, Stage.MAR));
-        assertTrue(e.getMessage().contains("retired"), "got: " + e.getMessage());
+        for (Stage retired : java.util.List.of(Stage.MAR, Stage.MSR, Stage.MIS)) {
+            IllegalStateException e = org.junit.jupiter.api.Assertions.assertThrows(
+                    IllegalStateException.class, () -> launcher.launch(arrivalId, retired),
+                    "retired stage " + retired + " must never launch");
+            assertTrue(e.getMessage().contains("retired"), "got: " + e.getMessage());
+        }
     }
 
     @Test

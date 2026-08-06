@@ -23,7 +23,7 @@ import java.util.Set;
  * {@link RouteDags} (R-36 data, not code): DC Collections
  * CRR -> CTV -> [CDE, CIR]; ENDO Payments CRR -> CTV -> AIS -> [CIR]
  * (SCRUM-69: CDE never runs on the pay flow); M10 Mandates (SCRUM-79)
- * MRR -> MRV -> MAF -> MIS -> [MIR, MRW]. A BUSINESS_FILE_FATAL or
+ * MRR -> MRV -> MAF -> MIT -> [MIR, MRW]. A BUSINESS_FILE_FATAL or
  * BUSINESS_FILE_REJECTED predecessor routes to the route family's responder
  * only (CIR, or MIR on the man route: whole-file NACK path, R-19/R-41/SPEC-DAG
  * section 3); BUSINESS_PARTIAL fans out like ACCEPTED (R-41: PASS rows
@@ -201,9 +201,11 @@ public class DagEngine {
                     dag.responder()
                             .filter(responder -> !intended.contains(responder))
                             .ifPresent(launches::add);
-                case TECH_FAILED -> {
+                case TECH_FAILED, TECH_CONFIG_FAILED -> {
                     // Process death is never a business verdict (R-33): no successors;
-                    // relaunch policy is the reconciler's/operator's call.
+                    // relaunch policy is the reconciler's/operator's call. A
+                    // pre-runner config failure (exit 78) is even less of a verdict:
+                    // the stage never ran, so it fans out to nothing either.
                 }
             }
         }

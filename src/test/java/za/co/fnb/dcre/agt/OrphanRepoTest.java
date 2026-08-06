@@ -8,8 +8,8 @@ import org.junit.jupiter.api.Order;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestMethodOrder;
 import za.co.fnb.dcre.agt.domain.ArrivalStatus;
-import za.co.fnb.dcre.agt.domain.LaunchIntent;
 import za.co.fnb.dcre.agt.domain.Outcome;
+import za.co.fnb.dcre.agt.domain.RelaunchCandidate;
 import za.co.fnb.dcre.agt.domain.Stage;
 import za.co.fnb.dcre.agt.repo.ArrivalRepo;
 import za.co.fnb.dcre.agt.repo.IntentRepo;
@@ -61,7 +61,11 @@ class OrphanRepoTest {
         assertFalse(outcomeRepo.insertOutcome(intentId, 0, Outcome.TECH_FAILED, 5, "Failed/Test"));
         assertTrue(outcomeRepo.insertOutcome(intentId, 1, Outcome.BUSINESS_ACCEPTED, 0, "Complete"));
         // current-attempt readers
-        assertTrue(intentRepo.launchedArrivalIntentsWithTechCurrentAttempt().isEmpty());
+        // Scoped to THIS intent, never a global isEmpty(): the suite shares one
+        // database, so any class leaving a LAUNCHED intent with a TECH-class
+        // current outcome would break a global assertion purely by class order.
+        assertTrue(intentRepo.launchedArrivalIntentsWithTechCurrentAttempt().stream()
+                .noneMatch(candidate -> candidate.intent().id().equals(intentId)));
         assertEquals(Outcome.BUSINESS_ACCEPTED, outcomeRepo.outcomesForArrival(arrivalId).get(Stage.CRR));
     }
 
@@ -79,11 +83,19 @@ class OrphanRepoTest {
         intentRepo.markIntentLaunched(clockId, "uid-orph-clock");
         assertTrue(outcomeRepo.insertOutcome(clockId, 0, Outcome.TECH_FAILED, 1, "Failed/Test"));
 
-        List<LaunchIntent> orphans = intentRepo.launchedArrivalIntentsWithTechCurrentAttempt();
-        assertEquals(1, orphans.size(), "exactly the arrival intent with TECH at its current attempt");
-        assertEquals(intentId2, orphans.get(0).id());
-        assertEquals(0, orphans.get(0).attempt(), "map() must read the real attempt column");
-        assertTrue(orphans.stream().noneMatch(i -> i.id().equals(clockId)),
+        // Scoped to the two identities this test minted, never a global size():
+        // the suite shares one database and other classes legitimately leave
+        // LAUNCHED intents carrying a TECH-class current outcome.
+        List<RelaunchCandidate> orphans = intentRepo.launchedArrivalIntentsWithTechCurrentAttempt();
+        List<RelaunchCandidate> mine = orphans.stream()
+                .filter(c -> c.intent().id().equals(intentId2) || c.intent().id().equals(clockId))
+                .toList();
+        assertEquals(1, mine.size(), "exactly the arrival intent with TECH at its current attempt");
+        assertEquals(intentId2, mine.get(0).intent().id());
+        assertEquals(0, mine.get(0).intent().attempt(), "map() must read the real attempt column");
+        assertEquals(Outcome.TECH_FAILED, mine.get(0).currentOutcome(),
+                "the worklist carries the outcome class so the relauncher can pick the ceiling");
+        assertTrue(orphans.stream().noneMatch(c -> c.intent().id().equals(clockId)),
                 "clock intents (arrival_id IS NULL) are never swept");
     }
 

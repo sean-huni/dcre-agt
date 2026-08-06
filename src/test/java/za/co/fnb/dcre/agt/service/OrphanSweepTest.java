@@ -7,6 +7,7 @@ import io.quarkus.test.junit.TestProfile;
 import jakarta.inject.Inject;
 import org.junit.jupiter.api.Test;
 import za.co.fnb.dcre.agt.CrdbTestResource;
+import za.co.fnb.dcre.agt.config.AgtConfig;
 import za.co.fnb.dcre.agt.domain.ArrivalStatus;
 import za.co.fnb.dcre.agt.domain.LaunchIntent;
 import za.co.fnb.dcre.agt.domain.Outcome;
@@ -53,6 +54,9 @@ class OrphanSweepTest {
 
     @Inject
     OrphanRelauncher relauncher;
+
+    @Inject
+    AgtConfig config;
 
     @Inject
     ArrivalRepo arrivalRepo;
@@ -128,6 +132,54 @@ class OrphanSweepTest {
     }
 
     @Test
+    void configFailureIsRetriedOnTheInfraCeilingNotTheOrphanOne() {
+        // Config-plane failure class (spec "Failure classification"): the pod
+        // exited 78 BEFORE its runner phase, so the arrival carries no defect and
+        // the 3-attempt orphan budget is the wrong purse. At exactly the orphan
+        // ceiling a TECH_FAILED exhausts (budgetExhaustedGoesTerminal above); the
+        // same attempt with TECH_CONFIG_FAILED must still relaunch. That it is
+        // swept at all also proves the class is in the worklist IN-list: left out,
+        // the intent would stay LAUNCHED forever and wedge the arrival.
+        final int orphanCeiling = config.orphanMaxAttempts();
+        assertTrue(config.infraMaxAttempts() > orphanCeiling, "test precondition: infra budget is the larger one");
+        final UUID arrivalId = insertArrival("OSW8");
+        final UUID intentId = launchedIntent(arrivalId, "osw8");
+        setAttempt(intentId, orphanCeiling);
+        assertTrue(outcomeRepo.insertOutcome(intentId, orphanCeiling, Outcome.TECH_CONFIG_FAILED,
+                78, "Failed/BackoffLimitExceeded/InfraStartup"));
+
+        relauncher.sweepTechOrphans(Map.of());
+
+        assertEquals(orphanCeiling + 1, attemptOf(intentId),
+                "TECH_CONFIG_FAILED at the orphan ceiling still relaunches: it spends the infra budget");
+        assertEquals(1, outcomeCount(intentId), "no TECH_EXHAUSTED row was minted");
+        assertEquals(ArrivalStatus.DAG_RUNNING, arrivalRepo.arrivalById(arrivalId).orElseThrow().status(),
+                "a cfg restart must not fail a defect-free arrival");
+    }
+
+    @Test
+    void configFailureBudgetStaysBoundedAndEndsTerminal() {
+        // The infra ceiling is larger, never unbounded: an outcome class that is
+        // retried forever would hang the arrival in DAG_RUNNING (DagEngine has an
+        // empty tech arm), which is the exact wedge this design avoids.
+        final int infraCeiling = config.infraMaxAttempts();
+        final UUID arrivalId = insertArrival("OSW9");
+        final UUID intentId = launchedIntent(arrivalId, "osw9");
+        setAttempt(intentId, infraCeiling);
+        assertTrue(outcomeRepo.insertOutcome(intentId, infraCeiling, Outcome.TECH_CONFIG_FAILED,
+                78, "Failed/BackoffLimitExceeded/InfraStartup"));
+
+        relauncher.sweepTechOrphans(Map.of());
+
+        assertEquals(infraCeiling + 1, attemptOf(intentId),
+                "exhaustion consumes one attempt slot for its own ledger row (unchanged off-by-one)");
+        assertEquals(Outcome.TECH_EXHAUSTED, outcomeRepo.outcomesForArrival(arrivalId).get(Stage.CRR),
+                "the infra budget still terminates in TECH_EXHAUSTED");
+        assertEquals(ArrivalStatus.DAG_FAILED,
+                arrivalRepo.arrivalById(arrivalId).orElseThrow().status(), "arrival fails terminally");
+    }
+
+    @Test
     void businessOutcomeNeverTouched() {
         final UUID arrivalId = insertArrival("OSW5");
         final UUID intentId = launchedIntent(arrivalId, "osw5");
@@ -166,7 +218,7 @@ class OrphanSweepTest {
         relauncher.sweepTechOrphans(Map.of());
         relauncher.relaunchOrExhaust(
                 new LaunchIntent(clockId, null, Stage.PRG, "col-prg-" + key,
-                        LaunchIntent.LAUNCHED, key, 0, "dcre-col"), null);
+                        LaunchIntent.LAUNCHED, key, 0, "dcre-col"), Outcome.TECH_FAILED, null);
 
         assertEquals(0, attemptOf(clockId), "clock intents self-heal at the next window boundary");
     }

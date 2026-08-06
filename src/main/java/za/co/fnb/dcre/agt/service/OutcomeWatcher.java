@@ -32,6 +32,23 @@ public class OutcomeWatcher {
 
     private static final Logger LOG = Logger.getLogger(OutcomeWatcher.class);
 
+    /**
+     * Exit code platform-batch reserves for a failure BEFORE its runner phase
+     * (EX_CONFIG from sysexits.h): config import, property binding, secret
+     * fetch. A cross-repo wire contract, asserted as a literal like DCRE_DB_URL:
+     * platform-batch's ExitCodeMain emits it, AGT classifies on it. 78 is chosen
+     * because 0-7 are claimed by Boot's JobExecutionExitCodeGenerator (and 1 by
+     * the JVM's uncaught-exception status), 126/127 are shell-reserved, and
+     * 128+N are signal deaths (137/143 are load-bearing for the chaos gate).
+     */
+    public static final int CONFIG_FAILURE_EXIT_CODE = 78;
+
+    /** Appended to the observed k8s condition so the ledger row says WHY this is
+     *  an infrastructure class, without discarding the real type/reason (R-33).
+     *  Worst case "Failed/BackoffLimitExceeded/InfraStartup" = 40 chars, inside
+     *  stage_outcome.k8s_condition VARCHAR(64). */
+    static final String INFRA_CONDITION_SUFFIX = "/InfraStartup";
+
     @Inject
     IntentRepo intentRepo;
 
@@ -92,7 +109,17 @@ public class OutcomeWatcher {
 
         Outcome outcome;
         if (failed) {
-            outcome = Outcome.TECH_FAILED;
+            // A pre-runner startup failure is INFRASTRUCTURE, not a job outcome:
+            // the pod never reached the work, so the arrival carries no defect
+            // and must not burn the 3-attempt orphan budget. Observed, never
+            // assumed (R-33): only the pod's real exit code 78 classifies it.
+            // A null exitCode (pod already gone) is NOT evidence of a config
+            // failure, so it keeps today's TECH_FAILED behaviour exactly.
+            boolean infra = exitCode != null && exitCode == CONFIG_FAILURE_EXIT_CODE;
+            outcome = infra ? Outcome.TECH_CONFIG_FAILED : Outcome.TECH_FAILED;
+            if (infra) {
+                condition = condition + INFRA_CONDITION_SUFFIX;
+            }
         } else {
             Optional<Outcome> business = readBusinessOutcome(intent.jobName());
             if (business.isEmpty()) {
@@ -115,7 +142,14 @@ public class OutcomeWatcher {
                 .findFirst();
     }
 
-    /** Best-effort real exit code from the Job's pod; null when the pod is already gone. */
+    /** Best-effort real exit code from the Job's pod; null when the pod is already
+     *  gone. Reads the FIRST pod carrying the job-name label, which is only
+     *  correct while one Job produces exactly one pod: both JobLauncher builder
+     *  sites pin backoffLimit 0 + restartPolicy Never (pinned by
+     *  NamespaceRoutingTest.bothBuilderSitesPinBackoffLimitZeroSoOneJobStaysOnePod).
+     *  Raise the backoff limit and this
+     *  read becomes a lottery between attempts, silently re-masking the exit-78
+     *  config class as a generic TECH_FAILED. */
     private Integer podExitCode(String namespace, String jobName) {
         try {
             var pods = k8s.pods().inNamespace(namespace)

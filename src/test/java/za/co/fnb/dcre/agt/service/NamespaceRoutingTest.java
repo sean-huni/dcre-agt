@@ -173,7 +173,7 @@ class NamespaceRoutingTest {
         intentRepo.markIntentLaunched(intentId, deadUid);
         assertTrue(outcomeRepo.insertOutcome(intentId, 0, Outcome.TECH_FAILED, 137, "Failed/PodKill"));
 
-        relauncher.relaunchOrExhaust(intentOf(arrivalId, intentId), dead);
+        relauncher.relaunchOrExhaust(intentOf(arrivalId, intentId), Outcome.TECH_FAILED, dead);
 
         Job recreated = k8s.batch().v1().jobs().inNamespace("dcre-col").withName(name).get();
         assertNotNull(recreated, "same-identity relaunch lands back in the flow namespace");
@@ -336,6 +336,42 @@ class NamespaceRoutingTest {
     }
 
     @Test
+    void bothBuilderSitesPinBackoffLimitZeroSoOneJobStaysOnePod() {
+        // Config-failure classification (spec "Failure classification") reads the
+        // pod's exit code to tell a pre-runner startup failure (78) from a real
+        // job failure. OutcomeWatcher.podExitCode reads the FIRST pod carrying the
+        // job-name label, which is only correct while one Job produces exactly ONE
+        // pod: backoffLimit 0 + restartPolicy Never. Raise the limit to "retry
+        // flaky stages" and that read becomes a lottery between attempt pods, so
+        // an exit-78 config failure silently re-masks as a generic TECH_FAILED and
+        // burns the 3-attempt orphan budget again. Pinned at BOTH builder sites
+        // (serviceJob and clockJob), because either one drifting reopens the hole.
+
+        // service Job path (JobLauncher.serviceJob)
+        UUID arrivalId = insertArrival("onhost-req", "FNBCC01");
+        launcher.launch(arrivalId, Stage.CRR);
+        Job svcJob = k8s.batch().v1().jobs().inNamespace("dcre-col")
+                .withName(JobLauncher.jobName(za.co.fnb.dcre.agt.domain.Flow.COL, Stage.CRR, arrivalId)).get();
+        assertNotNull(svcJob, "CRR service job created in dcre-col");
+        assertEquals(0, svcJob.getSpec().getBackoffLimit(),
+                "serviceJob: one Job, one pod (exit code attributable)");
+        assertEquals("Never", svcJob.getSpec().getTemplate().getSpec().getRestartPolicy(),
+                "serviceJob: a restarted container would replace the exit code in place");
+
+        // clock Job path (JobLauncher.clockJob)
+        String runKey = "backoff-" + suffix();
+        launcher.launchClock(za.co.fnb.dcre.agt.domain.Flow.COL, Stage.PRG, runKey,
+                java.util.List.of("client=FNBCC01", "window=" + runKey));
+        Job clockJob = k8s.batch().v1().jobs().inNamespace("dcre-col")
+                .withName(JobLauncher.clockJobName(za.co.fnb.dcre.agt.domain.Flow.COL, Stage.PRG, runKey)).get();
+        assertNotNull(clockJob, "PRG clock job created in dcre-col");
+        assertEquals(0, clockJob.getSpec().getBackoffLimit(),
+                "clockJob: one Job, one pod (exit code attributable)");
+        assertEquals("Never", clockJob.getSpec().getTemplate().getSpec().getRestartPolicy(),
+                "clockJob: a restarted container would replace the exit code in place");
+    }
+
+    @Test
     void mrgSchedulerIsLaunchDisabledWithoutAnImage() {
         // M10/SCRUM-79: no agt.mrg-image in this profile -> the scheduler skips
         // entirely. Delta assertion: DB state is shared across test classes.
@@ -377,7 +413,7 @@ class NamespaceRoutingTest {
         intentRepo.markIntentLaunched(intentId, deadUid);
         assertTrue(outcomeRepo.insertOutcome(intentId, 0, Outcome.TECH_FAILED, 137, "Failed/PodKill"));
 
-        relauncher.relaunchOrExhaust(intentOf(arrivalId, intentId), dead);
+        relauncher.relaunchOrExhaust(intentOf(arrivalId, intentId), Outcome.TECH_FAILED, dead);
 
         Job recreated = k8s.batch().v1().jobs().inNamespace("dcre").withName(name).get();
         assertNotNull(recreated, "legacy relaunch targets the control namespace");

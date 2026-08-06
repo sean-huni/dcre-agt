@@ -168,7 +168,15 @@ public class Reconciler {
         }
         OffsetDateTime created = intentRepo.intentCreatedAt(intent.id());
         if (created.plus(REAP_GRACE).isBefore(OffsetDateTime.now())) {
-            orphans.relaunchOrExhaust(intent, null); // R-05 amendment: bounded same-identity resume
+            // R-05 amendment: bounded same-identity resume. The outcome class is
+            // null BY CONSTRUCTION here, not by omission: this path only ever
+            // walks intentsWithoutOutcome, so the current attempt recorded
+            // nothing and the seam was provably absent. A vanished Job leaves no
+            // exit code to read, so there is no evidence of a config failure and
+            // the default (orphan) ceiling is the honest one: claiming the infra
+            // budget for an unexplained vanish would quietly widen it to every
+            // reaped intent.
+            orphans.relaunchOrExhaust(intent, null, null);
         }
     }
 

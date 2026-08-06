@@ -45,3 +45,13 @@ compileJava {
 compileTestJava {
     options.encoding = 'UTF-8'
 }
+
+test {
+    // Gradle defaults a test worker to 512m, which this suite cannot complete in:
+    // ~19 @QuarkusTest classes across 11 TestProfiles each boot a Quarkus context
+    // plus a CockroachDB Testcontainer, and the worker dies with
+    // "Test process encountered an unexpected problem" whose real cause is
+    // OutOfMemoryError: Java heap space. Reproduced on a clean dev checkout, so it
+    // predates any one change: without this the suite cannot be run at all.
+    maxHeapSize = '4g'
+}

@@ -85,12 +85,13 @@ public class JobLauncher {
             Stage.CRR, Stage.IXR, Stage.SXR, Stage.PXR, Stage.MRR,
             Stage.MIX, Stage.MSX, Stage.MPX);
 
-    /** Stages AGT may launch. MAR and MSR are retained-deprecated (A-75): Stage
-     *  still parses them for historic agt_ops.stage_outcome rows, but they are in
-     *  no DAG, have no image config and no serviceArgs branch, so a launch attempt
-     *  is a bug rather than a fallback (serviceImage throws). */
+    /** Stages AGT may launch. MAR, MSR (A-75) and MIS (SCRUM-107, renamed to MIT)
+     *  are retained-deprecated: Stage still parses them for historic
+     *  agt_ops.stage_outcome rows, but they are in no DAG, have no image config
+     *  and no serviceArgs branch, so a launch attempt is a bug rather than a
+     *  fallback (serviceImage throws). */
     static final java.util.Set<Stage> LAUNCHABLE = java.util.Collections.unmodifiableSet(
-            java.util.EnumSet.complementOf(java.util.EnumSet.of(Stage.MAR, Stage.MSR)));
+            java.util.EnumSet.complementOf(java.util.EnumSet.of(Stage.MAR, Stage.MSR, Stage.MIS)));
 
     /** Whole-file responder stages: carry the A-45 arrival identity params and
      *  the rejecting validator's outcome.hint (CIR; M10 man responder MIR). */
@@ -102,7 +103,7 @@ public class JobLauncher {
      *  reconciled re-create (which has only the intent row) resolves the same
      *  URL; COL/PAY stages keep dcre_col unchanged. */
     static final java.util.Set<Stage> MAN_STAGES = java.util.EnumSet.of(
-            Stage.MRR, Stage.MRV, Stage.MAF, Stage.MIS, Stage.MIR,
+            Stage.MRR, Stage.MRV, Stage.MAF, Stage.MIT, Stage.MIR,
             Stage.MRW, Stage.MIX, Stage.MSX, Stage.MPX, Stage.MRG);
 
     @Inject
@@ -216,15 +217,16 @@ public class JobLauncher {
             case MRR -> config.mrrImage();
             case MRV -> config.mrvImage();
             case MAF -> config.mafImage();
-            case MIS -> config.misImage();
+            case MIT -> config.mitImage();
             case MIR -> config.mirImage();
             case MRW -> config.mrwImage();
             case MIX -> config.mixImage();
             case MSX -> config.msxImage();
             case MPX -> config.mpxImage();
             case MRG -> config.mrgImage();
-            case MAR, MSR -> throw new IllegalStateException("stage " + stage
-                    + " is retired (SCRUM-91): parseable for historic outcome rows, never launched");
+            case MAR, MSR, MIS -> throw new IllegalStateException("stage " + stage
+                    + " is retired (SCRUM-91 for MAR/MSR, SCRUM-107 for MIS): parseable for"
+                    + " historic outcome rows, never launched");
         };
         return image.orElseThrow(() -> new IllegalStateException(
                 "no image configured for stage " + stage + ": set AGT_" + stage.name() + "_IMAGE"));

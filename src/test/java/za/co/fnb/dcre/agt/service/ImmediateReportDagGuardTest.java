@@ -100,7 +100,7 @@ class ImmediateReportDagGuardTest {
 
         relauncher.relaunchOrExhaust(
                 new LaunchIntent(report, parent, Stage.PRG, "col-prg-dga2", LaunchIntent.LAUNCHED,
-                        "dga2", 3, "dcre-col"), null);
+                        "dga2", 3, "dcre-col"), Outcome.TECH_FAILED, null);
 
         assertEquals(ArrivalStatus.DAG_RUNNING, arrivalRepo.arrivalById(parent).orElseThrow().status(),
                 "a report's budget exhaustion never regresses the parent arrival's DAG");
@@ -116,7 +116,7 @@ class ImmediateReportDagGuardTest {
 
         relauncher.relaunchOrExhaust(
                 new LaunchIntent(report, parent, Stage.PRG, "col-prg-dga3", LaunchIntent.LAUNCHED,
-                        "dga3", 3, "dcre-col"), null);
+                        "dga3", 3, "dcre-col"), Outcome.TECH_FAILED, null);
 
         assertEquals(ArrivalStatus.DAG_COMPLETE, arrivalRepo.arrivalById(parent).orElseThrow().status(),
                 "the real scenario: a completed parent stays DAG_COMPLETE when its report exhausts");
@@ -133,7 +133,7 @@ class ImmediateReportDagGuardTest {
 
         relauncher.relaunchOrExhaust(
                 new LaunchIntent(crr, parent, Stage.CRR, "col-crr-dga4", LaunchIntent.LAUNCHED,
-                        null, 3, "dcre-col"), null);
+                        null, 3, "dcre-col"), Outcome.TECH_FAILED, null);
 
         assertEquals(ArrivalStatus.DAG_FAILED, arrivalRepo.arrivalById(parent).orElseThrow().status(),
                 "a real stage orphan still fails the DAG on exhaustion (guard is report-only)");

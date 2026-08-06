@@ -4,7 +4,7 @@ Collections Agent: the only long-running service in the DCRE Collections pipelin
 
 ## What it does
 
-AGT watches the per-client inbound exchange drop zones, registers stable file arrivals into a durable ledger (SHA-256 content identity, R-31 filename tokens, same-key-different-hash quarantine), and drives the request DAGs (DC Collections, ENDO Payments, and M10 Mandates `MRR -> MRV -> MAF -> MIS -> [MIR, MRW]`, R-36) level-triggered from that ledger: minting each pipeline stage as a write-ahead, deterministically-named Kubernetes Job, then observing its externally reported termination facts as the sole authority for stage completion (R-33). Response routes are token-picked: `fint-resp` launches the per-token reader (IXR/SXR/PXR), `fint-resp-man` picks the matching mandate leg reader the same way (MIX/MSX/MPX, SCRUM-91). It also launches the clock-driven executors (CRW process-date, PRG payment-status, HCS holiday-calendar-sync, MRG mandates-report) on interval windows, reconciles Jobs against intents after any restart, and bounds/relaunches same-identity Jobs that die mid-run (OrphanSweeper) instead of leaving an arrival stuck.
+AGT watches the per-client inbound exchange drop zones, registers stable file arrivals into a durable ledger (SHA-256 content identity, R-31 filename tokens, same-key-different-hash quarantine), and drives the request DAGs (DC Collections, ENDO Payments, and M10 Mandates `MRR -> MRV -> MAF -> MIT -> [MIR, MRW]`, R-36) level-triggered from that ledger: minting each pipeline stage as a write-ahead, deterministically-named Kubernetes Job, then observing its externally reported termination facts as the sole authority for stage completion (R-33). Response routes are token-picked: `fint-resp` launches the per-token reader (IXR/SXR/PXR), `fint-resp-man` picks the matching mandate leg reader the same way (MIX/MSX/MPX, SCRUM-91). It also launches the clock-driven executors (CRW process-date, PRG payment-status, HCS holiday-calendar-sync, MRG mandates-report) on interval windows, reconciles Jobs against intents after any restart, and bounds/relaunches same-identity Jobs that die mid-run (OrphanSweeper) instead of leaving an arrival stuck.
 
 ## Architecture and principles
 
@@ -59,7 +59,7 @@ AGT resolves `agt.exchange-root` (default `../../../../../infra/dcre-infra/excha
 | `AGT_PRG_IMAGE` | `dcre-prg:m4` | PRG clock-window executor image |
 | `AGT_AIS_IMAGE` | `dcre-ais:m5` | AIS endorsements stage image (ENDO route) |
 | `AGT_HCS_IMAGE` | `dcre-hcs:m6` | HCS holiday-calendar-sync clock executor image |
-| `AGT_MRR_IMAGE` / `AGT_MRV_IMAGE` / `AGT_MAF_IMAGE` / `AGT_MIS_IMAGE` / `AGT_MIR_IMAGE` / `AGT_MRW_IMAGE` / `AGT_MIX_IMAGE` / `AGT_MSX_IMAGE` / `AGT_MPX_IMAGE` / `AGT_MRG_IMAGE` | (empty) | M10 mandates stage images (SCRUM-79); absent/empty = launch-disabled until the 2.3 release line |
+| `AGT_MRR_IMAGE` / `AGT_MRV_IMAGE` / `AGT_MAF_IMAGE` / `AGT_MIT_IMAGE` / `AGT_MIR_IMAGE` / `AGT_MRW_IMAGE` / `AGT_MIX_IMAGE` / `AGT_MSX_IMAGE` / `AGT_MPX_IMAGE` / `AGT_MRG_IMAGE` | (empty) | M10 mandates stage images (SCRUM-79); absent/empty = launch-disabled until the 2.3 release line |
 | `AGT_MAN_CLIENTS` | `FNBCC01,FNBCC02,FNBRF01` | INTERIM comma-separated mandate-capable client tokens (MRG windows launch only for these), until the R-14 client table lands; trimmed + uppercased on read |
 | `AGT_CRW_INTERVAL_SECONDS` | `60` | CRW Process-Date Executor window length |
 | `AGT_PRG_INTERVAL_SECONDS` | `60` | PRG clock-window length |
@@ -83,7 +83,9 @@ Per-client inbound exchange layout (clients `FNBCC01`, `FNBCC02`, `FNBRF01`, eac
 ./gradlew test
 ```
 
-Runs against a real `cockroachdb/cockroach:v26.2.3` Testcontainer (ledger constraints, lease CAS/takeover, arrival dedup/quarantine, OrphanSweeper relaunch/exhaustion) plus pure DAG-logic unit tests (`DagEngineTest`, `ClockJobNameTest`). Broader e2e and chaos (kill/resume) runs live in the sprint runbook in `dcre-infra`.
+Runs against a real `cockroachdb/cockroach:v26.2.3` Testcontainer (ledger constraints, lease CAS/takeover, arrival dedup/quarantine, OrphanSweeper relaunch/exhaustion, infrastructure-vs-job failure classification) plus pure DAG-logic unit tests (`DagEngineTest`, `ClockJobNameTest`). Broader e2e and chaos (kill/resume) runs live in the sprint runbook in `dcre-infra`.
+
+`ConfigFailureClassificationTest` covers the `TECH_CONFIG_FAILED` class: a Failed Job whose pod exited **78** (`EX_CONFIG`, platform-batch's reserved code for a failure before the runner phase) is an infrastructure startup failure, not a job outcome. It is still retried, but on `agt.infra-max-attempts` instead of the 3-attempt `agt.orphan-max-attempts` budget, so a cfg restart or a Vault re-seed cannot turn a defect-free arrival into a terminal `DAG_FAILED` in minutes. The ceiling stays bounded: exhaustion still mints `TECH_EXHAUSTED` and fails the DAG (`OrphanSweepTest`, `StaleHeartbeatSweepTest`).
 
 ## Local cluster deployment
 
