@@ -27,6 +27,15 @@ spec:
           env:
             - name: AGT_DB_URL
               value: jdbc:postgresql://crdb:26257/agt_ops?sslmode=disable
+            # SCRUM-107: the SECOND, read-only datasource into dcre_col (SCRUM-55,
+            # prg_report_due / prg_sla_pending). It was never added here, so every
+            # in-cluster AGT fell back to the committed localhost dev default and
+            # /q/health/ready stayed DOWN forever with "Connection to
+            # localhost:26257 refused" - the pod runs, the readiness probe never
+            # passes, and the rollout times out. Same shape as the CTV
+            # mandates-db-url incident (JobLauncher.CTV_MANDATES_DB_URL_ENV).
+            - name: AGT_COLLECTIONS_DB_URL
+              value: jdbc:postgresql://crdb:26257/dcre_col?sslmode=disable
             - name: DCRE_EXCHANGE_ROOT
               value: /exchange
             - name: AGT_NAMESPACE
