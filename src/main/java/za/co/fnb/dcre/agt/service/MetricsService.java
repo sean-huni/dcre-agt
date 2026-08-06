@@ -42,6 +42,13 @@ public class MetricsService {
     void refresh() {
         leaseHeld.set(lease.holdsLease() ? 1 : 0);
         count("SELECT status, count(*) FROM file_arrival GROUP BY 1", "agt_file_arrivals_total", "status");
+        // SCRUM-107: AGE, not just count. The emission gate makes DAG_RUNNING a
+        // legitimate long-lived state for a warehoused arrival, so a COUNT can no
+        // longer distinguish "warehoused for nine days" from "stranded forever".
+        // Only the age of the OLDEST one can, and it is the number worth alerting on.
+        count("SELECT 'oldest', COALESCE(MAX(EXTRACT(EPOCH FROM (now() - arrived_at))), 0)"
+                + " FROM file_arrival WHERE status = 'DAG_RUNNING'",
+                "agt_dag_running_oldest_age_seconds", "scope");
         count("SELECT status, count(*) FROM launch_intent GROUP BY 1", "agt_launch_intents_total", "status");
         count("SELECT outcome, count(*) FROM stage_outcome GROUP BY 1", "agt_stage_outcomes_total", "outcome");
     }

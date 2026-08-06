@@ -123,13 +123,23 @@ public class ArrivalRepo {
         });
     }
 
+    /** Per-tick scan ceiling; see the ORDER BY note below. */
+    static final int SCAN_LIMIT = 500;
+
     public List<FileArrival> arrivalsByStatus(ArrivalStatus... statuses) {
         StringBuilder in = new StringBuilder();
         for (int i = 0; i < statuses.length; i++) {
             in.append(i == 0 ? "?" : ",?");
         }
         String sql = "SELECT id, route_id, physical_filename, payload_sha256, client_token, msg_id_token,"
-                + " status, quarantine_reason, claimed_path FROM file_arrival WHERE status IN (" + in + ")";
+                + " status, quarantine_reason, claimed_path FROM file_arrival WHERE status IN (" + in + ")"
+                // SCRUM-107: bounded. The emission gate deliberately holds warehoused
+                // arrivals in DAG_RUNNING for days, so this set now grows with the
+                // warehouse horizon rather than with in-flight work. Unbounded, one
+                // tick's work grows without limit and the 2s scheduler (SKIP on
+                // overlap) stretches, delaying real launches. Oldest first, so a
+                // backlog drains in arrival order instead of starving the head.
+                + " ORDER BY arrived_at LIMIT " + SCAN_LIMIT;
         try (Connection c = ds.getConnection(); PreparedStatement p = c.prepareStatement(sql)) {
             for (int i = 0; i < statuses.length; i++) {
                 p.setString(i + 1, statuses[i].name());

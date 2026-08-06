@@ -19,7 +19,7 @@ class DagEngineTest {
 
     @Test
     void crrAcceptedLaunchesCtv() {
-        Set<Stage> launches = DagEngine.computeLaunches(
+        Set<Stage> launches = DagEngine.computeLaunches(ArrivalService.ROUTE_ONHOST_REQ, "FNBCC01_F.txt", 
                 Map.of(Stage.CRR, Outcome.BUSINESS_ACCEPTED),
                 EnumSet.of(Stage.CRR));
         assertEquals(EnumSet.of(Stage.CTV), launches);
@@ -27,7 +27,7 @@ class DagEngineTest {
 
     @Test
     void ctvAcceptedForksCdeAndCirTogether() {
-        Set<Stage> launches = DagEngine.computeLaunches(
+        Set<Stage> launches = DagEngine.computeLaunches(ArrivalService.ROUTE_ONHOST_REQ, "FNBCC01_F.txt", 
                 Map.of(Stage.CRR, Outcome.BUSINESS_ACCEPTED, Stage.CTV, Outcome.BUSINESS_ACCEPTED),
                 EnumSet.of(Stage.CRR, Stage.CTV));
         assertEquals(EnumSet.of(Stage.CDE, Stage.CIR), launches);
@@ -37,7 +37,7 @@ class DagEngineTest {
     void partialForksCdeAndCirLikeAccepted() {
         // R-41: acceptance mode moved into CTV; PARTIAL here means ACK-with-partials,
         // so PASS rows continue (old A-16 suppression retired).
-        Set<Stage> launches = DagEngine.computeLaunches(
+        Set<Stage> launches = DagEngine.computeLaunches(ArrivalService.ROUTE_ONHOST_REQ, "FNBCC01_F.txt", 
                 Map.of(Stage.CRR, Outcome.BUSINESS_ACCEPTED, Stage.CTV, Outcome.BUSINESS_PARTIAL),
                 EnumSet.of(Stage.CRR, Stage.CTV));
         assertEquals(EnumSet.of(Stage.CDE, Stage.CIR), launches);
@@ -46,7 +46,7 @@ class DagEngineTest {
     @Test
     void fileRejectedRoutesToCirOnly() {
         Map<Stage, Outcome> outcomes = Map.of(Stage.CTV, Outcome.BUSINESS_FILE_REJECTED);
-        Set<Stage> launches = DagEngine.computeLaunches(outcomes, Set.of());
+        Set<Stage> launches = DagEngine.computeLaunches(ArrivalService.ROUTE_ONHOST_REQ, "FNBCC01_F.txt", outcomes, Set.of());
         assertEquals(Set.of(Stage.CIR), launches);
     }
 
@@ -54,7 +54,7 @@ class DagEngineTest {
     void partialNowContinuesPassRows() {
         // R-41: PARTIAL means ACK-with-partials; CDE must launch alongside CIR
         Map<Stage, Outcome> outcomes = Map.of(Stage.CTV, Outcome.BUSINESS_PARTIAL);
-        Set<Stage> launches = DagEngine.computeLaunches(outcomes, Set.of());
+        Set<Stage> launches = DagEngine.computeLaunches(ArrivalService.ROUTE_ONHOST_REQ, "FNBCC01_F.txt", outcomes, Set.of());
         assertEquals(Set.of(Stage.CDE, Stage.CIR), launches);
     }
 
@@ -70,7 +70,7 @@ class DagEngineTest {
         // Fugu F6: a NACK that never left OnHost must keep the arrival open.
         assertTrue(DagEngine.terminalState(ArrivalService.ROUTE_ONHOST_REQ, Map.of(
                 Stage.CRR, Outcome.BUSINESS_ACCEPTED, Stage.CTV, Outcome.BUSINESS_FILE_FATAL,
-                Stage.CIR, Outcome.TECH_FAILED), true).isEmpty());
+                Stage.CIR, Outcome.TECH_FAILED), () -> false).isEmpty());
     }
 
     @Test
@@ -79,11 +79,11 @@ class DagEngineTest {
         // longer completes the arrival.
         assertTrue(DagEngine.terminalState(ArrivalService.ROUTE_ONHOST_REQ, Map.of(
                 Stage.CRR, Outcome.BUSINESS_ACCEPTED, Stage.CTV, Outcome.BUSINESS_PARTIAL,
-                Stage.CIR, Outcome.BUSINESS_ACCEPTED), true).isEmpty());
+                Stage.CIR, Outcome.BUSINESS_ACCEPTED), () -> false).isEmpty());
         assertEquals(ArrivalStatus.DAG_COMPLETE, DagEngine.terminalState(ArrivalService.ROUTE_ONHOST_REQ, Map.of(
                 Stage.CRR, Outcome.BUSINESS_ACCEPTED, Stage.CTV, Outcome.BUSINESS_PARTIAL,
                 Stage.CDE, Outcome.BUSINESS_ACCEPTED,
-                Stage.CIR, Outcome.BUSINESS_ACCEPTED), true).orElseThrow());
+                Stage.CIR, Outcome.BUSINESS_ACCEPTED), () -> false).orElseThrow());
     }
 
     @Test
@@ -92,19 +92,19 @@ class DagEngineTest {
         // responder has reported; a tech-failed responder keeps the arrival open.
         assertEquals(ArrivalStatus.DAG_FAILED, DagEngine.terminalState(ArrivalService.ROUTE_ONHOST_REQ, Map.of(
                 Stage.CRR, Outcome.BUSINESS_ACCEPTED, Stage.CTV, Outcome.BUSINESS_FILE_REJECTED,
-                Stage.CIR, Outcome.BUSINESS_ACCEPTED), true).orElseThrow());
+                Stage.CIR, Outcome.BUSINESS_ACCEPTED), () -> false).orElseThrow());
         assertTrue(DagEngine.terminalState(ArrivalService.ROUTE_ONHOST_REQ, Map.of(
                 Stage.CRR, Outcome.BUSINESS_ACCEPTED, Stage.CTV, Outcome.BUSINESS_FILE_REJECTED,
-                Stage.CIR, Outcome.TECH_FAILED), true).isEmpty());
+                Stage.CIR, Outcome.TECH_FAILED), () -> false).isEmpty());
         assertTrue(DagEngine.terminalState(ArrivalService.ROUTE_ONHOST_REQ, Map.of(
-                        Stage.CRR, Outcome.BUSINESS_ACCEPTED, Stage.CTV, Outcome.BUSINESS_FILE_REJECTED), true)
+                        Stage.CRR, Outcome.BUSINESS_ACCEPTED, Stage.CTV, Outcome.BUSINESS_FILE_REJECTED), () -> false)
                         .isEmpty(),
                 "mid-flight rejection (no CIR row yet) has no terminal state");
     }
 
     @Test
     void fileFatalRoutesToCirOnly() {
-        Set<Stage> launches = DagEngine.computeLaunches(
+        Set<Stage> launches = DagEngine.computeLaunches(ArrivalService.ROUTE_ONHOST_REQ, "FNBCC01_F.txt", 
                 Map.of(Stage.CRR, Outcome.BUSINESS_ACCEPTED, Stage.CTV, Outcome.BUSINESS_FILE_FATAL),
                 EnumSet.of(Stage.CRR, Stage.CTV));
         assertEquals(EnumSet.of(Stage.CIR), launches, "whole-file NACK: CIR only, never CDE/CRW");
@@ -112,7 +112,7 @@ class DagEngineTest {
 
     @Test
     void techFailureLaunchesNothing() {
-        Set<Stage> launches = DagEngine.computeLaunches(
+        Set<Stage> launches = DagEngine.computeLaunches(ArrivalService.ROUTE_ONHOST_REQ, "FNBCC01_F.txt", 
                 Map.of(Stage.CRR, Outcome.TECH_FAILED),
                 EnumSet.of(Stage.CRR));
         assertTrue(launches.isEmpty(), "process death is not a business verdict (R-33)");
@@ -120,7 +120,7 @@ class DagEngineTest {
 
     @Test
     void alreadyIntendedStagesAreNeverRelaunched() {
-        Set<Stage> launches = DagEngine.computeLaunches(
+        Set<Stage> launches = DagEngine.computeLaunches(ArrivalService.ROUTE_ONHOST_REQ, "FNBCC01_F.txt", 
                 Map.of(Stage.CTV, Outcome.BUSINESS_ACCEPTED),
                 EnumSet.of(Stage.CRR, Stage.CTV, Stage.CDE, Stage.CIR));
         assertTrue(launches.isEmpty(), "non-overlap: existing intents suppress relaunch");
@@ -151,8 +151,8 @@ class DagEngineTest {
 
     @Test
     void fintRespCompletesOnReaderAcceptanceOnly() {
-        assertEquals(ArrivalStatus.DAG_COMPLETE, DagEngine.terminalState(ArrivalService.ROUTE_FINT_RESP, Map.of(Stage.PXR, Outcome.BUSINESS_ACCEPTED), true).orElseThrow());
-        assertTrue(DagEngine.terminalState(ArrivalService.ROUTE_FINT_RESP, Map.of(Stage.PXR, Outcome.TECH_FAILED), true).isEmpty(),
+        assertEquals(ArrivalStatus.DAG_COMPLETE, DagEngine.terminalState(ArrivalService.ROUTE_FINT_RESP, Map.of(Stage.PXR, Outcome.BUSINESS_ACCEPTED), () -> false).orElseThrow());
+        assertTrue(DagEngine.terminalState(ArrivalService.ROUTE_FINT_RESP, Map.of(Stage.PXR, Outcome.TECH_FAILED), () -> false).isEmpty(),
                 "tech failure keeps the arrival open for the reconciler");
     }
 
@@ -196,9 +196,9 @@ class DagEngineTest {
         // the pay-flow DAG without any CDE outcome.
         assertEquals(ArrivalStatus.DAG_COMPLETE, DagEngine.terminalState(ArrivalService.ROUTE_ONHOST_REQ_ENDO, Map.of(Stage.CRR, Outcome.BUSINESS_ACCEPTED, Stage.CTV, Outcome.BUSINESS_ACCEPTED,
                         Stage.AIS, Outcome.BUSINESS_ACCEPTED,
-                        Stage.CIR, Outcome.BUSINESS_ACCEPTED), true).orElseThrow());
+                        Stage.CIR, Outcome.BUSINESS_ACCEPTED), () -> false).orElseThrow());
         assertTrue(DagEngine.terminalState(ArrivalService.ROUTE_ONHOST_REQ_ENDO, Map.of(Stage.CRR, Outcome.BUSINESS_ACCEPTED, Stage.CTV, Outcome.BUSINESS_ACCEPTED,
-                                Stage.AIS, Outcome.BUSINESS_ACCEPTED), true).isEmpty(),
+                                Stage.AIS, Outcome.BUSINESS_ACCEPTED), () -> false).isEmpty(),
                 "mid-flight ENDO arrival has no terminal state");
     }
 
@@ -227,11 +227,11 @@ class DagEngineTest {
         assertEquals(ArrivalStatus.DAG_COMPLETE, DagEngine.terminalState(ArrivalService.ROUTE_ONHOST_REQ, Map.of(
                 Stage.CRR, Outcome.BUSINESS_ACCEPTED, Stage.CTV, Outcome.BUSINESS_ACCEPTED,
                 Stage.CDE, Outcome.BUSINESS_ACCEPTED, Stage.CRW, Outcome.BUSINESS_ACCEPTED,
-                Stage.CIR, Outcome.BUSINESS_ACCEPTED), true).orElseThrow());
+                Stage.CIR, Outcome.BUSINESS_ACCEPTED), () -> false).orElseThrow());
         assertEquals(ArrivalStatus.DAG_FAILED, DagEngine.terminalState(ArrivalService.ROUTE_ONHOST_REQ, Map.of(
                 Stage.CRR, Outcome.BUSINESS_ACCEPTED, Stage.CTV, Outcome.BUSINESS_FILE_FATAL,
-                Stage.CIR, Outcome.BUSINESS_ACCEPTED), true).orElseThrow());
+                Stage.CIR, Outcome.BUSINESS_ACCEPTED), () -> false).orElseThrow());
         assertTrue(DagEngine.terminalState(ArrivalService.ROUTE_ONHOST_REQ, Map.of(
-                Stage.CRR, Outcome.BUSINESS_ACCEPTED), true).isEmpty(), "mid-flight has no terminal state");
+                Stage.CRR, Outcome.BUSINESS_ACCEPTED), () -> false).isEmpty(), "mid-flight has no terminal state");
     }
 }

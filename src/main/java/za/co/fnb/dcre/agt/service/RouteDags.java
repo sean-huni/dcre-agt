@@ -22,6 +22,12 @@ final class RouteDags {
      *  first-stage mapping lives HERE with the rest of the shape instead of in a
      *  ternary in DagEngine. Response DAGs have no fixed entry (the leg reader is
      *  token-picked from the filename), so theirs is empty. */
+    /** Whether a route's completion depends on a CRW emission. A named pair rather
+     *  than a bare trailing boolean: the factories exist so a same-typed argument
+     *  cannot be transposed silently, and an unlabelled boolean is the next instance
+     *  of exactly that hazard. */
+    enum Emission { REQUIRED, NONE }
+
     record RouteDag(Optional<Stage> entry, Map<Stage, Set<Stage>> edges,
                     Set<Stage> terminal, Optional<Stage> responder, boolean requiresEmission) {
 
@@ -30,8 +36,9 @@ final class RouteDags {
          *  cannot be transposed silently (they could in the positional form). */
         static RouteDag request(final Stage entry, final Map<Stage, Set<Stage>> edges,
                                 final Set<Stage> terminal, final Optional<Stage> responder,
-                                final boolean requiresEmission) {
-            return new RouteDag(Optional.of(entry), edges, terminal, responder, requiresEmission);
+                                final Emission emission) {
+            return new RouteDag(Optional.of(entry), edges, terminal, responder,
+                    emission == Emission.REQUIRED);
         }
 
         /** A response DAG: token-picked entries, no edges, no responder, no emission. */
@@ -52,7 +59,7 @@ final class RouteDags {
             // arrival is not COMPLETE until it has emitted. Terminal now also requires
             // a VISIBLE crw_emission for the arrival, so a warehoused instruction stays
             // DAG_RUNNING honestly instead of claiming completion before Fintegrate saw it.
-            true);
+            Emission.REQUIRED);
 
     static final RouteDag ENDO = RouteDag.request(
             Stage.CRR,
@@ -62,7 +69,7 @@ final class RouteDags {
                     Stage.AIS, EnumSet.of(Stage.CIR))),
             EnumSet.of(Stage.CIR),
             Optional.of(Stage.CIR),
-            true); // pay arm emits through the same CRW window job
+            Emission.REQUIRED); // pay arm emits through the same CRW window job
 
     /** M10 (SCRUM-79): MRR -> MRV -> MAS -> MIT -> fork {MIR, MRW}; the man
      *  responder is MIR (R-41 switch-case extension: rejections never see CIR). */
@@ -75,7 +82,7 @@ final class RouteDags {
                     Stage.MIT, EnumSet.of(Stage.MIR, Stage.MRW))),
             EnumSet.of(Stage.MIR, Stage.MRW),
             Optional.of(Stage.MIR),
-            false); // MRW is a real DAG stage here, so the writer is already terminal
+            Emission.NONE); // MRW is a real DAG stage here, so the writer is already terminal
 
     /** M4 fint-resp: one token-picked leg reader per pain.002 reply, no successor
      *  edges and no responder. Exactly one of the terminal entries ever runs on a
