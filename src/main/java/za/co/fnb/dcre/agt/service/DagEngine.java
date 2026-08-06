@@ -89,13 +89,30 @@ public class DagEngine {
                 || ArrivalService.ROUTE_FINT_RESP_MAN.equals(route);
     }
 
-    /** First stage for a CLAIMED arrival; empty = quarantine (fail closed). */
+    /**
+     * First stage for a CLAIMED arrival; empty = quarantine (fail closed).
+     *
+     * <p>SCRUM-107: the request branch used to be the ternary
+     * {@code ROUTE_ONHOST_REQ_MAN.equals(route) ? MRR : CRR}, so EVERY unrecognised
+     * route silently started at CRR, against dcre_col, while this javadoc already
+     * claimed the method failed closed. It now reads the entry off the route's own
+     * DAG, so there is one registry rather than a second encoding that can drift.
+     *
+     * <p>This is the site that fires FIRST: computeLaunches only picks successors,
+     * so fixing that one alone left the orchestrator still misrouting.
+     *
+     * <p>It returns EMPTY for an unknown route rather than throwing, so the caller's
+     * existing quarantine path handles it: one WARN, one terminal transition. An
+     * earlier revision threw here and the arrival re-threw on every 2s tick, which
+     * is loud but never terminal, and is precisely the per-item exception that
+     * wedges a level-triggered loop. Observed spinning before this correction.
+     */
     static java.util.Optional<Stage> initialStage(String route, String filename) {
         if (isRespRoute(route)) {
             return fintRespStage(route, filename);
         }
-        return java.util.Optional.of(
-                ArrivalService.ROUTE_ONHOST_REQ_MAN.equals(route) ? Stage.MRR : Stage.CRR);
+        final RouteDags.RouteDag dag = RouteDags.REQUESTS.get(route);
+        return dag == null ? java.util.Optional.empty() : dag.entry();
     }
 
     @Inject
@@ -163,11 +180,30 @@ public class DagEngine {
      *  response routes seed the token-picked leg reader and nothing else
      *  (re-seeded level-triggered, intents dedupe). SCRUM-91: both response
      *  routes take this one path now, since neither has a successor edge.
-     *  Unknown routes fall back to the DC shape (as before). */
+     *
+     *  <p>SCRUM-107: an unknown route FAILS CLOSED. It used to fall back to the DC
+     *  shape, so a route added to DirectoryWatcher.INBOUND but not to the RouteDags
+     *  registry silently ran the COLLECTIONS DAG: CRR ingesting another family's
+     *  file into dcre_col, the arrival reaching DAG_COMPLETE, nothing logged.
+     *  Observed against the running orchestrator before the fix. advance() catches
+     *  per arrival (F10), so throwing isolates that arrival and surfaces it. */
+    /** The request DAG for a route, or a named failure. Fails closed rather than
+     *  defaulting to DC (SCRUM-107). */
+    private static RouteDag requestDag(final String route) {
+        final RouteDag dag = RouteDags.REQUESTS.get(route);
+        if (dag == null) {
+            throw new IllegalArgumentException("unknown request route '" + route
+                    + "': no RouteDags entry, so no DAG shape applies. Add it to"
+                    + " RouteDags.REQUESTS (and DirectoryWatcher.INBOUND) rather than"
+                    + " letting it run the collections DAG.");
+        }
+        return dag;
+    }
+
     public static Set<Stage> computeLaunches(String route, String filename,
                                              Map<Stage, Outcome> outcomes, Set<Stage> intended) {
         if (!isRespRoute(route)) {
-            return computeLaunches(RouteDags.REQUESTS.getOrDefault(route, RouteDags.DC), outcomes, intended);
+            return computeLaunches(requestDag(route), outcomes, intended);
         }
         Set<Stage> launches = EnumSet.noneOf(Stage.class);
         fintRespStage(route, filename)
@@ -218,7 +254,7 @@ public class DagEngine {
         if (isRespRoute(route)) {
             return respTerminalState(RouteDags.RESPONSES.get(route), outcomes);
         }
-        return terminalState(RouteDags.REQUESTS.getOrDefault(route, RouteDags.DC), outcomes);
+        return terminalState(requestDag(route), outcomes);
     }
 
     /**

@@ -29,8 +29,8 @@ public class FlowNamespaces {
      * Pure route resolution. INTERIM (R-42): the pay-clients membership decides
      * the fint-resp flow until the R-14 client reference table lands; the M10
      * man routes are client-independent (SCRUM-79: mandates are their own job
-     * family, never pulled into PAY by client membership); unknown routes fall
-     * back to collections-primary, mirroring DagEngine's DC fallback.
+     * family, never pulled into PAY by client membership); unknown routes FAIL
+     * (SCRUM-107), mirroring DagEngine's fail-closed route dispatch.
      * Token comparison is normalized (trim + uppercase, m4).
      */
     public static Flow flowForRoute(String routeId, String clientToken, Collection<String> payClients) {
@@ -39,7 +39,16 @@ public class FlowNamespaces {
             case ArrivalService.ROUTE_ONHOST_REQ_MAN, ArrivalService.ROUTE_FINT_RESP_MAN -> Flow.MAN;
             case ArrivalService.ROUTE_FINT_RESP ->
                     clientToken != null && payClients.contains(normalize(clientToken)) ? Flow.PAY : Flow.COL;
-            default -> Flow.COL; // onhost-req and unknown routes: collections-primary
+            case ArrivalService.ROUTE_ONHOST_REQ -> Flow.COL;
+            // SCRUM-107: onhost-req is now enumerated and the catch-all FAILS. It used
+            // to read `default -> Flow.COL`, which meant an unrecognised route resolved
+            // to the collections namespace: observed live, an unknown route produced a
+            // CRR Job in dcre-col. A catch-all that returns the happy path cannot tell
+            // "collections" from "I have never heard of this route".
+            default -> throw new IllegalArgumentException("unknown route '" + routeId
+                    + "': no flow mapping, so no namespace can be chosen. Add it here"
+                    + " (and to RouteDags/DirectoryWatcher) rather than defaulting to"
+                    + " collections.");
         };
     }
 

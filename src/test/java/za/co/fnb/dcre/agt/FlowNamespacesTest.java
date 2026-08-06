@@ -10,6 +10,7 @@ import java.util.Set;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -43,10 +44,24 @@ class FlowNamespacesTest {
                 "a token-less response arrival falls back to collections-primary");
     }
 
+    /**
+     * SCRUM-107, INVERTED. This test previously asserted
+     * {@code assertEquals(Flow.COL, flowForRoute("mystery-route", ...))} and so
+     * RATIFIED the defect: an unrecognised route resolving to the collections
+     * namespace. Confirmed live before the fix, an unknown route produced a CRR
+     * Job in dcre-col with nothing logged. The behaviour was wrong, and the test
+     * asserting it is why it survived review, so the assertion is inverted rather
+     * than deleted.
+     *
+     * <p>onhost-req, which legitimately used to rely on that default, is now
+     * enumerated explicitly and is covered by collectionsRoutesResolveToCol above.
+     */
     @Test
-    void unknownRouteFallsBackToCollections() {
-        // Mirrors DagEngine's DC fallback for unknown routes: collections-primary.
-        assertEquals(Flow.COL, FlowNamespaces.flowForRoute("mystery-route", "FNBRF01", PAY_CLIENTS));
+    void unknownRouteFailsInsteadOfFallingBackToCollections() {
+        final IllegalArgumentException e = assertThrows(IllegalArgumentException.class,
+                () -> FlowNamespaces.flowForRoute("mystery-route", "FNBRF01", PAY_CLIENTS));
+        assertTrue(e.getMessage().contains("mystery-route"),
+                "the failure must name the route; got: " + e.getMessage());
     }
 
     @Test
