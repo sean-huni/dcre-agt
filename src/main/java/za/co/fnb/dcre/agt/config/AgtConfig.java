@@ -138,16 +138,20 @@ public interface AgtConfig {
     @WithDefault("jdbc:postgresql://crdb.dcre.svc.cluster.local:26257/dcre_man?sslmode=disable")
     String manServiceDbUrl();
 
-    /** Which mandate store CTV's DC-flow gate reads (SCRUM-91, Task 11 Step 8).
-     *  Handed to every CTV stage pod as DCRE_CTV_MANDATE_SOURCE, so the gate is
-     *  switchable from AGT instead of being frozen at ctv's yml default: nothing
-     *  else injects it, so an in-cluster CTV always ran `legacy`, which reads
-     *  `FROM mandate` in dcre_col, a table only env-reset.sh --seed creates.
-     *  Values are ctv's MandateSource enum (legacy|projection), parsed there and
-     *  never interpreted here: AGT only carries the token, so a new mode needs no
-     *  AGT change. The default is `legacy`, matching ctv's own application.yml
-     *  default, so wiring the seam changes nothing until it is set. */
-    @WithDefault("legacy")
+    /** Which mandate store CTV's DC-flow gate reads (SCRUM-107).
+     *  Handed to every CTV stage pod as DCRE_CTV_MANDATE_SOURCE. Values are ctv's
+     *  MandateSource enum, parsed there and never interpreted here: AGT only carries
+     *  the token.
+     *
+     *  <p>The default is `projection`, and it must stay in step with BOTH ctv's
+     *  application.yml default and agt's own application.yml. This annotation held
+     *  `legacy` for one commit after the yml flipped, which is a two-homes-for-one-fact
+     *  hazard rather than a cosmetic mismatch: ctv now FAILS CLOSED on `legacy`
+     *  (MandateSource.from throws at bean creation), so whichever home wins, handing
+     *  `legacy` to a stage pod stops every CTV pod from starting. `legacy` is not a
+     *  fallback any more; the dcre_col.mandate table it selected has been dropped.
+     *  AgtCtvMandateSourceDefaultTest pins the two homes together. */
+    @WithDefault("projection")
     String ctvMandateSource();
 
     /** JDBC url every launched stage Job gets so the platform-batch heartbeat

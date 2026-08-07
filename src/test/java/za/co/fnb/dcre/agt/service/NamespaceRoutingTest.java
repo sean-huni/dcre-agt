@@ -263,13 +263,11 @@ class NamespaceRoutingTest {
 
     @Test
     void ctvStageJobCarriesTheConfiguredMandateSource() {
-        // SCRUM-91 Task 11 Step 8: CTV picks its mandate store from
-        // ${DCRE_CTV_MANDATE_SOURCE} (ctv MandateGate, legacy|projection). Nothing
-        // injected it, so an in-cluster CTV was frozen on ctv's yml default
-        // `legacy`, which reads `FROM mandate` in dcre_col - a table only
-        // env-reset.sh --seed creates and which is absent. The acceptance step
-        // (ACCP mandate PASSes, SUSPENDED one FAIL_MANDATE_NOT_ACTIVE) was
-        // therefore not drivable in-cluster at all.
+        // SCRUM-107: CTV picks its mandate store from ${DCRE_CTV_MANDATE_SOURCE}
+        // (ctv MandateGate). The vocabulary is now `projection` only: the
+        // dcre_col.mandate table the retired `legacy` value read has been dropped,
+        // and ctv FAILS CLOSED on that value, so handing it to a stage pod stops the
+        // pod from starting rather than degrading to a different gate.
         // Stage-keyed for the same reason as the mandates url: CTV is a DAG stage
         // with no per-launch env seam, and EVERY CTV pod runs the gate.
         // The env NAME is asserted as a literal on purpose: it is the cross-repo
@@ -284,9 +282,11 @@ class NamespaceRoutingTest {
         assertEquals(config.ctvMandateSource(), envOf(ctvJob, "DCRE_CTV_MANDATE_SOURCE"),
                 "the CTV pod runs the mandate store AGT is configured for, not ctv's frozen yml default");
         // The shipped default must be ctv's own effective behaviour, so wiring the
-        // seam changes nothing for anyone who never sets the knob.
-        assertEquals("legacy", config.ctvMandateSource(),
-                "default mirrors ctv application.yml (dcre.ctv.mandate-source:legacy)");
+        // seam changes nothing for anyone who never sets the knob. This is the THIRD
+        // home of the same fact (yml, @WithDefault, and the resolved value asserted
+        // here); AgtCtvMandateSourceDefaultTest pins the first two to each other.
+        assertEquals("projection", config.ctvMandateSource(),
+                "default mirrors ctv application.yml (dcre.ctv.mandate-source:projection)");
     }
 
     @Test

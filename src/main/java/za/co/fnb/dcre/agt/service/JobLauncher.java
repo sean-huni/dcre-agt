@@ -59,15 +59,17 @@ public class JobLauncher {
      *  cannot reach dcre_man at all (found 2026-07-26). */
     public static final String CTV_MANDATES_DB_URL_ENV = "DCRE_CTV_MANDATES_DB_URL";
 
-    /** Env var selecting WHICH mandate store CTV's DC-flow gate reads
-     *  (legacy|projection, ctv MandateSource). STAGE-keyed for the same reason as
-     *  CTV_MANDATES_DB_URL_ENV: every CTV pod runs the gate and there is no
-     *  per-launch env seam. Absent, the pod is frozen on ctv's yml default
-     *  `legacy`, which reads `FROM mandate` in dcre_col - a table only
-     *  env-reset.sh --seed creates - so the projection gate was unreachable
-     *  in-cluster no matter what dcre_man held (SCRUM-91 Task 11 Step 8).
-     *  The token is carried verbatim from agt.ctv-mandate-source and never
-     *  interpreted here; ctv owns the vocabulary. */
+    /** Env var selecting WHICH mandate store CTV's DC-flow gate reads (ctv
+     *  MandateSource). STAGE-keyed for the same reason as CTV_MANDATES_DB_URL_ENV:
+     *  every CTV pod runs the gate and there is no per-launch env seam.
+     *
+     *  <p>SCRUM-107: the vocabulary is now `projection` only. Absent, the pod takes
+     *  ctv's yml default, which is also `projection`, so the seam is inert in the
+     *  safe direction. Setting the retired `legacy` value does NOT fall back: ctv
+     *  throws at bean creation, so the pod never starts, and the dcre_col.mandate
+     *  table that value used to read has been dropped. The token is carried verbatim
+     *  from agt.ctv-mandate-source and never interpreted here; ctv owns the
+     *  vocabulary. */
     public static final String CTV_MANDATE_SOURCE_ENV = "DCRE_CTV_MANDATE_SOURCE";
 
     /** Reserved durable-arg prefix carrying a pod env var rather than a Spring
