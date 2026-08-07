@@ -105,10 +105,11 @@ agt:
   # B2 (SCRUM-79 review): M10 mandates stage Jobs persist in dcre_man; the DB
   # URL follows the stage's flow family (JobLauncher), never a shared default.
   man-service-db-url: ${AGT_MAN_SERVICE_DB_URL:jdbc:postgresql://crdb.dcre.svc.cluster.local:26257/dcre_man?sslmode=disable}
-  # SCRUM-91 Task 11 Step 8: the mandate store CTV's DC-flow gate reads, handed
-  # to every CTV stage pod as DCRE_CTV_MANDATE_SOURCE. Default `legacy` mirrors
-  # ctv's own application.yml default, so the seam is inert until it is set.
-  ctv-mandate-source: ${AGT_CTV_MANDATE_SOURCE:legacy}
+  # SCRUM-107: the mandate store CTV's DC-flow gate reads, handed to every CTV
+  # stage pod as DCRE_CTV_MANDATE_SOURCE. Default `projection` mirrors ctv's own
+  # application.yml default: dcre_man man_ctv_view is the authority, and the
+  # dcre_col.mandate table the former `legacy` value read has been dropped.
+  ctv-mandate-source: ${AGT_CTV_MANDATE_SOURCE:projection}
   # M12/SCRUM-88 (R-47): the agt_ops URL handed to every launched stage pod so
   # the platform-batch heartbeat writer (T2) can reach agt_ops. FQDN for the
   # same reason as man-service-db-url; identical for all flows. user = root
