@@ -108,6 +108,31 @@ public interface AgtConfig {
     @WithDefault("jdbc:postgresql://crdb.dcre.svc.cluster.local:26257/dcre_man?sslmode=disable")
     String manServiceDbUrl();
 
+    /** JDBC url the HCS holiday-sync Job uses for dcre_hcs (owner ruling 2026-08-08).
+     *
+     *  <p>HCS used to receive {@link #serviceDbUrl()}, because the enum that said
+     *  which NAMESPACE a stage runs in was also the enum that said which DATABASE it
+     *  writes, and HCS runs in the collections namespace. The owner ruled holiday data
+     *  in dcre_col a "Violation of the 12FactorApp" (https://12factor.net/) and moved
+     *  the calendar to its own context. shared/hcs now carries a FamilyGuard comparing
+     *  current_database() against dcre_hcs BEFORE any DDL, so with the old routing
+     *  every HCS pod AGT launched died on startup rather than quietly re-contaminating
+     *  the collections database. This knob is the fix. */
+    @WithDefault("jdbc:postgresql://crdb.dcre.svc.cluster.local:26257/dcre_hcs?sslmode=disable")
+    String hcsServiceDbUrl();
+
+    /** JDBC url the ACS account-registry Job uses for dcre_acs (owner ruling 2026-08-08).
+     *
+     *  <p>ACS has no {@link za.co.fnb.dcre.agt.domain.Stage} yet: shared/acs is being
+     *  built as this lands, and minting the stage is that build's decision (it needs an
+     *  image knob, a launch entry and a scheduler, not just a url). The ROUTING exists
+     *  ahead of it deliberately, so that adding the stage constant fails the
+     *  StageDatabases and StageNamespaces switches until somebody names its database
+     *  and its namespace, instead of a set quietly absorbing it into collections the way
+     *  HCS was absorbed. */
+    @WithDefault("jdbc:postgresql://crdb.dcre.svc.cluster.local:26257/dcre_acs?sslmode=disable")
+    String acsServiceDbUrl();
+
     /** Which mandate store CTV's DC-flow gate reads (SCRUM-107).
      *  Handed to every CTV stage pod as DCRE_CTV_MANDATE_SOURCE. Values are ctv's
      *  MandateSource enum, parsed there and never interpreted here: AGT only carries

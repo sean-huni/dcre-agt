@@ -40,6 +40,28 @@ public class JobLauncher {
      *  windows are never overridden (SCRUM-91, replacing DCRE_MSR_JOB_NAME). */
     public static final String MRG_JOB_ENV = "DCRE_MRG_JOB_NAME";
 
+    /**
+     * The env var every stage pod reads its PRIMARY datasource url from, whatever
+     * family it belongs to. ONE name, one value per family, resolved by
+     * {@link StageDatabases}.
+     *
+     * <p><b>A hand-maintained cross-repo wire contract, and it has already drifted
+     * once.</b> Eight of the nine payments services read {@code ${DCRE_PAY_DB_URL:...}}
+     * while AGT injected {@code DCRE_DB_URL}, and nothing anywhere set the name they
+     * read. Both sides were green: five tests pinned the payments side of the name and
+     * nothing tested AGT's, so the only symptom was a pod falling back to its committed
+     * localhost default, which in a cluster is the pod itself. The ruling is to unify
+     * on this name, one variable routed per family.
+     *
+     * <p>The constant, and the test that pins its VALUE to the literal, is the most
+     * this repo can assert on its own: the consumers are in a different git repository
+     * and are not on AGT's classpath, so no test here can read what they declare. The
+     * durable fix is to GENERATE both sides from one schema, which is out of scope
+     * today and recorded as a follow-up. Until then the honest statement is that this
+     * literal is a claim about another repo, asserted where it is made.
+     */
+    public static final String DB_URL_ENV = "DCRE_DB_URL";
+
     /** Env var carrying the dcre_col JDBC url to a pod whose SECOND, read-only
      *  datasource reads the collections DB. Launch-scoped, NOT stage-keyed like
      *  DCRE_DB_URL: only the MRG suspension sweep crosses into dcre_col (the
@@ -142,6 +164,9 @@ public class JobLauncher {
 
     @Inject
     StageDatabases stageDatabases;
+
+    @Inject
+    StageNamespaces stageNamespaces;
 
     /** Fail-closed launch gate: a stage outside {@link #LAUNCHABLE} is a bug, never
      *  a fallback. Checked before the write-ahead intent, so a rejected launch leaves
@@ -337,7 +362,7 @@ public class JobLauncher {
         // Same fail-closed family cross-check as serviceJob: a CRG window minted
         // into dcre-pay, or a PRG window into dcre-col, is the report-generator
         // half of the inversion this rename created and must not be creatable.
-        stageDatabases.requireSameFamily(stage, flowNamespaces.flowForNamespace(namespace), namespace);
+        stageNamespaces.requireCorrectNamespace(stage, flowNamespaces.flowForNamespace(namespace), namespace);
         java.util.List<io.fabric8.kubernetes.api.model.EnvVar> extraEnv = new java.util.ArrayList<>();
         java.util.List<String> programArgs = new java.util.ArrayList<>();
         splitEnvArgs(args, extraEnv, programArgs);
@@ -363,7 +388,7 @@ public class JobLauncher {
                                 .withImagePullPolicy("IfNotPresent")
                                 .withArgs(programArgs.toArray(String[]::new))
                                 .addNewEnv().withName("JOB_NAME").withValue(name).endEnv()
-                                .addNewEnv().withName("DCRE_DB_URL").withValue(dbUrlFor(stage)).endEnv()
+                                .addNewEnv().withName(DB_URL_ENV).withValue(dbUrlFor(stage)).endEnv()
                                 .addNewEnv().withName("DCRE_EXCHANGE_ROOT").withValue("/exchange").endEnv()
                                 .addNewEnv().withName("DCRE_AGTOPS_DB_URL").withValue(config.agtopsDbUrl()).endEnv()
                                 .addNewEnv().withName("DCRE_AGTOPS_DB_USER").withValue(config.agtopsDbUser()).endEnv()
@@ -492,7 +517,7 @@ public class JobLauncher {
         // Fail closed if the namespace and the stage disagree about the family. The
         // namespace comes from the durable intent row, so this also catches a
         // reconciled re-create that would rebuild a pod into the wrong family.
-        stageDatabases.requireSameFamily(stage, flowNamespaces.flowForNamespace(namespace), namespace);
+        stageNamespaces.requireCorrectNamespace(stage, flowNamespaces.flowForNamespace(namespace), namespace);
         java.util.List<String> args = serviceArgs(stage, arrival, outcomes);
         java.util.List<EnvVar> extraEnv = stageEnv(stage);
         return new JobBuilder()
@@ -521,7 +546,7 @@ public class JobLauncher {
                                 .withImagePullPolicy("IfNotPresent")
                                 .withArgs(args.toArray(String[]::new))
                                 .addNewEnv().withName("JOB_NAME").withValue(name).endEnv()
-                                .addNewEnv().withName("DCRE_DB_URL").withValue(dbUrlFor(stage)).endEnv()
+                                .addNewEnv().withName(DB_URL_ENV).withValue(dbUrlFor(stage)).endEnv()
                                 .addNewEnv().withName("DCRE_EXCHANGE_ROOT").withValue("/exchange").endEnv()
                                 .addNewEnv().withName("DCRE_AGTOPS_DB_URL").withValue(config.agtopsDbUrl()).endEnv()
                                 .addNewEnv().withName("DCRE_AGTOPS_DB_USER").withValue(config.agtopsDbUser()).endEnv()

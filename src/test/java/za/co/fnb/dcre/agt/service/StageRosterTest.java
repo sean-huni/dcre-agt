@@ -1,6 +1,8 @@
 package za.co.fnb.dcre.agt.service;
 
 import org.junit.jupiter.api.Test;
+import za.co.fnb.dcre.agt.domain.DbFamily;
+import za.co.fnb.dcre.agt.domain.Flow;
 import za.co.fnb.dcre.agt.domain.Stage;
 
 import java.util.EnumSet;
@@ -8,6 +10,7 @@ import java.util.List;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -78,22 +81,80 @@ class StageRosterTest {
                         + " by a complement");
     }
 
-    /** Each family's stages resolve to that family, and nothing straddles two. */
+    /** Each family's stages resolve to that family's DATABASE, and nothing straddles two. */
     @Test
-    void everyStageBelongsToExactlyOneFamily() {
+    void everyStageBelongsToExactlyOneDatabaseFamily() {
         final StageDatabases databases = new StageDatabases();
         for (final String name : COLLECTIONS) {
-            assertEquals(za.co.fnb.dcre.agt.domain.Flow.COL, databases.family(Stage.valueOf(name)), name);
+            assertEquals(DbFamily.COL, databases.dbFamily(Stage.valueOf(name)), name);
         }
         for (final String name : PAYMENTS) {
-            assertEquals(za.co.fnb.dcre.agt.domain.Flow.PAY, databases.family(Stage.valueOf(name)), name);
+            assertEquals(DbFamily.PAY, databases.dbFamily(Stage.valueOf(name)), name);
         }
         for (final String name : MANDATES) {
-            assertEquals(za.co.fnb.dcre.agt.domain.Flow.MAN, databases.family(Stage.valueOf(name)), name);
+            assertEquals(DbFamily.MAN, databases.dbFamily(Stage.valueOf(name)), name);
         }
-        // HCS is cross-family and sits with collections: it is the single writer of
-        // public_holiday, which CDE reads from dcre_col.
-        assertEquals(za.co.fnb.dcre.agt.domain.Flow.COL, databases.family(Stage.HCS));
+        // Owner ruling 2026-08-08: the holiday calendar is its OWN bounded context
+        // with its own database. This arm said Flow.COL, so AGT handed HCS the
+        // collections url; shared/hcs's FamilyGuard compares current_database()
+        // against dcre_hcs before any DDL, so every HCS pod died on startup.
+        assertEquals(DbFamily.HCS, databases.dbFamily(Stage.HCS),
+                "HCS writes dcre_hcs, not the collections database it used to inherit");
+    }
+
+    /**
+     * The NAMESPACE question, asserted separately from the database one.
+     *
+     * <p>These were one switch until 2026-08-08 and gave one answer to two questions.
+     * HCS is the case that separates them: hosted in the collections namespace, and
+     * writing its own database. Asserting both directions is what stops a future
+     * reader from "simplifying" them back into one.
+     */
+    @Test
+    void everyStageIsHostedInExactlyOneNamespaceFamily() {
+        final StageNamespaces namespaces = new StageNamespaces();
+        for (final String name : COLLECTIONS) {
+            assertEquals(Flow.COL, namespaces.namespaceFamilyOf(Stage.valueOf(name)), name);
+        }
+        for (final String name : PAYMENTS) {
+            assertEquals(Flow.PAY, namespaces.namespaceFamilyOf(Stage.valueOf(name)), name);
+        }
+        for (final String name : MANDATES) {
+            assertEquals(Flow.MAN, namespaces.namespaceFamilyOf(Stage.valueOf(name)), name);
+        }
+        assertEquals(Flow.COL, namespaces.namespaceFamilyOf(Stage.HCS),
+                "HCS has no namespace of its own: HcsScheduler launches it into dcre-col"
+                        + " and its Jobs carry the col- prefix");
+
+        assertNotEquals(namespaces.namespaceFamilyOf(Stage.HCS).name(),
+                new StageDatabases().dbFamily(Stage.HCS).name(),
+                "HCS is the stage whose namespace and database DISAGREE. If this ever"
+                        + " passes by the two agreeing again, one of the two rulings has been"
+                        + " reverted and the other question is being answered by accident");
+    }
+
+    /**
+     * The wire-name contract, pinned as a literal, and the comment says why.
+     *
+     * <p>AGT injects the database url under ONE name for every family. Eight of the
+     * nine payments services read {@code ${DCRE_PAY_DB_URL:...}} instead, and nothing
+     * anywhere set that name, so in a pod they fell back to their committed localhost
+     * default: the pod itself. Both sides were green. Five tests pinned the payments
+     * side of the name; nothing tested AGT's, and AGT is the side whose documentation
+     * claimed the recipients listen on this one.
+     *
+     * <p>A literal is the most this repo can assert: the consumers live in a different
+     * git repository and are not on AGT's classpath, so no test here can read what they
+     * declare. This assertion catches the half AGT owns (a rename on this side, or a
+     * per-family name creeping in) and cannot catch a rename on theirs. The durable fix
+     * is GENERATING both sides from one schema; it is out of scope today and recorded
+     * as a follow-up.
+     */
+    @Test
+    void everyStagePodReadsItsDatabaseFromOneEnvNameSharedByAllFamilies() {
+        assertEquals("DCRE_DB_URL", JobLauncher.DB_URL_ENV,
+                "the name the services read; changing it here silently un-configures"
+                        + " every stage pod in the fleet, which then falls back to localhost");
     }
 
     /**
@@ -107,9 +168,9 @@ class StageRosterTest {
     @Test
     void prgIsThePaymentsGeneratorAndCrgIsTheCollectionsOne() {
         final StageDatabases databases = new StageDatabases();
-        assertEquals(za.co.fnb.dcre.agt.domain.Flow.PAY, databases.family(Stage.PRG),
+        assertEquals(DbFamily.PAY, databases.dbFamily(Stage.PRG),
                 "PRG is the PAYMENTS report generator on the payments RES sheet");
-        assertEquals(za.co.fnb.dcre.agt.domain.Flow.COL, databases.family(Stage.CRG),
+        assertEquals(DbFamily.COL, databases.dbFamily(Stage.CRG),
                 "CRG is the COLLECTIONS report generator on the collections RES sheet");
     }
 }

@@ -146,6 +146,18 @@ agt:
   # B2 (SCRUM-79 review): M10 mandates stage Jobs persist in dcre_man; the DB
   # URL follows the stage's flow family (JobLauncher), never a shared default.
   man-service-db-url: ${AGT_MAN_SERVICE_DB_URL:jdbc:postgresql://crdb.dcre.svc.cluster.local:26257/dcre_man?sslmode=disable}
+  # Owner ruling 2026-08-08: holiday data in dcre_col is a 12FactorApp violation
+  # (https://12factor.net/), so the calendar has its own context and database. HCS
+  # used to receive service-db-url because the enum naming a stage's NAMESPACE was
+  # also the enum naming its DATABASE, and HCS runs in dcre-col. shared/hcs now
+  # refuses to start unless current_database() is dcre_hcs, so without this knob
+  # every HCS pod dies on startup.
+  hcs-service-db-url: ${AGT_HCS_SERVICE_DB_URL:jdbc:postgresql://crdb.dcre.svc.cluster.local:26257/dcre_hcs?sslmode=disable}
+  # The account registry, the second cross-family reference context. No Stage maps
+  # here yet (shared/acs is being built); the routing exists ahead of the stage so
+  # that adding the constant FAILS the StageDatabases/StageNamespaces switches until
+  # somebody names its database and namespace, rather than defaulting to collections.
+  acs-service-db-url: ${AGT_ACS_SERVICE_DB_URL:jdbc:postgresql://crdb.dcre.svc.cluster.local:26257/dcre_acs?sslmode=disable}
   # SCRUM-107: the mandate store CTV's DC-flow gate reads, handed to every CTV
   # stage pod as DCRE_CTV_MANDATE_SOURCE. Default `projection` mirrors ctv's own
   # application.yml default: dcre_man man_ctv_view is the authority, and the

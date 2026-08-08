@@ -46,6 +46,17 @@ spec:
             # it those pods write dcre_col and nothing errors.
             - name: AGT_PAY_SERVICE_DB_URL
               value: jdbc:postgresql://crdb.dcre.svc.cluster.local:26257/dcre_pay?sslmode=disable
+            # Owner ruling 2026-08-08: the two cross-family reference contexts own
+            # their own databases. HCS used to receive AGT_SERVICE_DB_URL (dcre_col);
+            # shared/hcs now refuses to start unless current_database() is dcre_hcs,
+            # so with the old routing every HCS pod dies on startup rather than
+            # quietly rebuilding the calendar in the collections database.
+            - name: AGT_HCS_SERVICE_DB_URL
+              value: jdbc:postgresql://crdb.dcre.svc.cluster.local:26257/dcre_hcs?sslmode=disable
+            # No Stage maps to ACS yet (shared/acs is being built); set here so the
+            # database exists in the deployment's vocabulary the day the stage lands.
+            - name: AGT_ACS_SERVICE_DB_URL
+              value: jdbc:postgresql://crdb.dcre.svc.cluster.local:26257/dcre_acs?sslmode=disable
             - name: DCRE_EXCHANGE_ROOT
               value: /exchange
             - name: AGT_NAMESPACE

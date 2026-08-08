@@ -50,7 +50,7 @@ public class ReportWindows {
     StageImages stageImages;
 
     @Inject
-    StageDatabases stageDatabases;
+    StageNamespaces stageNamespaces;
 
     /** Absent/empty image = launch-disabled (SCRUM-33: no stub fallback), and no
      *  lease means another incarnation owns the side effects. */
@@ -62,18 +62,22 @@ public class ReportWindows {
     /**
      * One report window per eligible client, plus the on-demand chaos trigger.
      *
-     * <p>The FLOW is taken from the stage's own family, never from the client. That
-     * is the v1 correction: the pre-split scheduler resolved
+     * <p>The FLOW is taken from the stage's own hosting family, never from the client.
+     * That is the v1 correction: the pre-split scheduler resolved
      * {@code flowNamespaces.clientFlow(client)} and launched ONE stage into whichever
      * namespace came back, so a single generator served {@code col-} and {@code pay-}
      * alike. Now the eligibility predicate decides WHICH clients a generator serves
      * and the stage decides where it runs, so the two cannot disagree.
+     *
+     * <p>This is the NAMESPACE question, so it reads {@link StageNamespaces}. It used
+     * to read the database switch, which happened to give the same answer while the
+     * two were one enum.
      */
     void launchPerClient(final Stage stage, final long intervalSeconds, final Predicate<String> eligible) {
         if (paused(stage)) {
             return;
         }
-        final Flow flow = stageDatabases.family(stage);
+        final Flow flow = stageNamespaces.namespaceFamilyOf(stage);
         final long window = window(Instant.now().getEpochSecond(), intervalSeconds);
         for (final String client : arrivalRepo.distinctClientTokens()) {
             if (!eligible.test(client)) {

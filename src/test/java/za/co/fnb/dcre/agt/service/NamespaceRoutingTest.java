@@ -16,6 +16,7 @@ import org.junit.jupiter.api.Test;
 import za.co.fnb.dcre.agt.CrdbTestResource;
 import za.co.fnb.dcre.agt.config.AgtConfig;
 import za.co.fnb.dcre.agt.domain.ArrivalStatus;
+import za.co.fnb.dcre.agt.domain.DbFamily;
 import za.co.fnb.dcre.agt.domain.LaunchIntent;
 import za.co.fnb.dcre.agt.domain.Outcome;
 import za.co.fnb.dcre.agt.domain.Stage;
@@ -67,6 +68,11 @@ class NamespaceRoutingTest {
                     "agt.prr-image", "dcre-prr:test",
                     "agt.crg-image", "dcre-crg:test",
                     "agt.prg-image", "dcre-prg:test",
+                    // The holiday sync needs an image or ReportWindows/HcsScheduler
+                    // treat it as launch-disabled and the HCS routing test cannot
+                    // build a Job at all: an absent Job would read as a pass in any
+                    // assertion phrased as "does not carry the collections url".
+                    "agt.hcs-image", "dcre-hcs:test",
                     "agt.pay-clients", " fnbrf01 ");
         }
     }
@@ -255,23 +261,156 @@ class NamespaceRoutingTest {
                 "the payments report generator writes dcre_pay, got " + dbUrlOf(clockJob));
     }
 
-    /** Every stage resolves a url, and each family's url is distinct from the others. */
+    /**
+     * ALL FIVE service databases, asserted over {@link DbFamily} rather than over the
+     * stages that happen to exist.
+     *
+     * <p>It used to iterate stages and assert "three distinct databases". That shape
+     * is blind to a family with no stage yet (ACS has none today) and, worse, it
+     * expressed the expected count as a number the reader could bump without deciding
+     * anything. The expectation is now a literal map of family to database: a family
+     * ADDED to the enum fails the size assertion until it is named here, and a family
+     * MISROUTED fails its own row. A fixture whose rows all share a value cannot
+     * exercise what that value drives, which is exactly how the previous three-family
+     * version stayed green while HCS was routed to the collections database.
+     */
     @Test
-    void everyStageResolvesItsOwnFamilysDatabaseAndTheThreeAreDistinct() {
-        final java.util.Map<za.co.fnb.dcre.agt.domain.Flow, String> byFamily = new java.util.EnumMap<>(
-                za.co.fnb.dcre.agt.domain.Flow.class);
+    void everyServiceDatabaseIsRoutedToItsOwnFamilyAndAllFiveAreDistinct() {
+        final java.util.Map<DbFamily, String> expected = new java.util.EnumMap<>(DbFamily.class);
+        expected.put(DbFamily.COL, "/dcre_col");
+        expected.put(DbFamily.PAY, "/dcre_pay");
+        expected.put(DbFamily.MAN, "/dcre_man");
+        expected.put(DbFamily.HCS, "/dcre_hcs");
+        expected.put(DbFamily.ACS, "/dcre_acs");
+        assertEquals(DbFamily.values().length, expected.size(),
+                "a family added to DbFamily must be named here deliberately, with the database"
+                        + " it owns; absent from this map it would be routed by nothing and"
+                        + " asserted by nothing");
+
+        final java.util.Set<String> urls = new java.util.HashSet<>();
+        expected.forEach((family, database) -> {
+            final String url = stageDatabases.urlFor(family);
+            assertNotNull(url, "no url for family " + family);
+            assertTrue(url.contains(database),
+                    family + " must address " + database + ", got " + url);
+            urls.add(url);
+        });
+        assertEquals(DbFamily.values().length, urls.size(),
+                "one database per family, none shared, got " + urls);
+
+        // And every STAGE agrees with its family's url, so a stage cannot be routed
+        // somewhere its family is not.
         for (final Stage stage : Stage.values()) {
-            final String url = stageDatabases.urlFor(stage);
-            assertNotNull(url, "no database for stage " + stage);
-            final String previous = byFamily.put(stageDatabases.family(stage), url);
-            assertTrue(previous == null || previous.equals(url),
+            assertEquals(stageDatabases.urlFor(stageDatabases.dbFamily(stage)),
+                    stageDatabases.urlFor(stage),
                     "stage " + stage + " disagrees with its family's database");
         }
-        assertEquals(3, java.util.Set.copyOf(byFamily.values()).size(),
-                "three families, three distinct databases, got " + byFamily);
-        assertTrue(byFamily.get(za.co.fnb.dcre.agt.domain.Flow.COL).contains("/dcre_col"));
-        assertTrue(byFamily.get(za.co.fnb.dcre.agt.domain.Flow.PAY).contains("/dcre_pay"));
-        assertTrue(byFamily.get(za.co.fnb.dcre.agt.domain.Flow.MAN).contains("/dcre_man"));
+    }
+
+    /**
+     * THE HCS ROUTING ASSERTION. Red-proofed by putting HCS back with collections in
+     * {@code StageDatabases.dbFamily} and watching this fail.
+     *
+     * <p>{@code StageDatabases.family} enumerated HCS with the collections stages, so
+     * AGT handed every HCS pod the {@code dcre_col} url. That was defensible while the
+     * calendar lived there; the owner ruled it out on 2026-08-08 as a "Violation of the
+     * 12FactorApp" (https://12factor.net/) and {@code shared/hcs} now carries a
+     * {@code FamilyGuard} on {@code current_database()} that refuses to migrate against
+     * anything but {@code dcre_hcs}. So the old routing is not a silent contamination
+     * any more, it is a total outage of the stage: every HCS pod dies at startup.
+     *
+     * <p>Asserted on the launched Job's env, not just on {@code urlFor}, because the
+     * env is what the pod actually reads.
+     */
+    @Test
+    void theHolidaySyncPodWritesItsOwnDatabaseAndNeverTheCollectionsOne() {
+        final String runKey = "hcsclock-" + suffix();
+        // HCS is HOSTED in dcre-col and OWNS dcre_hcs: the namespace and the database
+        // disagree on purpose, and this is the stage that proves the two questions were
+        // separated rather than merely renamed.
+        launcher.launchClock(za.co.fnb.dcre.agt.domain.Flow.COL, Stage.HCS, runKey,
+                java.util.List.of("window=" + runKey));
+        Job hcsJob = k8s.batch().v1().jobs().inNamespace("dcre-col")
+                .withName(JobLauncher.clockJobName(za.co.fnb.dcre.agt.domain.Flow.COL, Stage.HCS, runKey)).get();
+        assertNotNull(hcsJob, "HCS clock job created in dcre-col, where it is hosted");
+        assertTrue(dbUrlOf(hcsJob).contains("/dcre_hcs"),
+                "the holiday calendar's single writer must address dcre_hcs. With the old"
+                        + " routing it receives /dcre_col and shared/hcs's FamilyGuard kills the"
+                        + " pod before any DDL. Got " + dbUrlOf(hcsJob));
+        assertFalse(dbUrlOf(hcsJob).contains("/dcre_col"),
+                "and it must not carry the collections url at all, got " + dbUrlOf(hcsJob));
+    }
+
+    /**
+     * The wire-name contract, on the Job specs AGT actually builds.
+     *
+     * <p>The defect this exists for: eight of the nine payments services read
+     * {@code ${DCRE_PAY_DB_URL:...}}, nothing anywhere set it, and AGT injected
+     * {@code DCRE_DB_URL}. In a pod those eight fell back to their committed localhost
+     * default, which is the pod itself. Both sides were green, because five tests
+     * pinned the payments side of the NAME and nothing tested AGT's, even though AGT is
+     * the side documenting that its recipients listen on this one.
+     *
+     * <p>What this can and cannot see: it asserts that AGT publishes ONE name for every
+     * family, on BOTH builder paths, and that no family-specific primary-url name has
+     * crept in. It cannot see a rename in the consumer repo, which is not on this
+     * classpath. Generating both sides from one schema is the durable fix and is
+     * recorded as a follow-up; the literal is the honest interim.
+     */
+    @Test
+    void everyFamilysPodReadsItsDatabaseFromTheSameEnvName() {
+        // DCRE_COL_DB_URL is deliberately absent from this list: it is a REAL,
+        // launch-scoped SECOND datasource for the MRG suspension sweep. These four are
+        // the family-specific PRIMARY names that must never exist, one of which is the
+        // name eight payments services were reading from nobody.
+        final java.util.List<String> banned = java.util.List.of(
+                "DCRE_PAY_DB_URL", "DCRE_MAN_DB_URL", "DCRE_HCS_DB_URL", "DCRE_ACS_DB_URL");
+
+        final UUID colArrival = insertArrival("onhost-req", "FNBCC01");
+        launcher.launch(colArrival, Stage.CRR);
+        final Job colJob = k8s.batch().v1().jobs().inNamespace("dcre-col")
+                .withName(JobLauncher.jobName(za.co.fnb.dcre.agt.domain.Flow.COL, Stage.CRR, colArrival)).get();
+
+        final UUID payArrival = insertArrival("onhost-req-endo", "FNBRF01");
+        launcher.launch(payArrival, Stage.PRR);
+        final Job payJob = k8s.batch().v1().jobs().inNamespace("dcre-pay")
+                .withName(JobLauncher.jobName(za.co.fnb.dcre.agt.domain.Flow.PAY, Stage.PRR, payArrival)).get();
+
+        final UUID manArrival = insertArrival("onhost-req-man", "FNBCC01");
+        launcher.launch(manArrival, Stage.MRR);
+        final Job manJob = k8s.batch().v1().jobs().inNamespace("dcre-man")
+                .withName(JobLauncher.jobName(za.co.fnb.dcre.agt.domain.Flow.MAN, Stage.MRR, manArrival)).get();
+
+        final String clockKey = "wirename-" + suffix();
+        launcher.launchClock(za.co.fnb.dcre.agt.domain.Flow.PAY, Stage.PRG, clockKey,
+                java.util.List.of("client=FNBRF01", "window=" + clockKey));
+        final Job clockJob = k8s.batch().v1().jobs().inNamespace("dcre-pay")
+                .withName(JobLauncher.clockJobName(za.co.fnb.dcre.agt.domain.Flow.PAY, Stage.PRG, clockKey)).get();
+
+        final java.util.Map<Job, String> byJob = new java.util.LinkedHashMap<>();
+        byJob.put(colJob, "/dcre_col");
+        byJob.put(payJob, "/dcre_pay");
+        byJob.put(manJob, "/dcre_man");
+        byJob.put(clockJob, "/dcre_pay");
+
+        byJob.forEach((job, database) -> {
+            assertNotNull(job, "job not created for " + database);
+            final java.util.Set<String> names = job.getSpec().getTemplate().getSpec()
+                    .getContainers().get(0).getEnv().stream()
+                    .map(io.fabric8.kubernetes.api.model.EnvVar::getName)
+                    .collect(java.util.stream.Collectors.toSet());
+            assertTrue(names.contains(JobLauncher.DB_URL_ENV),
+                    job.getMetadata().getName() + " must carry " + JobLauncher.DB_URL_ENV
+                            + ", got " + names);
+            for (final String name : banned) {
+                assertFalse(names.contains(name), job.getMetadata().getName()
+                        + " must not carry the family-specific name " + name
+                        + ": one variable, routed per family, is the ruling. Got " + names);
+            }
+            assertTrue(envOf(job, JobLauncher.DB_URL_ENV).contains(database),
+                    job.getMetadata().getName() + " must address " + database
+                            + ", got " + envOf(job, JobLauncher.DB_URL_ENV));
+        });
     }
 
     @Test
