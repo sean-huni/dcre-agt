@@ -78,8 +78,8 @@ class OrphanRepoTest {
         intentRepo.markIntentLaunched(intentId2, "uid-orph2");
         assertTrue(outcomeRepo.insertOutcome(intentId2, 0, Outcome.TECH_FAILED, 1, "Failed/Test"));
 
-        UUID clockId = intentRepo.insertClockIntent(Stage.PRG, "orph-" + suffix(),
-                "col-prg-orph-" + suffix(), "{}", "dcre-col").orElseThrow();
+        UUID clockId = intentRepo.insertClockIntent(Stage.CRG, "orph-" + suffix(),
+                "col-crg-orph-" + suffix(), "{}", "dcre-col").orElseThrow();
         intentRepo.markIntentLaunched(clockId, "uid-orph-clock");
         assertTrue(outcomeRepo.insertOutcome(clockId, 0, Outcome.TECH_FAILED, 1, "Failed/Test"));
 

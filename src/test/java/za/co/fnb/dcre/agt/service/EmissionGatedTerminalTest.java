@@ -2,6 +2,7 @@ package za.co.fnb.dcre.agt.service;
 
 import org.junit.jupiter.api.Test;
 import za.co.fnb.dcre.agt.domain.ArrivalStatus;
+import za.co.fnb.dcre.agt.domain.Flow;
 import za.co.fnb.dcre.agt.domain.Outcome;
 import za.co.fnb.dcre.agt.domain.Stage;
 
@@ -47,7 +48,7 @@ class EmissionGatedTerminalTest {
 
     @Test
     void aCollectionsArrivalIsNotCompleteUntilCrwHasEmittedForIt() {
-        assertTrue(DagEngine.terminalState(ArrivalService.ROUTE_ONHOST_REQ, DC_STAGES_DONE, () -> true).isEmpty(),
+        assertTrue(DagEngine.terminalState(ArrivalService.ROUTE_ONHOST_REQ, Flow.COL, DC_STAGES_DONE, () -> true).isEmpty(),
                 "CDE and CIR done but nothing emitted: the arrival is warehoused,"
                         + " not complete. Reporting DAG_COMPLETE here is the fake news.");
     }
@@ -55,21 +56,37 @@ class EmissionGatedTerminalTest {
     @Test
     void itCompletesOnceTheEmissionIsVisible() {
         assertEquals(Optional.of(ArrivalStatus.DAG_COMPLETE),
-                DagEngine.terminalState(ArrivalService.ROUTE_ONHOST_REQ, DC_STAGES_DONE, () -> false),
+                DagEngine.terminalState(ArrivalService.ROUTE_ONHOST_REQ, Flow.COL, DC_STAGES_DONE, () -> false),
                 "process_date reached and CRW emitted: now it is genuinely complete");
     }
 
+    /**
+     * PAYMENTS IS NOT GATED, and this is the timing rule.
+     *
+     * <p>Owner, 2026-08-08: "CRW TxList are processed on the collection-day, but for
+     * payments Tx's processed immediately." The emission gate IS the collection-day
+     * wait: it holds a collections arrival open until CRW's clock window reaches its
+     * process date. PRW is a DAG stage on the payments sheet and runs the moment PAI
+     * accepts, so a payments arrival must complete on its own stages.
+     *
+     * <p>This test previously asserted the OPPOSITE ("the pay arm emits through the
+     * same CRW window job, so it gates the same"), which was true of the pre-split
+     * shape where ENDO ran the collections services. Inheriting it would have made
+     * every payments arrival wait on {@code crw_emission_owed} in the COLLECTIONS
+     * database: the wrong database AND a wait payments must not have.
+     */
     @Test
-    void theEndoPayArmIsGatedTheSameWay() {
+    void thePaymentsArmIsNeverGatedOnACollectionsEmission() {
         final Map<Stage, Outcome> endoDone = Map.of(
-                Stage.CRR, Outcome.BUSINESS_ACCEPTED,
-                Stage.CTV, Outcome.BUSINESS_ACCEPTED,
-                Stage.AIS, Outcome.BUSINESS_ACCEPTED,
-                Stage.CIR, Outcome.BUSINESS_ACCEPTED);
-        assertTrue(DagEngine.terminalState(ArrivalService.ROUTE_ONHOST_REQ_ENDO, endoDone, () -> true).isEmpty(),
-                "the pay arm emits through the same CRW window job, so it gates the same");
+                Stage.PRR, Outcome.BUSINESS_ACCEPTED,
+                Stage.PTV, Outcome.BUSINESS_ACCEPTED,
+                Stage.PAI, Outcome.BUSINESS_ACCEPTED,
+                Stage.PRW, Outcome.BUSINESS_ACCEPTED,
+                Stage.PIR, Outcome.BUSINESS_ACCEPTED);
         assertEquals(Optional.of(ArrivalStatus.DAG_COMPLETE),
-                DagEngine.terminalState(ArrivalService.ROUTE_ONHOST_REQ_ENDO, endoDone, () -> false));
+                DagEngine.terminalState(ArrivalService.ROUTE_ONHOST_REQ_ENDO, Flow.PAY, endoDone, () -> true),
+                "the supplier says an emission is still owed and payments must complete anyway:"
+                        + " it does not consult that gate at all");
     }
 
     /**
@@ -87,7 +104,7 @@ class EmissionGatedTerminalTest {
                 Stage.MIR, Outcome.BUSINESS_ACCEPTED,
                 Stage.MRW, Outcome.BUSINESS_ACCEPTED);
         assertEquals(Optional.of(ArrivalStatus.DAG_COMPLETE),
-                DagEngine.terminalState(ArrivalService.ROUTE_ONHOST_REQ_MAN, manDone, () -> true),
+                DagEngine.terminalState(ArrivalService.ROUTE_ONHOST_REQ_MAN, Flow.MAN, manDone, () -> true),
                 "mandates completes on its own stages, with no emission gate");
     }
 
@@ -95,7 +112,7 @@ class EmissionGatedTerminalTest {
     @Test
     void responseRoutesAreUnaffected() {
         assertEquals(Optional.of(ArrivalStatus.DAG_COMPLETE),
-                DagEngine.terminalState(ArrivalService.ROUTE_FINT_RESP_MAN,
+                DagEngine.terminalState(ArrivalService.ROUTE_FINT_RESP_MAN, Flow.MAN,
                         Map.of(Stage.MIX, Outcome.BUSINESS_ACCEPTED), () -> true),
                 "a token-picked reader accepting completes the response arrival");
     }
@@ -108,7 +125,7 @@ class EmissionGatedTerminalTest {
     @Test
     void aWholeFileRejectionStillTerminatesAsFailedWithoutAnEmission() {
         assertEquals(Optional.of(ArrivalStatus.DAG_FAILED),
-                DagEngine.terminalState(ArrivalService.ROUTE_ONHOST_REQ,
+                DagEngine.terminalState(ArrivalService.ROUTE_ONHOST_REQ, Flow.COL,
                         Map.of(Stage.CRR, Outcome.BUSINESS_FILE_REJECTED,
                                 Stage.CIR, Outcome.BUSINESS_ACCEPTED), () -> true),
                 "the fatal branch returns before the gate, so a rejected arrival can never"
@@ -125,7 +142,7 @@ class EmissionGatedTerminalTest {
     @Test
     void anArrivalThatCanNeverEmitStillTerminates() {
         assertEquals(Optional.of(ArrivalStatus.DAG_COMPLETE),
-                DagEngine.terminalState(ArrivalService.ROUTE_ONHOST_REQ,
+                DagEngine.terminalState(ArrivalService.ROUTE_ONHOST_REQ, Flow.COL,
                         Map.of(Stage.CRR, Outcome.BUSINESS_ACCEPTED,
                                 Stage.CTV, Outcome.BUSINESS_PARTIAL,
                                 Stage.CDE, Outcome.BUSINESS_ACCEPTED,
@@ -136,10 +153,10 @@ class EmissionGatedTerminalTest {
     /** The gate must never short-circuit stage completeness: an unfinished stage wins. */
     @Test
     void theGateCannotCompleteAnArrivalWhoseStagesAreUnfinished() {
-        assertTrue(DagEngine.terminalState(ArrivalService.ROUTE_ONHOST_REQ,
+        assertTrue(DagEngine.terminalState(ArrivalService.ROUTE_ONHOST_REQ, Flow.COL,
                         Map.of(Stage.CRR, Outcome.BUSINESS_ACCEPTED), () -> false).isEmpty(),
                 "nothing owed does not make a mid-flight arrival complete");
-        assertTrue(DagEngine.terminalState(ArrivalService.ROUTE_ONHOST_REQ,
+        assertTrue(DagEngine.terminalState(ArrivalService.ROUTE_ONHOST_REQ, Flow.COL,
                         Map.of(Stage.CRR, Outcome.BUSINESS_ACCEPTED,
                                 Stage.CTV, Outcome.BUSINESS_ACCEPTED,
                                 Stage.CDE, Outcome.TECH_FAILED,
@@ -147,14 +164,25 @@ class EmissionGatedTerminalTest {
                 "a TECH_FAILED terminal stage is not business-done, gate or no gate");
     }
 
-    /** requiresEmission is a property of the route, and only the emitting ones carry it. */
+    /**
+     * requiresEmission is a property of the route, and COLLECTIONS IS THE ONLY ONE.
+     *
+     * <p>Stated positively and negatively, because the flag is what encodes the
+     * collection-day wait. Collections carries it because CRW is clock-driven;
+     * payments and mandates do not, because PRW and MRW are DAG stages that run as
+     * soon as their predecessor accepts.
+     */
     @Test
-    void onlyTheCrwEmittingRoutesRequireAnEmission() {
-        assertTrue(RouteDags.REQUESTS.get(ArrivalService.ROUTE_ONHOST_REQ).requiresEmission());
-        assertTrue(RouteDags.REQUESTS.get(ArrivalService.ROUTE_ONHOST_REQ_ENDO).requiresEmission());
+    void onlyCollectionsRequiresAnEmission() {
+        assertTrue(RouteDags.REQUESTS.get(ArrivalService.ROUTE_ONHOST_REQ).requiresEmission(),
+                "CRW is clock-driven, so a DC arrival is not done until it has emitted");
+        assertFalse(RouteDags.REQUESTS.get(ArrivalService.ROUTE_ONHOST_REQ_ENDO).requiresEmission(),
+                "payments transactions are processed IMMEDIATELY: PRW is a DAG stage, so"
+                        + " this route must never wait on a collection-day window, and must never"
+                        + " query dcre_col to find out");
         assertFalse(RouteDags.REQUESTS.get(ArrivalService.ROUTE_ONHOST_REQ_MAN).requiresEmission(),
                 "mandates writes through MRW, a real DAG stage, and must never query dcre_col");
-        RouteDags.RESPONSES.values().forEach(d -> assertFalse(d.requiresEmission(),
-                "response routes have no emission leg"));
+        RouteDags.RESPONSES.values().forEach(byFlow -> byFlow.values()
+                .forEach(d -> assertFalse(d.requiresEmission(), "response routes have no emission leg")));
     }
 }

@@ -210,14 +210,14 @@ class OrphanSweepTest {
     @Test
     void clockIntentIgnored() {
         final String key = "osw6-" + suffix();
-        final UUID clockId = intentRepo.insertClockIntent(Stage.PRG, key, "col-prg-" + key, "{}", "dcre-col")
+        final UUID clockId = intentRepo.insertClockIntent(Stage.CRG, key, "col-crg-" + key, "{}", "dcre-col")
                 .orElseThrow();
         intentRepo.markIntentLaunched(clockId, "uid-" + key);
         assertTrue(outcomeRepo.insertOutcome(clockId, 0, Outcome.TECH_FAILED, 1, "Failed/Test"));
 
         relauncher.sweepTechOrphans(Map.of());
         relauncher.relaunchOrExhaust(
-                new LaunchIntent(clockId, null, Stage.PRG, "col-prg-" + key,
+                new LaunchIntent(clockId, null, Stage.CRG, "col-crg-" + key,
                         LaunchIntent.LAUNCHED, key, 0, "dcre-col"), Outcome.TECH_FAILED, null);
 
         assertEquals(0, attemptOf(clockId), "clock intents self-heal at the next window boundary");

@@ -52,14 +52,20 @@ public class OutcomeRepo {
     }
 
     /** stage -> outcome for one arrival; reads ONLY each intent's CURRENT attempt
-     *  (OrphanSweeper). SCRUM-90: excludes the arrival-scoped PRG IMMEDIATE report
-     *  (stage='PRG' under an arrival) - PRG is never a DAG stage, so the report is
-     *  never counted in DAG accounting (no double-count, no spurious terminal flip). */
+     *  (OrphanSweeper). SCRUM-90: excludes the arrival-scoped IMMEDIATE report
+     *  intents, which are never DAG stages, so a report is never counted in DAG
+     *  accounting (no double-count, no spurious terminal flip).
+     *
+     *  <p>v1 topology: BOTH generators are excluded. The literal said {@code 'PRG'}
+     *  when that was the collections generator's name; it now names the payments
+     *  one, and CRG is collections. A SQL literal cannot be checked against the
+     *  Stage enum, so a missed rename here is a silent accounting error rather than
+     *  a compile failure. */
     public Map<Stage, Outcome> outcomesForArrival(UUID arrivalId) {
         String sql = """
                 SELECT i.stage, o.outcome FROM launch_intent i
                 JOIN stage_outcome o ON o.intent_id = i.id AND o.attempt = i.attempt
-                WHERE i.arrival_id=? AND i.stage <> 'PRG'""";
+                WHERE i.arrival_id=? AND i.stage NOT IN ('CRG', 'PRG')""";
         try (Connection c = ds.getConnection(); PreparedStatement p = c.prepareStatement(sql)) {
             p.setObject(1, arrivalId);
             try (ResultSet r = p.executeQuery()) {

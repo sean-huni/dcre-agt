@@ -16,7 +16,7 @@ import za.co.fnb.dcre.agt.domain.ArrivalStatus;
 import za.co.fnb.dcre.agt.domain.Flow;
 import za.co.fnb.dcre.agt.domain.Stage;
 import za.co.fnb.dcre.agt.repo.ArrivalRepo;
-import za.co.fnb.dcre.agt.repo.CollectionsReadRepo;
+import za.co.fnb.dcre.agt.repo.FamilyReadRepo;
 import za.co.fnb.dcre.agt.service.JobLauncher;
 import za.co.fnb.dcre.agt.service.LeaseService;
 import za.co.fnb.dcre.agt.service.ReportTrigger;
@@ -70,11 +70,16 @@ import static org.mockito.Mockito.verifyNoInteractions;
 @TestProfile(ReportTriggerTest.ReportTriggerProfile.class)
 class ReportTriggerTest {
 
-    /** tick()'s gate needs launch-enabled; the mocked launcher keeps K8s out. */
+    /** tick()'s gate needs launch-enabled AND a configured generator per family
+     *  (empty image = launch-disabled); the mocked launcher keeps K8s out. */
     public static class ReportTriggerProfile implements QuarkusTestProfile {
         @Override
         public Map<String, String> getConfigOverrides() {
-            return Map.of("agt.launch-enabled", "true");
+            return Map.of("agt.launch-enabled", "true",
+                    "agt.crg-image", "dcre-crg:test",
+                    "agt.prg-image", "dcre-prg:test",
+                    // 2 scans is enough to reach the stall WARN inside one test.
+                    "agt.report-stall-scans", "2");
         }
     }
 
@@ -82,7 +87,7 @@ class ReportTriggerTest {
     ReportTrigger trigger;
 
     @Inject
-    CollectionsReadRepo collectionsRepo;
+    FamilyReadRepo families;
 
     @Inject
     LeaseService lease;
@@ -100,6 +105,10 @@ class ReportTriggerTest {
     @io.quarkus.agroal.DataSource("collections")
     AgroalDataSource collectionsDs;
 
+    @Inject
+    @io.quarkus.agroal.DataSource("payments")
+    AgroalDataSource paymentsDs;
+
     @InjectMock
     JobLauncher launcher;
 
@@ -113,11 +122,18 @@ class ReportTriggerTest {
         warns = new CapturingHandler();
         Logger.getLogger(ReportTrigger.class.getName()).addHandler(warns);
         arrivalsByKey.clear();
-        execCollections("CREATE TABLE IF NOT EXISTS prg_report_due_seed ("
-                + "client VARCHAR(16) NOT NULL, source_msg_id VARCHAR(35) NOT NULL, reason VARCHAR(16) NOT NULL)");
-        execCollections("CREATE OR REPLACE VIEW prg_report_due AS "
-                + "SELECT client, source_msg_id, reason FROM prg_report_due_seed");
-        execCollections("DELETE FROM prg_report_due_seed");
+        // BOTH families publish a view of this name, in their OWN database. The
+        // payments one is created here too, because a payments report discovered
+        // from the collections database would be exactly the defect the second read
+        // seam exists to prevent, and a fixture with only one database cannot show it.
+        for (final AgroalDataSource ds : List.of(collectionsDs, paymentsDs)) {
+            exec(ds, "CREATE TABLE IF NOT EXISTS prg_report_due_seed ("
+                    + "client VARCHAR(16) NOT NULL, source_msg_id VARCHAR(35) NOT NULL,"
+                    + " reason VARCHAR(16) NOT NULL)");
+            exec(ds, "CREATE OR REPLACE VIEW prg_report_due AS "
+                    + "SELECT client, source_msg_id, reason FROM prg_report_due_seed");
+            exec(ds, "DELETE FROM prg_report_due_seed");
+        }
         exec(opsDs, "DELETE FROM file_arrival");
         exec(opsDs, "UPDATE agt_lease SET expires_at = now() - INTERVAL '1 second'");
         assertTrue(lease.tryAcquire(config.holderId()), "test precondition: this instance holds the lease");
@@ -141,7 +157,7 @@ class ReportTriggerTest {
         final ArgumentCaptor<String> runKeys = ArgumentCaptor.captor();
         final ArgumentCaptor<List<String>> launchArgs = ArgumentCaptor.captor();
         verify(launcher, times(3)).launchArrivalReport(
-                flows.capture(), eq(Stage.PRG), arrivalIds.capture(), runKeys.capture(), launchArgs.capture());
+                flows.capture(), eq(Stage.CRG), arrivalIds.capture(), runKeys.capture(), launchArgs.capture());
 
         final Map<String, List<String>> byRunKey = new HashMap<>();
         final Map<String, Flow> flowByRunKey = new HashMap<>();
@@ -157,11 +173,92 @@ class ReportTriggerTest {
         assertImmediateLaunch(byRunKey, arrivalByRunKey, "FNBCC01", "DCRECC2026071600000002");
         assertImmediateLaunch(byRunKey, arrivalByRunKey, "FNBRF01", "DCRERF2026071600000003");
 
-        // SCRUM-70: IMMEDIATE windows resolve by the parent client's flow
-        // (interim R-42 pay-clients map: FNBRF01 pay, FNBCC01 collections).
-        flowByRunKey.forEach((key, flow) -> assertEquals(
-                key.startsWith("FNBRF01-") ? Flow.PAY : Flow.COL, flow,
-                "client flow routing for " + key));
+        // v1 topology: the family comes from the DATABASE the due row was read
+        // from, not from the client's pay-clients membership. Every row here was
+        // seeded in dcre_col, so every launch is a COLLECTIONS report, including
+        // FNBRF01's: a pay client can still have collections instructions, and the
+        // view it appeared in is what says which generator owns it.
+        flowByRunKey.forEach((key, flow) -> assertEquals(Flow.COL, flow,
+                "a row read from the collections database is a collections report: " + key));
+    }
+
+    @Test
+    void aPaymentsParentIsDiscoveredFromThePaymentsDatabaseAndLaunchesPrg() {
+        // The seam the PRG builder flagged as most easily missed. It is not a
+        // rename: with only the collections datasource wired, a payments parent is
+        // never seen at all, no exception is thrown and nothing is logged. The
+        // payments IMMEDIATE report simply never fires.
+        seedPaymentsParent("FNBRF01", "DCRERF2026080800000101", "COMPLETE");
+
+        trigger.tick();
+
+        final ArgumentCaptor<Flow> flows = ArgumentCaptor.captor();
+        final ArgumentCaptor<List<String>> launchArgs = ArgumentCaptor.captor();
+        verify(launcher, times(1)).launchArrivalReport(
+                flows.capture(), eq(Stage.PRG), any(UUID.class), anyString(), launchArgs.capture());
+        assertEquals(Flow.PAY, flows.getValue(), "a payments parent launches into the pay flow");
+        assertTrue(launchArgs.getValue().contains("parents=DCRERF2026080800000101,java.lang.String,false"),
+                launchArgs.getValue().toString());
+    }
+
+    @Test
+    void thetwoFamiliesAreScannedIndependentlyAndNeverCrossOver() {
+        // Same client, one due parent in EACH database. Two launches, each on its
+        // own generator. A single shared read seam would produce two CRG launches,
+        // or two PRG ones, and the test would still see "two launches".
+        seedParent("FNBRF01", "DCRERF2026080800000201", "COMPLETE");
+        seedPaymentsParent("FNBRF01", "DCRERF2026080800000202", "COMPLETE");
+
+        trigger.tick();
+
+        verify(launcher, times(1)).launchArrivalReport(
+                eq(Flow.COL), eq(Stage.CRG), any(UUID.class),
+                eq("FNBRF01-imm-" + digest12("DCRERF2026080800000201")), anyList());
+        verify(launcher, times(1)).launchArrivalReport(
+                eq(Flow.PAY), eq(Stage.PRG), any(UUID.class),
+                eq("FNBRF01-imm-" + digest12("DCRERF2026080800000202")), anyList());
+    }
+
+    @Test
+    void aParentThatNeverSettlesEventuallyWarnsInsteadOfLoopingSilently() {
+        // The escalation guard. A parent the generator cannot satisfy stays in the
+        // view forever; the deterministic window key makes every later scan an
+        // idempotent no-op, so nothing throws, nothing is ledgered and nothing is
+        // logged. This does NOT retry, widen or fall back: it only makes the loop
+        // visible, because a silent infinite retrigger must not be made quieter.
+        seedParent("FNBCC01", "DCRECC2026080800000301", "COMPLETE");
+
+        trigger.tick();
+        assertTrue(warns.lines.stream().noneMatch(w -> w.startsWith("report-stall")),
+                "one scan is not a stall: " + warns.lines);
+
+        trigger.tick(); // reaches agt.report-stall-scans=2
+
+        assertTrue(warns.lines.stream().anyMatch(w -> w.startsWith("report-stall")
+                        && w.contains("stage=CRG") && w.contains("flow=COL")
+                        && w.contains("client=FNBCC01")
+                        && w.contains("parent=DCRECC2026080800000301")
+                        && w.contains("window=imm-" + digest12("DCRECC2026080800000301"))),
+                "the WARN must name the stage, flow, client, parent and window: " + warns.lines);
+
+        trigger.tick();
+        assertEquals(1, warns.lines.stream().filter(w -> w.startsWith("report-stall")).count(),
+                "one line per stalled parent, not one per tick: " + warns.lines);
+    }
+
+    @Test
+    void aParentThatSettlesNeverAccumulatesTowardTheStallWarn() {
+        // The counter must reset when the view stops reporting the parent, or a
+        // long-lived healthy client eventually trips the WARN for no reason.
+        seedParent("FNBCC01", "DCRECC2026080800000401", "COMPLETE");
+        trigger.tick();
+        execCollections("DELETE FROM prg_report_due_seed"); // the report settled it
+        trigger.tick();
+        seedDue("FNBCC01", "DCRECC2026080800000401", "COMPLETE"); // due again, later
+        trigger.tick();
+
+        assertTrue(warns.lines.stream().noneMatch(w -> w.startsWith("report-stall")),
+                "a settled parent starts from zero when it next becomes due: " + warns.lines);
     }
 
     @Test
@@ -181,7 +278,7 @@ class ReportTriggerTest {
 
         final ArgumentCaptor<String> runKeys = ArgumentCaptor.captor();
         verify(launcher, times(2)).launchArrivalReport(
-                any(Flow.class), eq(Stage.PRG), any(UUID.class), runKeys.capture(), anyList());
+                any(Flow.class), eq(Stage.CRG), any(UUID.class), runKeys.capture(), anyList());
         assertEquals(runKeys.getAllValues().get(0), runKeys.getAllValues().get(1),
                 "relaunch must reuse an identical IMMEDIATE window (deterministic from client+parent): "
                         + runKeys.getAllValues());
@@ -195,7 +292,7 @@ class ReportTriggerTest {
         seedDue("FNBCC01", "DCRECC2026071600000007", "IDLE"); // a second due row, same parent
         trigger.tick();
         verify(launcher, times(1)).launchArrivalReport(
-                any(Flow.class), eq(Stage.PRG), any(UUID.class), anyString(), anyList());
+                any(Flow.class), eq(Stage.CRG), any(UUID.class), anyString(), anyList());
     }
 
     @Test
@@ -204,8 +301,8 @@ class ReportTriggerTest {
         trigger.tick();
         final ArgumentCaptor<String> runKeys = ArgumentCaptor.captor();
         verify(launcher, times(1)).launchArrivalReport(
-                any(Flow.class), eq(Stage.PRG), any(UUID.class), runKeys.capture(), anyList());
-        final String jobName = JobLauncher.clockJobName(Flow.COL, Stage.PRG, runKeys.getValue());
+                any(Flow.class), eq(Stage.CRG), any(UUID.class), runKeys.capture(), anyList());
+        final String jobName = JobLauncher.clockJobName(Flow.COL, Stage.CRG, runKeys.getValue());
         assertTrue(jobName.length() <= 63, "K8s label limit: " + jobName + " (" + jobName.length() + ")");
         assertTrue(jobName.matches("[a-z0-9]([-a-z0-9]*[a-z0-9])?"), "DNS-1123: " + jobName);
     }
@@ -252,7 +349,7 @@ class ReportTriggerTest {
 
         final ArgumentCaptor<List<String>> launchArgs = ArgumentCaptor.captor();
         verify(launcher, times(1)).launchArrivalReport(
-                any(Flow.class), eq(Stage.PRG), any(UUID.class), anyString(), launchArgs.capture());
+                any(Flow.class), eq(Stage.CRG), any(UUID.class), anyString(), launchArgs.capture());
         assertTrue(launchArgs.getValue().contains("parents=DCRECC2026071600000010,java.lang.String,false"),
                 "only the safe parent launches: " + launchArgs.getValue());
         assertTrue(warns.lines.stream().anyMatch(w ->
@@ -263,9 +360,9 @@ class ReportTriggerTest {
     @Test
     void reportDueReadsTheViewContract() {
         seedDue("FNBCC02", "DCRECC2026071600000009", "IDLE");
-        final List<CollectionsReadRepo.DueParent> due = collectionsRepo.reportDue();
+        final List<FamilyReadRepo.DueParent> due = families.reportDue(Flow.COL);
         assertEquals(1, due.size());
-        assertEquals(new CollectionsReadRepo.DueParent("FNBCC02", "DCRECC2026071600000009", "IDLE"),
+        assertEquals(new FamilyReadRepo.DueParent("FNBCC02", "DCRECC2026071600000009", "IDLE"),
                 due.get(0));
     }
 
@@ -344,8 +441,23 @@ class ReportTriggerTest {
         arrivalsByKey.put(client + "|" + sourceMsgId, id);
     }
 
+    /** The payments twin of seedParent: the due row lands in the PAYMENTS database. */
+    private void seedPaymentsParent(final String client, final String sourceMsgId, final String reason) {
+        seedDue(paymentsDs, client, sourceMsgId, reason);
+        final UUID id = arrivalRepo.insertArrival(UUID.randomUUID(), "onhost-req-endo",
+                client + "_" + sourceMsgId + ".txt", "sha-" + client + "-" + sourceMsgId,
+                client, sourceMsgId, ArrivalStatus.DAG_COMPLETE, null,
+                "/exchange/claimed/" + client + "_" + sourceMsgId + ".txt").orElseThrow();
+        arrivalsByKey.put(client + "|" + sourceMsgId, id);
+    }
+
     private void seedDue(final String client, final String sourceMsgId, final String reason) {
-        try (Connection c = collectionsDs.getConnection();
+        seedDue(collectionsDs, client, sourceMsgId, reason);
+    }
+
+    private void seedDue(final AgroalDataSource ds, final String client,
+                         final String sourceMsgId, final String reason) {
+        try (Connection c = ds.getConnection();
              PreparedStatement p = c.prepareStatement(
                      "INSERT INTO prg_report_due_seed (client, source_msg_id, reason) VALUES (?, ?, ?)")) {
             p.setString(1, client);

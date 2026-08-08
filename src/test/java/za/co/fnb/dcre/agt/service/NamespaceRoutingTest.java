@@ -64,6 +64,9 @@ class NamespaceRoutingTest {
             return Map.of("agt.launch-enabled", "true", "agt.crr-image", "dcre-crr:test",
                     "agt.mrr-image", "dcre-mrr:test",
                     "agt.ctv-image", "dcre-ctv:test",
+                    "agt.prr-image", "dcre-prr:test",
+                    "agt.crg-image", "dcre-crg:test",
+                    "agt.prg-image", "dcre-prg:test",
                     "agt.pay-clients", " fnbrf01 ");
         }
     }
@@ -81,7 +84,13 @@ class NamespaceRoutingTest {
     OrphanRelauncher relauncher;
 
     @Inject
+    CrgScheduler crgScheduler;
+
+    @Inject
     PrgScheduler prgScheduler;
+
+    @Inject
+    StageDatabases stageDatabases;
 
     @Inject
     MrgScheduler mrgScheduler;
@@ -118,7 +127,7 @@ class NamespaceRoutingTest {
     void reconcilerUnionsManagedJobsAcrossControlAndFlowNamespaces() {
         createJob("dcre", "dcre-legacy-w1", false);
         createJob("dcre-col", "col-crr-" + suffix(), false);
-        createJob("dcre-pay", "pay-pxr-" + suffix(), false);
+        createJob("dcre-pay", "pay-ppx-" + suffix(), false);
         createJob("dcre-man", "man-mrr-" + suffix(), false);
 
         Map<String, Job> live = reconciler.liveManagedJobs();
@@ -131,9 +140,9 @@ class NamespaceRoutingTest {
 
     @Test
     void outcomeWatcherObservesInTheIntentNamespace() throws IOException {
-        String name = "pay-crr-" + suffix();
+        String name = "pay-prr-" + suffix();
         UUID arrivalId = insertArrival("onhost-req-endo", "FNBRF01");
-        UUID intentId = intentRepo.insertIntent(arrivalId, Stage.CRR, name, "dcre-pay").orElseThrow();
+        UUID intentId = intentRepo.insertIntent(arrivalId, Stage.PRR, name, "dcre-pay").orElseThrow();
         // The CRUD mock server assigns its own uid: mark launched with the REAL one.
         Job created = createJob("dcre-pay", name, true);
         intentRepo.markIntentLaunched(intentId, created.getMetadata().getUid());
@@ -141,15 +150,15 @@ class NamespaceRoutingTest {
 
         watcher.observe(intentOf(arrivalId, intentId));
 
-        assertEquals(Outcome.BUSINESS_ACCEPTED, outcomeRepo.outcomesForArrival(arrivalId).get(Stage.CRR),
+        assertEquals(Outcome.BUSINESS_ACCEPTED, outcomeRepo.outcomesForArrival(arrivalId).get(Stage.PRR),
                 "observation reads the Job from the intent's namespace");
     }
 
     @Test
     void outcomeWatcherNeverFallsBackToTheControlNamespace() throws IOException {
-        String name = "pay-crr-" + suffix();
+        String name = "pay-prr-" + suffix();
         UUID arrivalId = insertArrival("onhost-req-endo", "FNBRF01");
-        UUID intentId = intentRepo.insertIntent(arrivalId, Stage.CRR, name, "dcre-pay").orElseThrow();
+        UUID intentId = intentRepo.insertIntent(arrivalId, Stage.PRR, name, "dcre-pay").orElseThrow();
         // The Job exists ONLY in the control namespace, uid-matched to the
         // intent so ONLY the namespace can disqualify it. The seam file is
         // present, so a control-namespace lookup WOULD record an outcome.
@@ -184,18 +193,85 @@ class NamespaceRoutingTest {
     }
 
     @Test
-    void prgClockWindowsRouteByClientFlow() {
+    void eachFamilysReportGeneratorRunsInItsOwnNamespaceForItsOwnClients() {
+        // v1 topology: ONE loop used to launch a single generator for every client
+        // on whatever namespace that client's flow resolved to. There are two
+        // generators now, each serving only its own family's clients: CRG in
+        // dcre-col for collections clients, PRG in dcre-pay for pay clients.
         insertArrival("onhost-req", "FNBRF01");
         insertArrival("onhost-req", "FNBCC01");
         exec("UPDATE agt_lease SET expires_at = now() - INTERVAL '1 second'");
         assertTrue(lease.tryAcquire(config.holderId()), "test precondition: lease held");
 
+        crgScheduler.tick();
         prgScheduler.tick();
 
         assertEquals("dcre-pay", namespaceOfIntentLike("pay-prg-fnbrf01-w%"),
                 "R-42 pay client: PRG window in the pay namespace with the pay- prefix");
-        assertEquals("dcre-col", namespaceOfIntentLike("col-prg-fnbcc01-w%"),
-                "collections client: PRG window stays col-");
+        assertEquals("dcre-col", namespaceOfIntentLike("col-crg-fnbcc01-w%"),
+                "collections client: the COLLECTIONS generator is CRG, in dcre-col");
+        assertEquals(0, countIntentsLike("col-prg-%"),
+                "PRG is the payments generator: it must never mint a col- window");
+        assertEquals(0, countIntentsLike("pay-crg-%"),
+                "CRG is the collections generator: it must never mint a pay- window");
+    }
+
+    /**
+     * THE PAYMENTS ROUTING ASSERTION. Red-proofed by reverting
+     * {@code StageDatabases.urlFor} to its two-way form (man vs everything else)
+     * and watching this fail; the fixture below is why the pre-existing man/col
+     * assertions could not.
+     *
+     * <p>{@code manStageJobCarriesTheManDbUrlAndCollectionsKeepsCol} stays GREEN
+     * through the entire payments defect, because its fixture contains two families
+     * where the code has three. A dimension with only some of its values cannot
+     * exercise what that dimension drives.
+     */
+    @Test
+    void paymentsStageJobsCarryTheDcrePayUrlAndNotTheCollectionsOne() {
+        UUID payArrival = insertArrival("onhost-req-endo", "FNBRF01");
+        launcher.launch(payArrival, Stage.PRR);
+        Job payJob = k8s.batch().v1().jobs().inNamespace("dcre-pay")
+                .withName(JobLauncher.jobName(za.co.fnb.dcre.agt.domain.Flow.PAY, Stage.PRR, payArrival)).get();
+        assertNotNull(payJob, "PRR job created in dcre-pay");
+        assertTrue(dbUrlOf(payJob).contains("/dcre_pay"),
+                "a payments stage pod must address dcre_pay. With the two-way dbUrlFor it"
+                        + " receives /dcre_col instead and nothing errors, because the write is"
+                        + " perfectly valid against the wrong database. Got " + dbUrlOf(payJob));
+        assertFalse(dbUrlOf(payJob).contains("/dcre_col"),
+                "and it must not carry the collections url at all, got " + dbUrlOf(payJob));
+    }
+
+    /** The payments clock generator too: PRG windows write dcre_pay. */
+    @Test
+    void thePaymentsReportGeneratorClockJobCarriesTheDcrePayUrl() {
+        String runKey = "payclock-" + suffix();
+        launcher.launchClock(za.co.fnb.dcre.agt.domain.Flow.PAY, Stage.PRG, runKey,
+                java.util.List.of("client=FNBRF01", "window=" + runKey));
+        Job clockJob = k8s.batch().v1().jobs().inNamespace("dcre-pay")
+                .withName(JobLauncher.clockJobName(za.co.fnb.dcre.agt.domain.Flow.PAY, Stage.PRG, runKey)).get();
+        assertNotNull(clockJob, "PRG clock job created in dcre-pay");
+        assertTrue(dbUrlOf(clockJob).contains("/dcre_pay"),
+                "the payments report generator writes dcre_pay, got " + dbUrlOf(clockJob));
+    }
+
+    /** Every stage resolves a url, and each family's url is distinct from the others. */
+    @Test
+    void everyStageResolvesItsOwnFamilysDatabaseAndTheThreeAreDistinct() {
+        final java.util.Map<za.co.fnb.dcre.agt.domain.Flow, String> byFamily = new java.util.EnumMap<>(
+                za.co.fnb.dcre.agt.domain.Flow.class);
+        for (final Stage stage : Stage.values()) {
+            final String url = stageDatabases.urlFor(stage);
+            assertNotNull(url, "no database for stage " + stage);
+            final String previous = byFamily.put(stageDatabases.family(stage), url);
+            assertTrue(previous == null || previous.equals(url),
+                    "stage " + stage + " disagrees with its family's database");
+        }
+        assertEquals(3, java.util.Set.copyOf(byFamily.values()).size(),
+                "three families, three distinct databases, got " + byFamily);
+        assertTrue(byFamily.get(za.co.fnb.dcre.agt.domain.Flow.COL).contains("/dcre_col"));
+        assertTrue(byFamily.get(za.co.fnb.dcre.agt.domain.Flow.PAY).contains("/dcre_pay"));
+        assertTrue(byFamily.get(za.co.fnb.dcre.agt.domain.Flow.MAN).contains("/dcre_man"));
     }
 
     @Test
@@ -325,10 +401,10 @@ class NamespaceRoutingTest {
 
         // clock Job path (JobLauncher.clockJob)
         String runKey = "agtops-" + suffix();
-        launcher.launchClock(za.co.fnb.dcre.agt.domain.Flow.COL, Stage.PRG, runKey,
+        launcher.launchClock(za.co.fnb.dcre.agt.domain.Flow.COL, Stage.CRG, runKey,
                 java.util.List.of("client=FNBCC01", "window=" + runKey));
         Job clockJob = k8s.batch().v1().jobs().inNamespace("dcre-col")
-                .withName(JobLauncher.clockJobName(za.co.fnb.dcre.agt.domain.Flow.COL, Stage.PRG, runKey)).get();
+                .withName(JobLauncher.clockJobName(za.co.fnb.dcre.agt.domain.Flow.COL, Stage.CRG, runKey)).get();
         assertNotNull(clockJob, "PRG clock job created in dcre-col");
         assertEquals(agtOps, envOf(clockJob, "DCRE_AGTOPS_DB_URL"),
                 "clock job carries the agt_ops FQDN url, got " + envOf(clockJob, "DCRE_AGTOPS_DB_URL"));
@@ -360,10 +436,10 @@ class NamespaceRoutingTest {
 
         // clock Job path (JobLauncher.clockJob)
         String runKey = "backoff-" + suffix();
-        launcher.launchClock(za.co.fnb.dcre.agt.domain.Flow.COL, Stage.PRG, runKey,
+        launcher.launchClock(za.co.fnb.dcre.agt.domain.Flow.COL, Stage.CRG, runKey,
                 java.util.List.of("client=FNBCC01", "window=" + runKey));
         Job clockJob = k8s.batch().v1().jobs().inNamespace("dcre-col")
-                .withName(JobLauncher.clockJobName(za.co.fnb.dcre.agt.domain.Flow.COL, Stage.PRG, runKey)).get();
+                .withName(JobLauncher.clockJobName(za.co.fnb.dcre.agt.domain.Flow.COL, Stage.CRG, runKey)).get();
         assertNotNull(clockJob, "PRG clock job created in dcre-col");
         assertEquals(0, clockJob.getSpec().getBackoffLimit(),
                 "clockJob: one Job, one pod (exit code attributable)");

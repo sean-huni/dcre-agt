@@ -35,21 +35,25 @@ public class MrgSuspendScheduler {
     private final AgtConfig config;
     private final LeaseService lease;
     private final JobLauncher launcher;
+    private final StageImages stageImages;
 
     @Inject
-    MrgSuspendScheduler(final AgtConfig config, final LeaseService lease, final JobLauncher launcher) {
+    MrgSuspendScheduler(final AgtConfig config, final LeaseService lease,
+                        final JobLauncher launcher, final StageImages stageImages) {
         this.config = config;
         this.lease = lease;
         this.launcher = launcher;
+        this.stageImages = stageImages;
     }
 
     @RunOnVirtualThread
     @Scheduled(every = "10s", concurrentExecution = Scheduled.ConcurrentExecution.SKIP)
     void tick() {
-        if (!lease.holdsLease() || !config.launchEnabled() || config.mrgImage().isEmpty()) {
+        if (!lease.holdsLease() || !config.launchEnabled()
+                || stageImages.configured(Stage.MRG).isEmpty()) {
             return; // absent/empty mrg-image = launch-disabled (SCRUM-33: no stub fallback)
         }
-        final long window = PrgScheduler.window(Instant.now().getEpochSecond(),
+        final long window = ReportWindows.window(Instant.now().getEpochSecond(),
                 config.mrgSuspendIntervalSeconds());
         // The window is the Batch job-instance identity: mrgSuspendJob takes no
         // parameter of its own (its override write keys on the full business

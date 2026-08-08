@@ -4,7 +4,34 @@ Collections Agent: the only long-running service in the DCRE Collections pipelin
 
 ## What it does
 
-AGT watches the per-client inbound exchange drop zones, registers stable file arrivals into a durable ledger (SHA-256 content identity, R-31 filename tokens, same-key-different-hash quarantine), and drives the request DAGs (DC Collections, ENDO Payments, and M10 Mandates `MRR -> MRV -> MAS -> MIT -> [MIR, MRW]`, R-36) level-triggered from that ledger: minting each pipeline stage as a write-ahead, deterministically-named Kubernetes Job, then observing its externally reported termination facts as the sole authority for stage completion (R-33). Response routes are token-picked: `fint-resp` launches the per-token reader (IXR/SXR/PXR), `fint-resp-man` picks the matching mandate leg reader the same way (MIX/MSX/MPX, SCRUM-91). It also launches the clock-driven executors (CRW process-date, PRG payment-status, HCS holiday-calendar-sync, MRG mandates-report) on interval windows, reconciles Jobs against intents after any restart, and bounds/relaunches same-identity Jobs that die mid-run (OrphanSweeper) instead of leaving an arrival stuck.
+AGT watches the per-client inbound exchange drop zones, registers stable file arrivals into a durable ledger (SHA-256 content identity, R-31 filename tokens, same-key-different-hash quarantine), and drives the three request DAGs level-triggered from that ledger: minting each pipeline stage as a write-ahead, deterministically-named Kubernetes Job, then observing its externally reported termination facts as the sole authority for stage completion (R-33). It also launches the clock-driven executors (CRW process-date, CRG/PRG/MRG report windows, HCS holiday-calendar-sync) on interval windows, reconciles Jobs against intents after any restart, and bounds/relaunches same-identity Jobs that die mid-run (OrphanSweeper) instead of leaving an arrival stuck.
+
+## The roster IS the diagrams
+
+THE DIAGRAMS ARE THE SPECIFICATION (`design-register/docs/diagrams`, R-49). AGT launches exactly the 28 stage services on the six sheets plus the cross-family HCS, and nothing else. `StageRosterTest` compares `Stage` to the sheets as a SET, never a size: collections once held 9 of 9 required services with four misnamed, and a count check reported 9/9 and passed.
+
+```
+collections   CRR CTV CDE CRW CIR   CIX CSX CPX   CRG     -> dcre_col
+payments      PRR PTV PAI PRW PIR   PIX PSX PPX   PRG     -> dcre_pay
+mandates      MRR MRV MAS MIT MIR MRW   MIX MSX MPX MRG   -> dcre_man
+cross-family  HCS                                         -> dcre_col
+```
+
+**PRG IS THE PAYMENTS REPORT GENERATOR.** Before the 2026-08-08 cutover the same token named the COLLECTIONS one, which is now CRG. The token did not move, it changed MEANING, so a find-and-replace over this repository produces a build that compiles and is semantically inverted. Read every occurrence in context.
+
+Each family's request DAG is on its own sheet, and no stage appears in two of them:
+
+- DC Collections: `CRR -> CTV -> {CDE -> CRW, CIR}`
+- ENDO Payments: `PRR -> PTV -> PAI -> {PRW, PIR}`
+- Mandates: `MRR -> MRV -> MAS -> MIT -> {MIR, MRW}`
+
+Response routes are token-picked, and the FLOW selects the family's reader: `fint-resp` carries both collections and payments replies (both families send pain.008 and the reply has no family marker), so it launches CIX/CSX/CPX or PIX/PSX/PPX by the reading client's flow; `fint-resp-man` picks MIX/MSX/MPX.
+
+### The timing rule
+
+Owner, 2026-08-08: "CRW TxList are processed on the collection-day, but for payments Tx's processed immediately."
+
+Collections waits: CRW is a clock-driven Process-Date Executor, CDE estimates the collection day, and a DC arrival stays `DAG_RUNNING` until `crw_emission_owed` says nothing is owed. **Payments does not wait at all**: there is no CDE analogue on the payments sheet, PRW is a real DAG stage that runs the moment PAI accepts, and `RouteDags.ENDO` carries `Emission.NONE`. PRW forks from CRW and both emit `pain.008`, which makes the collection-day wait easy to inherit silently, so it is asserted in both directions in `EmissionGatedTerminalTest` rather than described.
 
 ## Architecture and principles
 
@@ -46,29 +73,30 @@ AGT resolves `agt.exchange-root` (default `../../../../../infra/dcre-infra/excha
 | `AGT_DB_PASSWORD` | (empty) | `agt_ops` datasource password |
 | `DCRE_EXCHANGE_ROOT` | `../../../../../infra/dcre-infra/exchange` | Root of the exchange directory tree (R-30 contract) |
 | `AGT_NAMESPACE` | `dcre` | AGT's own CONTROL namespace only (K8s client, deployment, crdb/lgtm shared infra); stage Jobs launch into the flow namespaces below (SCRUM-70) |
-| `AGT_NAMESPACE_COL` | `dcre-col` | Flow namespace for Collections stage Jobs (`col-*`: onhost-req, CRW window, HCS, collections-client PRG/fint-resp) |
+| `AGT_NAMESPACE_COL` | `dcre-col` | Flow namespace for Collections stage Jobs (`col-*`: onhost-req, CRW window, HCS, collections-client CRG/fint-resp) |
 | `AGT_NAMESPACE_PAY` | `dcre-pay` | Flow namespace for Payments stage Jobs (`pay-*`: onhost-req-endo, pay-client PRG/fint-resp) |
 | `AGT_NAMESPACE_MAN` | `dcre-man` | Flow namespace for Mandates stage Jobs (`man-*`: onhost-req-man, fint-resp-man, MRG windows) |
 | `AGT_PAY_CLIENTS` | `FNBRF01` | INTERIM (R-42) comma-separated client tokens on the pay flow, until the R-14 client table lands; trimmed + uppercased on read |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://localhost:4317` | OTLP endpoint for traces/metrics export |
 | `AGT_LAUNCH_ENABLED` | `true` | Gate for K8s Job creation; observation stays on independently |
-| `AGT_CRR_IMAGE` / `AGT_CTV_IMAGE` / `AGT_CIR_IMAGE` / `AGT_CDE_IMAGE` / `AGT_CRW_IMAGE` | (empty) | Stage images; a missing image fails the launch fast (no stub fallback) |
-| `AGT_IXR_IMAGE` | `dcre-ixr:m4` | fint-resp ISR reader image |
-| `AGT_SXR_IMAGE` | `dcre-sxr:m4` | fint-resp SBSR reader image |
-| `AGT_PXR_IMAGE` | `dcre-pxr:m4` | fint-resp PBSR reader image |
-| `AGT_PRG_IMAGE` | `dcre-prg:m4` | PRG clock-window executor image |
-| `AGT_AIS_IMAGE` | `dcre-ais:m5` | AIS endorsements stage image (ENDO route) |
-| `AGT_HCS_IMAGE` | `dcre-hcs:m6` | HCS holiday-calendar-sync clock executor image |
-| `AGT_MRR_IMAGE` / `AGT_MRV_IMAGE` / `AGT_MAS_IMAGE` / `AGT_MIT_IMAGE` / `AGT_MIR_IMAGE` / `AGT_MRW_IMAGE` / `AGT_MIX_IMAGE` / `AGT_MSX_IMAGE` / `AGT_MPX_IMAGE` / `AGT_MRG_IMAGE` | (empty) | M10 mandates stage images (SCRUM-79); absent/empty = launch-disabled until the 2.3 release line |
+| `AGT_CRR_IMAGE` / `AGT_CTV_IMAGE` / `AGT_CDE_IMAGE` / `AGT_CRW_IMAGE` / `AGT_CIR_IMAGE` / `AGT_CIX_IMAGE` / `AGT_CSX_IMAGE` / `AGT_CPX_IMAGE` / `AGT_CRG_IMAGE` | (empty) | The nine COLLECTIONS stage images. `CIX`/`CSX`/`CPX` are the three fint-resp leg readers (ISR/SBSR/PBSR), formerly `IXR`/`SXR`/`PXR`; **`CRG` is the collections report generator**, formerly called `PRG` |
+| `AGT_PRR_IMAGE` / `AGT_PTV_IMAGE` / `AGT_PAI_IMAGE` / `AGT_PRW_IMAGE` / `AGT_PIR_IMAGE` / `AGT_PIX_IMAGE` / `AGT_PSX_IMAGE` / `AGT_PPX_IMAGE` / `AGT_PRG_IMAGE` | (empty) | The nine PAYMENTS stage images. `PAI` is the Account Init Service, formerly `AIS` on the collections family; **`AGT_PRG_IMAGE` CHANGED MEANING at the 2026-08-08 cutover: it named the collections report generator and now names the payments one** |
+| `AGT_MRR_IMAGE` / `AGT_MRV_IMAGE` / `AGT_MAS_IMAGE` / `AGT_MIT_IMAGE` / `AGT_MIR_IMAGE` / `AGT_MRW_IMAGE` / `AGT_MIX_IMAGE` / `AGT_MSX_IMAGE` / `AGT_MPX_IMAGE` / `AGT_MRG_IMAGE` | (empty) | The ten MANDATES stage images |
+| `AGT_HCS_IMAGE` | (empty) | HCS holiday-calendar-sync clock executor image (cross-family; on no sheet) |
 | `AGT_MAN_CLIENTS` | `FNBCC01,FNBCC02,FNBRF01` | INTERIM comma-separated mandate-capable client tokens (MRG windows launch only for these), until the R-14 client table lands; trimmed + uppercased on read |
-| `AGT_CRW_INTERVAL_SECONDS` | `60` | CRW Process-Date Executor window length |
-| `AGT_PRG_INTERVAL_SECONDS` | `60` | PRG clock-window length |
+| `AGT_CRW_INTERVAL_SECONDS` | `60` | CRW Process-Date Executor window length (COLLECTIONS ONLY: this is the collection-day clock, and payments has no analogue) |
+| `AGT_CRG_INTERVAL_SECONDS` | `60` | CRG collections-report clock-window length |
+| `AGT_PRG_INTERVAL_SECONDS` | `60` | PRG payments-report clock-window length. Its own knob, not shared with CRG: collections transaction lists are processed ON the collection day and payments transactions IMMEDIATELY, so the two cadences have no reason to move together |
 | `AGT_HCS_INTERVAL_HOURS` | `6` | HCS holiday-sync re-sync cadence |
 | `AGT_MRG_INTERVAL_SECONDS` | `60` | MRG mandates-report clock-window length |
 | `AGT_MRG_SUSPEND_INTERVAL_SECONDS` | `60` | MRG suspension-sweep clock-window length (SCRUM-91); mandate expiry is a view predicate and has no sweep |
-| `AGT_SERVICE_DB_URL` | `jdbc:postgresql://crdb.dcre.svc.cluster.local:26257/dcre_col?sslmode=disable` | JDBC URL handed to launched stage Jobs for `dcre_col` (FQDN: stage pods run in the flow namespaces, where the short `crdb` name does not resolve) |
+| `AGT_COLLECTIONS_DB_URL` | `jdbc:postgresql://localhost:26257/dcre_col?sslmode=disable` | AGT's own read-only window into `dcre_col` (`prg_report_due`, `prg_sla_pending`, `crw_emission_owed`) |
+| `AGT_PAYMENTS_DB_URL` | `jdbc:postgresql://localhost:26257/dcre_pay?sslmode=disable` | AGT's own read-only window into `dcre_pay`. **A separate READ SEAM, not a rename**: both databases publish views called `prg_report_due` and `prg_sla_pending`, so a single datasource leaves one family's IMMEDIATE reports permanently undiscovered, with no exception and no log line |
+| `AGT_SERVICE_DB_URL` | `jdbc:postgresql://crdb.dcre.svc.cluster.local:26257/dcre_col?sslmode=disable` | JDBC URL handed to launched COLLECTIONS stage Jobs for `dcre_col`, and to HCS (FQDN: stage pods run in the flow namespaces, where the short `crdb` name does not resolve) |
+| `AGT_PAY_SERVICE_DB_URL` | `jdbc:postgresql://crdb.dcre.svc.cluster.local:26257/dcre_pay?sslmode=disable` | JDBC URL handed to launched PAYMENTS stage Jobs. Without it every payments stage receives the collections URL and builds the payments schema inside `dcre_col` without erroring, because the write is perfectly valid against the wrong database (`StageDatabases` resolves the three families with no default arm) |
 | `AGT_MAN_SERVICE_DB_URL` | `jdbc:postgresql://crdb.dcre.svc.cluster.local:26257/dcre_man?sslmode=disable` | JDBC URL for `dcre_man`; the DB URL follows the stage's flow family. Handed to the M10 mandates stage Jobs (`MRR`..`MRG`) as their primary DB, AND to every CTV stage pod as `DCRE_CTV_MANDATES_DB_URL` for CTV's second, read-only projection datasource: CTV stays on `dcre_col` primarily, so it reuses this knob rather than a second URL to keep in step. CTV fails at startup in-cluster if that variable is unset, so this value is load-bearing on the collections flow too |
-| `AGT_CTV_MANDATE_SOURCE` | `legacy` | Which mandate store CTV's DC-flow gate reads, handed to every CTV stage pod as `DCRE_CTV_MANDATE_SOURCE` (SCRUM-91). `legacy` reads the `mandate` table in `dcre_col`; `projection` reads `man_ctv_view` in `dcre_man`. The token is carried verbatim and never interpreted here: CTV owns the vocabulary, so a new mode needs no AGT change. The default matches CTV's own yml default, so the seam is inert until it is set; nothing else injects it, so without it an in-cluster CTV is frozen on `legacy` |
+| `AGT_CTV_MANDATE_SOURCE` | `projection` | Which mandate store CTV's DC-flow gate reads, handed to every CTV stage pod as `DCRE_CTV_MANDATE_SOURCE` (SCRUM-107). The vocabulary is `projection` only: it reads `man_ctv_view` in `dcre_man`, and the `dcre_col.mandate` table the retired `legacy` value selected has been dropped. CTV FAILS CLOSED on `legacy`, so handing that value to a stage pod stops the pod from starting rather than degrading to a different gate. The token is carried verbatim and never interpreted here: CTV owns the vocabulary |
+| `AGT_REPORT_STALL_SCANS` | `20` | Bounded-attempt guard on the IMMEDIATE report trigger: consecutive scans that may see the same (flow, client, parent) still due before AGT WARNs. It makes a silent loop VISIBLE; it never retries, widens or falls back |
 | `AGT_STAGE_MEMORY_LIMIT` | `768Mi` | Stage-pod memory limit |
 | `AGT_STAGE_DEADLINE_SECONDS` | `900` | Stage Job `activeDeadlineSeconds` |
 | `AGT_ORPHAN_MAX_ATTEMPTS` | `3` | OrphanSweeper: bounded same-identity relaunch attempts |
@@ -102,16 +130,12 @@ Ledger-derived metrics on the `dcre-agt` Grafana dashboard: `agt_lease_held`, `a
 
 ## Related repositories
 
-- https://github.com/sean-huni/dcre-crr
-- https://github.com/sean-huni/dcre-ctv
-- https://github.com/sean-huni/dcre-cde
-- https://github.com/sean-huni/dcre-cir
-- https://github.com/sean-huni/dcre-crw
-- https://github.com/sean-huni/dcre-ixr
-- https://github.com/sean-huni/dcre-sxr
-- https://github.com/sean-huni/dcre-pxr
-- https://github.com/sean-huni/dcre-prg
-- https://github.com/sean-huni/dcre-ais
+Collections: `dcre-crr` `dcre-ctv` `dcre-cde` `dcre-crw` `dcre-cir` `dcre-cix` `dcre-csx` `dcre-cpx` `dcre-crg`
+Payments: `dcre-prr` `dcre-ptv` `dcre-pai` `dcre-prw` `dcre-pir` `dcre-pix` `dcre-psx` `dcre-ppx` `dcre-prg`
+Mandates: `dcre-mrr` `dcre-mrv` `dcre-mas` `dcre-mit` `dcre-mir` `dcre-mrw` `dcre-mix` `dcre-msx` `dcre-mpx` `dcre-mrg`
+
+The pre-cutover repositories (`dcre-ixr`, `dcre-sxr`, `dcre-pxr`, `dcre-ais`) are archived per R-48 and their images are no longer built.
+
 - https://github.com/sean-huni/dcre-hcs
 - https://github.com/sean-huni/dcre-platform-model
 - https://github.com/sean-huni/dcre-platform-files

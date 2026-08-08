@@ -59,7 +59,10 @@ class ImmediateReportRecoveryTest {
     public static class RecoveryProfile implements QuarkusTestProfile {
         @Override
         public Map<String, String> getConfigOverrides() {
-            return Map.of("agt.launch-enabled", "true", "agt.prg-image", "dcre-prg:test",
+            // CRG, not PRG: this exercises a COLLECTIONS parent, and the collections
+            // generator is CRG on the v1 roster. With no prg-image the payments scan
+            // is launch-disabled and skipped, so only dcre_col is read here.
+            return Map.of("agt.launch-enabled", "true", "agt.crg-image", "dcre-crg:test",
                     "agt.orphan-backoff-seconds", "0");
         }
     }
@@ -186,7 +189,7 @@ class ImmediateReportRecoveryTest {
     }
 
     private static String reportJobName(final String msgId) {
-        return JobLauncher.clockJobName(Flow.COL, Stage.PRG, CLIENT + "-imm-" + ReportTrigger.parentDigest(msgId));
+        return JobLauncher.clockJobName(Flow.COL, Stage.CRG, CLIENT + "-imm-" + ReportTrigger.parentDigest(msgId));
     }
 
     private Job jobOf(final String name) {

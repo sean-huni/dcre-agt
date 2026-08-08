@@ -76,16 +76,16 @@ class ImmediateReportDagGuardTest {
 
         final Map<Stage, Outcome> dagOutcomes = outcomeRepo.outcomesForArrival(parent);
 
-        assertFalse(dagOutcomes.containsKey(Stage.PRG),
+        assertFalse(dagOutcomes.containsKey(Stage.CRG),
                 "the IMMEDIATE report is NOT counted as a DAG stage in outcomesForArrival");
         assertEquals(Map.of(Stage.CRR, Outcome.BUSINESS_ACCEPTED, Stage.CTV, Outcome.BUSINESS_ACCEPTED,
                         Stage.CDE, Outcome.BUSINESS_ACCEPTED, Stage.CIR, Outcome.BUSINESS_ACCEPTED), dagOutcomes,
                 "only the real DAG stages remain: the report never enters DAG accounting");
-        assertFalse(intentRepo.intentsForArrival(parent).stream().anyMatch(i -> i.stage() == Stage.PRG),
+        assertFalse(intentRepo.intentsForArrival(parent).stream().anyMatch(i -> i.stage() == Stage.CRG),
                 "the report intent is excluded from the DAG intended-set (intentsForArrival)");
         // The report's presence cannot change the computed terminal verdict.
         assertEquals(ArrivalStatus.DAG_COMPLETE,
-                DagEngine.terminalState("onhost-req", dagOutcomes, () -> false).orElseThrow(),
+                DagEngine.terminalState("onhost-req", za.co.fnb.dcre.agt.domain.Flow.COL, dagOutcomes, () -> false).orElseThrow(),
                 "terminalState over the report-excluded outcomes still resolves DAG_COMPLETE");
     }
 
@@ -99,7 +99,7 @@ class ImmediateReportDagGuardTest {
         exhaustCurrentAttempt(report);
 
         relauncher.relaunchOrExhaust(
-                new LaunchIntent(report, parent, Stage.PRG, "col-prg-dga2", LaunchIntent.LAUNCHED,
+                new LaunchIntent(report, parent, Stage.CRG, "col-crg-dga2", LaunchIntent.LAUNCHED,
                         "dga2", 3, "dcre-col"), Outcome.TECH_FAILED, null);
 
         assertEquals(ArrivalStatus.DAG_RUNNING, arrivalRepo.arrivalById(parent).orElseThrow().status(),
@@ -115,7 +115,7 @@ class ImmediateReportDagGuardTest {
         exhaustCurrentAttempt(report);
 
         relauncher.relaunchOrExhaust(
-                new LaunchIntent(report, parent, Stage.PRG, "col-prg-dga3", LaunchIntent.LAUNCHED,
+                new LaunchIntent(report, parent, Stage.CRG, "col-crg-dga3", LaunchIntent.LAUNCHED,
                         "dga3", 3, "dcre-col"), Outcome.TECH_FAILED, null);
 
         assertEquals(ArrivalStatus.DAG_COMPLETE, arrivalRepo.arrivalById(parent).orElseThrow().status(),
@@ -153,8 +153,8 @@ class ImmediateReportDagGuardTest {
     }
 
     private UUID reportIntent(final UUID arrivalId, final String tag) {
-        final UUID intentId = intentRepo.insertReportIntent(arrivalId, Stage.PRG, "FNBCC01-imm-" + tag,
-                "col-prg-" + tag, "client=FNBCC01\nwindow=imm-" + tag, "dcre-col").orElseThrow();
+        final UUID intentId = intentRepo.insertReportIntent(arrivalId, Stage.CRG, "FNBCC01-imm-" + tag,
+                "col-crg-" + tag, "client=FNBCC01\nwindow=imm-" + tag, "dcre-col").orElseThrow();
         intentRepo.markIntentLaunched(intentId, "uid-report-" + tag);
         return intentId;
     }

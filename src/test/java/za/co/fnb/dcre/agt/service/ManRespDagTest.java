@@ -1,12 +1,13 @@
 package za.co.fnb.dcre.agt.service;
 
 import org.junit.jupiter.api.Test;
+import za.co.fnb.dcre.agt.domain.Flow;
 import za.co.fnb.dcre.agt.domain.Stage;
 
 import java.util.EnumSet;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -37,28 +38,30 @@ class ManRespDagTest {
 
     @Test
     void eachReplyTokenPicksItsOwnLegReader() {
-        assertEquals(Stage.MIX, DagEngine.manEntryFor("ISR"));
-        assertEquals(Stage.MSX, DagEngine.manEntryFor("SBSR"));
-        assertEquals(Stage.MPX, DagEngine.manEntryFor("PBSR"));
+        assertEquals(Stage.MIX, DagEngine.entryFor(Flow.MAN, "ISR"));
+        assertEquals(Stage.MSX, DagEngine.entryFor(Flow.MAN, "SBSR"));
+        assertEquals(Stage.MPX, DagEngine.entryFor(Flow.MAN, "PBSR"));
     }
 
+    /**
+     * The v1 cutover DELETED the retained-deprecated constants (MAR, MSR, MIS, MAF)
+     * rather than keeping them parseable. A-75 kept them only because
+     * {@code agt_ops.stage_outcome.stage} is parsed with {@code Stage.valueOf} and
+     * historic rows would otherwise break the reconciler; the owner directive of
+     * 2026-08-08 dropped every DCRE database, so there are no historic rows and the
+     * constraint is gone.
+     *
+     * <p>Asserted rather than assumed, because "the enum no longer has it" is
+     * exactly the kind of claim that survives on the strength of somebody having
+     * meant to do it.
+     */
     @Test
-    void retiredStagesStayParseableForHistoricOutcomeRows() {
-        assertEquals(Stage.MAR, Stage.valueOf("MAR"));
-        assertEquals(Stage.MSR, Stage.valueOf("MSR"));
-    }
-
-    @Test
-    void retiredStagesAppearInNoDagAndAreNeverLaunchable() {
-        assertFalse(RouteDags.FINT_RESP_MAN.terminal().contains(Stage.MAR));
-        assertFalse(RouteDags.FINT_RESP_MAN.terminal().contains(Stage.MSR));
-        assertFalse(JobLauncher.LAUNCHABLE.contains(Stage.MAR));
-        assertFalse(JobLauncher.LAUNCHABLE.contains(Stage.MSR));
-        // SCRUM-107: MIS was renamed to MIT and is retained only so historic
-        // stage_outcome rows parse; it must be as unlaunchable as MAR/MSR.
-        assertFalse(JobLauncher.LAUNCHABLE.contains(Stage.MIS));
-        assertTrue(JobLauncher.LAUNCHABLE.contains(Stage.MIT));
-        assertFalse(JobLauncher.LAUNCHABLE.contains(Stage.MAF));
-        assertTrue(JobLauncher.LAUNCHABLE.contains(Stage.MAS));
+    void thePreCutoverStageNamesAreGoneEntirely() {
+        for (final String retired : new String[] {"MAR", "MSR", "MIS", "MAF", "IXR", "SXR", "PXR", "AIS"}) {
+            assertThrows(IllegalArgumentException.class, () -> Stage.valueOf(retired),
+                    "Stage." + retired + " must not exist in the v1 roster");
+        }
+        assertEquals(Stage.MIT, Stage.valueOf("MIT"), "its replacement is present");
+        assertEquals(Stage.MAS, Stage.valueOf("MAS"));
     }
 }

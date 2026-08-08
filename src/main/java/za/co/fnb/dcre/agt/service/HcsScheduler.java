@@ -30,10 +30,14 @@ public class HcsScheduler {
     @Inject
     JobLauncher launcher;
 
+    @Inject
+    StageImages stageImages;
+
     @RunOnVirtualThread
     @Scheduled(every = "10s", concurrentExecution = io.quarkus.scheduler.Scheduled.ConcurrentExecution.SKIP)
     void tick() {
-        if (!lease.holdsLease() || !config.launchEnabled() || config.hcsImage().isEmpty()) {
+        if (!lease.holdsLease() || !config.launchEnabled()
+                || stageImages.configured(Stage.HCS).isEmpty()) {
             return;
         }
         long window = window(Instant.now().getEpochSecond(), config.hcsIntervalHours());

@@ -51,13 +51,17 @@ class MrgSuspendDisabledTest {
     AgtConfig config;
 
     @Inject
+    StageImages stageImages;
+
+    @Inject
     DataSource ds;
 
     @BeforeEach
     void holdLease() {
         exec("UPDATE agt_lease SET expires_at = now() - INTERVAL '1 second'");
         assertTrue(lease.tryAcquire(config.holderId()), "test precondition: lease held");
-        assertTrue(config.mrgImage().isEmpty(), "test precondition: mrg-image unset");
+        assertTrue(stageImages.configured(za.co.fnb.dcre.agt.domain.Stage.MRG).isEmpty(),
+                "test precondition: mrg-image unset");
     }
 
     @Test

@@ -36,34 +36,96 @@ spec:
             # mandates-db-url incident (JobLauncher.CTV_MANDATES_DB_URL_ENV).
             - name: AGT_COLLECTIONS_DB_URL
               value: jdbc:postgresql://crdb:26257/dcre_col?sslmode=disable
+            # v1 topology: the PAYMENTS read seam. dcre_pay publishes views with the
+            # SAME NAMES (prg_report_due, prg_sla_pending), owned by PRG. Absent, the
+            # payments datasource falls back to the committed localhost dev default,
+            # exactly as AGT_COLLECTIONS_DB_URL did before SCRUM-107 added it.
+            - name: AGT_PAYMENTS_DB_URL
+              value: jdbc:postgresql://crdb:26257/dcre_pay?sslmode=disable
+            # The JDBC url handed to every PAYMENTS stage pod as DCRE_DB_URL. Without
+            # it those pods write dcre_col and nothing errors.
+            - name: AGT_PAY_SERVICE_DB_URL
+              value: jdbc:postgresql://crdb.dcre.svc.cluster.local:26257/dcre_pay?sslmode=disable
             - name: DCRE_EXCHANGE_ROOT
               value: /exchange
             - name: AGT_NAMESPACE
               value: dcre
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
               value: http://lgtm:4317
+            # The 29 stage images: the diagrams' roster (28 stage services plus the
+            # cross-family HCS), matching infra/dcre-infra/scripts/switch-version.sh,
+            # which sets these same variables on this deployment.
+            #
+            # PRG CHANGED MEANING at the 2026-08-08 cutover: it named the COLLECTIONS
+            # report generator (dcre-prg:m7 above) and now names the PAYMENTS one.
+            # The collections generator is CRG. Read every occurrence in context; a
+            # find-and-replace produces a manifest that applies and is inverted.
+            #
+            # Tags are the 1.x line: the v1 cutover retired the pre-cutover image
+            # names (dcre-ixr, dcre-sxr, dcre-pxr, dcre-ais, and the collections
+            # dcre-prg), so an m7 tag here would wedge the stage on ImagePullBackOff.
+            # collections
             - name: AGT_CRR_IMAGE
-              value: dcre-crr:m7
+              value: dcre-crr:1.0.0
             - name: AGT_CTV_IMAGE
-              value: dcre-ctv:m7
-            - name: AGT_CIR_IMAGE
-              value: dcre-cir:m7
+              value: dcre-ctv:1.0.0
             - name: AGT_CDE_IMAGE
-              value: dcre-cde:m7
+              value: dcre-cde:1.0.0
             - name: AGT_CRW_IMAGE
-              value: dcre-crw:m7
-            - name: AGT_IXR_IMAGE
-              value: dcre-ixr:m7
-            - name: AGT_SXR_IMAGE
-              value: dcre-sxr:m7
-            - name: AGT_PXR_IMAGE
-              value: dcre-pxr:m7
+              value: dcre-crw:1.0.0
+            - name: AGT_CIR_IMAGE
+              value: dcre-cir:1.0.0
+            - name: AGT_CIX_IMAGE
+              value: dcre-cix:1.0.0
+            - name: AGT_CSX_IMAGE
+              value: dcre-csx:1.0.0
+            - name: AGT_CPX_IMAGE
+              value: dcre-cpx:1.0.0
+            - name: AGT_CRG_IMAGE
+              value: dcre-crg:1.0.0
+            # payments
+            - name: AGT_PRR_IMAGE
+              value: dcre-prr:1.0.0
+            - name: AGT_PTV_IMAGE
+              value: dcre-ptv:1.0.0
+            - name: AGT_PAI_IMAGE
+              value: dcre-pai:1.0.0
+            - name: AGT_PRW_IMAGE
+              value: dcre-prw:1.0.0
+            - name: AGT_PIR_IMAGE
+              value: dcre-pir:1.0.0
+            - name: AGT_PIX_IMAGE
+              value: dcre-pix:1.0.0
+            - name: AGT_PSX_IMAGE
+              value: dcre-psx:1.0.0
+            - name: AGT_PPX_IMAGE
+              value: dcre-ppx:1.0.0
             - name: AGT_PRG_IMAGE
-              value: dcre-prg:m7
-            - name: AGT_AIS_IMAGE
-              value: dcre-ais:m7
+              value: dcre-prg:1.0.0
+            # mandates
+            - name: AGT_MRR_IMAGE
+              value: dcre-mrr:1.0.0
+            - name: AGT_MRV_IMAGE
+              value: dcre-mrv:1.0.0
+            - name: AGT_MAS_IMAGE
+              value: dcre-mas:1.0.0
+            - name: AGT_MIT_IMAGE
+              value: dcre-mit:1.0.0
+            - name: AGT_MIR_IMAGE
+              value: dcre-mir:1.0.0
+            - name: AGT_MRW_IMAGE
+              value: dcre-mrw:1.0.0
+            - name: AGT_MIX_IMAGE
+              value: dcre-mix:1.0.0
+            - name: AGT_MSX_IMAGE
+              value: dcre-msx:1.0.0
+            - name: AGT_MPX_IMAGE
+              value: dcre-mpx:1.0.0
+            - name: AGT_MRG_IMAGE
+              value: dcre-mrg:1.0.0
+            # cross-family
             - name: AGT_HCS_IMAGE
-              value: dcre-hcs:m7
+              value: dcre-hcs:1.0.0
           volumeMounts:
             - name: exchange
               mountPath: /exchange

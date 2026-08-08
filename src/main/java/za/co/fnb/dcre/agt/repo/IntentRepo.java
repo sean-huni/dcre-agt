@@ -275,11 +275,18 @@ public class IntentRepo {
     }
 
     /** Arrival intents for the DAG engine's intended-set. SCRUM-90: excludes the
-     *  arrival-scoped PRG IMMEDIATE report (PRG is never a DAG stage), so a late
-     *  report intent neither re-opens the DAG nor is treated as a pending stage. */
+     *  arrival-scoped IMMEDIATE report intents, so a late report intent neither
+     *  re-opens the DAG nor is treated as a pending stage.
+     *
+     *  <p>v1 topology: BOTH generators are excluded. This literal said {@code 'PRG'}
+     *  when PRG was the only report generator; PRG now means the PAYMENTS one and
+     *  CRG is the collections one. Renaming the literal alone would have made every
+     *  collections IMMEDIATE report look like a pending DAG stage, which is a
+     *  silent hang rather than a compile error, because a SQL string literal cannot
+     *  be checked against the Stage enum. */
     public List<LaunchIntent> intentsForArrival(UUID arrivalId) {
         String sql = "SELECT id, arrival_id, stage, job_name, status, run_key, attempt, namespace "
-                + "FROM launch_intent WHERE arrival_id=? AND stage <> 'PRG'";
+                + "FROM launch_intent WHERE arrival_id=? AND stage NOT IN ('CRG', 'PRG')";
         try (Connection c = ds.getConnection(); PreparedStatement p = c.prepareStatement(sql)) {
             p.setObject(1, arrivalId);
             try (ResultSet r = p.executeQuery()) {
