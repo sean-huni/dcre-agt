@@ -76,10 +76,11 @@ public class StageDatabases {
      *
      * <p>Exhaustive, no default arm: this is the single place that says which
      * database owns a stage's writes, and a new constant must be assigned one before
-     * anything compiles. {@code ACS} has no {@link Stage} yet (the service is being
-     * built as this lands); when one is added, this switch is what refuses to compile
-     * until somebody names its database, rather than a set that would absorb it into
-     * collections the way {@code HCS} was absorbed.
+     * anything compiles. That is not theoretical. {@code ACS} landed while this file
+     * was being written, and adding the constant to {@link Stage} broke THIS switch
+     * until its database was named, which is exactly the outcome a set with an
+     * "everything else" arm would have denied us: it would have absorbed the new stage
+     * into collections silently, the way {@code HCS} was absorbed.
      *
      * <p><b>HCS is its own family and no longer sits with collections.</b> It was
      * enumerated into {@code Flow.COL} here with the reasoning that it is the single
@@ -95,6 +96,7 @@ public class StageDatabases {
             case PRR, PTV, PAI, PRW, PIR, PIX, PSX, PPX, PRG -> DbFamily.PAY;
             case MRR, MRV, MAS, MIT, MIR, MRW, MIX, MSX, MPX, MRG -> DbFamily.MAN;
             case HCS -> DbFamily.HCS;
+            case ACS -> DbFamily.ACS;
         };
     }
 

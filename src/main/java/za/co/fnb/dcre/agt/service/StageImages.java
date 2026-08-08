@@ -62,6 +62,7 @@ public class StageImages {
             case MPX -> images.mpxImage();
             case MRG -> images.mrgImage();
             case HCS -> images.hcsImage();
+            case ACS -> images.acsImage();
         };
     }
 

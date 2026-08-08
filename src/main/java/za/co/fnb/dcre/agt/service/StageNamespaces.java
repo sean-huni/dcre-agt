@@ -41,7 +41,7 @@ public class StageNamespaces {
             case CRR, CTV, CDE, CRW, CIR, CIX, CSX, CPX, CRG -> Flow.COL;
             case PRR, PTV, PAI, PRW, PIR, PIX, PSX, PPX, PRG -> Flow.PAY;
             case MRR, MRV, MAS, MIT, MIR, MRW, MIX, MSX, MPX, MRG -> Flow.MAN;
-            case HCS -> Flow.COL;
+            case HCS, ACS -> Flow.COL;
         };
     }
 

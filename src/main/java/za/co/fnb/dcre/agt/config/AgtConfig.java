@@ -73,6 +73,16 @@ public interface AgtConfig {
     @WithDefault("6")
     int hcsIntervalHours();
 
+    /** ACS account-registry census clock-window length in hours (SCRUM-107).
+     *
+     *  <p>PLACEHOLDER CADENCE, needs a ruling. R-38 gives HCS six hours because the
+     *  holiday calendar changes yearly; nothing equivalent has been decided for the
+     *  account registry, whose churn rate is a business fact nobody has stated. Six
+     *  hours purely so the stage runs at all. Too slow means CTV and MRV validate
+     *  against a stale registry and reject accounts that do exist. */
+    @WithDefault("6")
+    int acsIntervalHours();
+
     /** MRG mandates-report clock-window length (M10/SCRUM-79); dev default 60s. */
     @WithDefault("60")
     long mrgIntervalSeconds();

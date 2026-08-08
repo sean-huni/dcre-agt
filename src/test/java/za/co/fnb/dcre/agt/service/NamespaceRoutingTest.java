@@ -62,18 +62,20 @@ class NamespaceRoutingTest {
     public static class RoutingProfile implements QuarkusTestProfile {
         @Override
         public Map<String, String> getConfigOverrides() {
-            return Map.of("agt.launch-enabled", "true", "agt.crr-image", "dcre-crr:test",
-                    "agt.mrr-image", "dcre-mrr:test",
-                    "agt.ctv-image", "dcre-ctv:test",
-                    "agt.prr-image", "dcre-prr:test",
-                    "agt.crg-image", "dcre-crg:test",
-                    "agt.prg-image", "dcre-prg:test",
-                    // The holiday sync needs an image or ReportWindows/HcsScheduler
-                    // treat it as launch-disabled and the HCS routing test cannot
-                    // build a Job at all: an absent Job would read as a pass in any
-                    // assertion phrased as "does not carry the collections url".
-                    "agt.hcs-image", "dcre-hcs:test",
-                    "agt.pay-clients", " fnbrf01 ");
+            // A LinkedHashMap, not Map.of: that factory caps at 10 pairs and this
+            // roster passed it. A silent cap would drop image knobs, and a stage with
+            // no image is launch-disabled, so the affected tests would find NO Job and
+            // an assertion phrased as "does not carry the wrong url" would pass on the
+            // absence.
+            final Map<String, String> overrides = new java.util.LinkedHashMap<>();
+            overrides.put("agt.launch-enabled", "true");
+            overrides.put("agt.pay-clients", " fnbrf01 ");
+            for (final String stage : java.util.List.of(
+                    "crr", "ctv", "cde", "crg", "prr", "ptv", "prg",
+                    "mrr", "mrv", "mit", "hcs", "acs")) {
+                overrides.put("agt." + stage + "-image", "dcre-" + stage + ":test");
+            }
+            return overrides;
         }
     }
 
@@ -339,6 +341,100 @@ class NamespaceRoutingTest {
                         + " pod before any DDL. Got " + dbUrlOf(hcsJob));
         assertFalse(dbUrlOf(hcsJob).contains("/dcre_col"),
                 "and it must not carry the collections url at all, got " + dbUrlOf(hcsJob));
+    }
+
+    /**
+     * The ACS census pod writes the account registry's own database.
+     *
+     * <p>ACS is a NEW stage, not a rename: {@code shared/acs} owns {@code account} and
+     * {@code account_type}, which left {@code dcre_col} and {@code dcre_man}. Its job is
+     * the HCS shape exactly (one identifying {@code window} parameter), so it is
+     * launched the same way and routed the same way, and it is hosted in the collections
+     * namespace for the same reason HCS is: no namespace of its own exists.
+     */
+    @Test
+    void theAccountCensusPodWritesTheAccountRegistryDatabase() {
+        final String runKey = "acsclock-" + suffix();
+        launcher.launchClock(za.co.fnb.dcre.agt.domain.Flow.COL, Stage.ACS, runKey,
+                java.util.List.of("window=" + runKey));
+        Job acsJob = k8s.batch().v1().jobs().inNamespace("dcre-col")
+                .withName(JobLauncher.clockJobName(za.co.fnb.dcre.agt.domain.Flow.COL, Stage.ACS, runKey)).get();
+        assertNotNull(acsJob, "ACS clock job created in dcre-col, where it is hosted");
+        assertTrue(dbUrlOf(acsJob).contains("/dcre_acs"),
+                "the account registry's single writer must address dcre_acs, got " + dbUrlOf(acsJob));
+        assertFalse(dbUrlOf(acsJob).contains("/dcre_col"), "got " + dbUrlOf(acsJob));
+        assertFalse(dbUrlOf(acsJob).contains("/dcre_man"),
+                "account/account_type left dcre_man too, got " + dbUrlOf(acsJob));
+    }
+
+    /**
+     * The five cross-context read seams, asserted on the Job specs.
+     *
+     * <p>Every one of these fails CLOSED at the consumer: cde, ctv and mrv detect
+     * KUBERNETES_SERVICE_HOST and refuse to start rather than use their localhost dev
+     * default, naming the exact variable. AGT is the only thing that sets them, so a
+     * missing arm in {@code stageEnv} is a crash-looping pod at cutover, which is
+     * precisely the failure this test exists to prevent.
+     *
+     * <p>PTV and MIT are asserted even though no committed consumer reads their
+     * variables yet (verified by grep over the spring repo: exit=1 for both, against
+     * exit=0 for the other three). Wiring them now makes the gap visible rather than
+     * discovered at rollout, and the assertion is what stops the arms being "cleaned up"
+     * as dead before the consumers land.
+     */
+    @Test
+    void everyCrossContextReadSeamIsInjectedOnItsOwnStage() {
+        record Seam(Stage stage, String route, String client, String namespace,
+                    String env, String database) { }
+        final java.util.List<Seam> seams = java.util.List.of(
+                new Seam(Stage.CDE, "onhost-req", "FNBCC01", "dcre-col",
+                        JobLauncher.CDE_HOLIDAYS_DB_URL_ENV, "/dcre_hcs"),
+                new Seam(Stage.CTV, "onhost-req", "FNBCC01", "dcre-col",
+                        JobLauncher.CTV_ACCOUNTS_DB_URL_ENV, "/dcre_acs"),
+                new Seam(Stage.MRV, "onhost-req-man", "FNBCC01", "dcre-man",
+                        JobLauncher.MRV_ACCOUNTS_DB_URL_ENV, "/dcre_acs"),
+                new Seam(Stage.PTV, "onhost-req-endo", "FNBRF01", "dcre-pay",
+                        JobLauncher.PTV_ACCOUNTS_DB_URL_ENV, "/dcre_acs"),
+                new Seam(Stage.MIT, "onhost-req-man", "FNBCC01", "dcre-man",
+                        JobLauncher.MIT_ACCOUNTS_DB_URL_ENV, "/dcre_acs"));
+
+        for (final Seam seam : seams) {
+            final UUID arrivalId = insertArrival(seam.route(), seam.client());
+            launcher.launch(arrivalId, seam.stage());
+            final Job job = k8s.batch().v1().jobs().inNamespace(seam.namespace())
+                    .withName(JobLauncher.jobName(
+                            za.co.fnb.dcre.agt.domain.Flow.valueOf(
+                                    seam.namespace().substring("dcre-".length()).toUpperCase(java.util.Locale.ROOT)),
+                            seam.stage(), arrivalId)).get();
+            assertNotNull(job, seam.stage() + " job created in " + seam.namespace());
+            final String url = envOf(job, seam.env());
+            assertTrue(url.contains(seam.database()),
+                    seam.stage() + " must receive " + seam.env() + " addressing "
+                            + seam.database() + ", or the pod refuses to start in-cluster."
+                            + " Got " + url);
+        }
+    }
+
+    /** A stage with no cross-context read carries none of the seams: they are
+     *  stage-keyed, never blanket-added to every launched pod. */
+    @Test
+    void aStageWithNoCrossContextReadCarriesNoneOfTheSeams() {
+        final UUID arrivalId = insertArrival("onhost-req", "FNBCC01");
+        launcher.launch(arrivalId, Stage.CRR);
+        final Job crrJob = k8s.batch().v1().jobs().inNamespace("dcre-col")
+                .withName(JobLauncher.jobName(za.co.fnb.dcre.agt.domain.Flow.COL, Stage.CRR, arrivalId)).get();
+        assertNotNull(crrJob, "CRR job created in dcre-col");
+        final java.util.Set<String> names = crrJob.getSpec().getTemplate().getSpec()
+                .getContainers().get(0).getEnv().stream()
+                .map(io.fabric8.kubernetes.api.model.EnvVar::getName)
+                .collect(java.util.stream.Collectors.toSet());
+        for (final String seam : java.util.List.of(
+                JobLauncher.CDE_HOLIDAYS_DB_URL_ENV, JobLauncher.CTV_ACCOUNTS_DB_URL_ENV,
+                JobLauncher.MRV_ACCOUNTS_DB_URL_ENV, JobLauncher.PTV_ACCOUNTS_DB_URL_ENV,
+                JobLauncher.MIT_ACCOUNTS_DB_URL_ENV)) {
+            assertFalse(names.contains(seam), "CRR opens no second datasource; " + seam
+                    + " must not be on its pod. Got " + names);
+        }
     }
 
     /**

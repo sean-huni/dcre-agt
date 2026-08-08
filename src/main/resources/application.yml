@@ -131,6 +131,11 @@ agt:
   crg-interval-seconds: ${AGT_CRG_INTERVAL_SECONDS:60}
   prg-interval-seconds: ${AGT_PRG_INTERVAL_SECONDS:60}
   hcs-interval-hours: ${AGT_HCS_INTERVAL_HOURS:6}
+  # PLACEHOLDER CADENCE, needs a ruling. HCS gets 6h because the holiday calendar
+  # changes yearly (R-38); nobody has stated the account registry's churn rate. Six
+  # hours purely so the census runs. Too slow means CTV and MRV validate against a
+  # stale registry and reject accounts that do exist.
+  acs-interval-hours: ${AGT_ACS_INTERVAL_HOURS:6}
   mrg-interval-seconds: ${AGT_MRG_INTERVAL_SECONDS:60}
   # SCRUM-91: expiry is a view predicate now (no sweep). Suspension moved into MRG.
   mrg-suspend-interval-seconds: ${AGT_MRG_SUSPEND_INTERVAL_SECONDS:60}

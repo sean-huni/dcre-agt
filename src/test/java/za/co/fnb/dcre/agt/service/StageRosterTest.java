@@ -34,7 +34,10 @@ class StageRosterTest {
             List.of("PRR", "PTV", "PAI", "PRW", "PIR", "PIX", "PSX", "PPX", "PRG");
     private static final List<String> MANDATES =
             List.of("MRR", "MRV", "MAS", "MIT", "MIR", "MRW", "MIX", "MSX", "MPX", "MRG");
-    private static final List<String> CROSS = List.of("HCS");
+    /** On NO sheet by design, and that is not drift: the six sheets specify the three
+     *  FAMILIES. verify-topology.sh declares acs, hcs and rpt in ALLOWED_shared and
+     *  exits 0 with them present. */
+    private static final List<String> CROSS = List.of("HCS", "ACS");
 
     @Test
     void theEnumIsExactlyTheDiagramsRoster() {
@@ -48,7 +51,8 @@ class StageRosterTest {
         assertEquals(9, COLLECTIONS.size(), "collections roster");
         assertEquals(9, PAYMENTS.size(), "payments roster");
         assertEquals(10, MANDATES.size(), "mandates roster");
-        assertEquals(29, required.size(), "28 stage services plus HCS");
+        assertEquals(2, CROSS.size(), "cross-family roster");
+        assertEquals(30, required.size(), "28 stage services plus the two cross-family contexts");
 
         final Set<String> actual = new java.util.LinkedHashSet<>();
         for (final Stage stage : Stage.values()) {
@@ -100,6 +104,8 @@ class StageRosterTest {
         // against dcre_hcs before any DDL, so every HCS pod died on startup.
         assertEquals(DbFamily.HCS, databases.dbFamily(Stage.HCS),
                 "HCS writes dcre_hcs, not the collections database it used to inherit");
+        assertEquals(DbFamily.ACS, databases.dbFamily(Stage.ACS),
+                "ACS writes dcre_acs; it is a bounded context, not a tenant of collections");
     }
 
     /**
@@ -125,7 +131,14 @@ class StageRosterTest {
         assertEquals(Flow.COL, namespaces.namespaceFamilyOf(Stage.HCS),
                 "HCS has no namespace of its own: HcsScheduler launches it into dcre-col"
                         + " and its Jobs carry the col- prefix");
+        assertEquals(Flow.COL, namespaces.namespaceFamilyOf(Stage.ACS),
+                "ACS is hosted with HCS in dcre-col for the same reason: no namespace of"
+                        + " its own has been ruled into existence, and its readers span all"
+                        + " three families so no family has a better claim");
 
+        assertNotEquals(namespaces.namespaceFamilyOf(Stage.ACS).name(),
+                new StageDatabases().dbFamily(Stage.ACS).name(),
+                "ACS, like HCS, is hosted by one family and owned by neither");
         assertNotEquals(namespaces.namespaceFamilyOf(Stage.HCS).name(),
                 new StageDatabases().dbFamily(Stage.HCS).name(),
                 "HCS is the stage whose namespace and database DISAGREE. If this ever"

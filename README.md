@@ -88,6 +88,7 @@ AGT resolves `agt.exchange-root` (default `../../../../../infra/dcre-infra/excha
 | `AGT_CRG_INTERVAL_SECONDS` | `60` | CRG collections-report clock-window length |
 | `AGT_PRG_INTERVAL_SECONDS` | `60` | PRG payments-report clock-window length. Its own knob, not shared with CRG: collections transaction lists are processed ON the collection day and payments transactions IMMEDIATELY, so the two cadences have no reason to move together |
 | `AGT_HCS_INTERVAL_HOURS` | `6` | HCS holiday-sync re-sync cadence |
+| `AGT_ACS_INTERVAL_HOURS` | `6` | ACS account-registry census cadence. **Placeholder, needs a ruling**: HCS gets 6h because the holiday calendar changes yearly (R-38); nobody has stated the account registry's churn rate. Too slow means CTV and MRV validate against a stale registry and reject accounts that do exist |
 | `AGT_MRG_INTERVAL_SECONDS` | `60` | MRG mandates-report clock-window length |
 | `AGT_MRG_SUSPEND_INTERVAL_SECONDS` | `60` | MRG suspension-sweep clock-window length (SCRUM-91); mandate expiry is a view predicate and has no sweep |
 | `AGT_COLLECTIONS_DB_URL` | `jdbc:postgresql://localhost:26257/dcre_col?sslmode=disable` | AGT's own read-only window into `dcre_col` (`prg_report_due`, `prg_sla_pending`, `crw_emission_owed`) |
@@ -95,7 +96,27 @@ AGT resolves `agt.exchange-root` (default `../../../../../infra/dcre-infra/excha
 | `AGT_SERVICE_DB_URL` | `jdbc:postgresql://crdb.dcre.svc.cluster.local:26257/dcre_col?sslmode=disable` | JDBC URL handed to launched COLLECTIONS stage Jobs for `dcre_col` (FQDN: stage pods run in the flow namespaces, where the short `crdb` name does not resolve). It is NOT handed to HCS any more; see `AGT_HCS_SERVICE_DB_URL` |
 | `AGT_PAY_SERVICE_DB_URL` | `jdbc:postgresql://crdb.dcre.svc.cluster.local:26257/dcre_pay?sslmode=disable` | JDBC URL handed to launched PAYMENTS stage Jobs. Without it every payments stage receives the collections URL and builds the payments schema inside `dcre_col` without erroring, because the write is perfectly valid against the wrong database (`StageDatabases` resolves the five families with no default arm) |
 | `AGT_HCS_SERVICE_DB_URL` | `jdbc:postgresql://crdb.dcre.svc.cluster.local:26257/dcre_hcs?sslmode=disable` | JDBC URL handed to the HCS holiday-sync Job. Owner ruling 2026-08-08: holiday data in `dcre_col` is a 12FactorApp violation (https://12factor.net/), so the calendar owns its own context and database. HCS previously received `AGT_SERVICE_DB_URL`, because one enum named both the NAMESPACE a stage runs in and the DATABASE it writes, and HCS runs in `dcre-col`. `shared/hcs` now carries a `FamilyGuard` comparing `current_database()` against `dcre_hcs` before any DDL, so with the old routing **every HCS pod dies on startup** |
-| `AGT_ACS_SERVICE_DB_URL` | `jdbc:postgresql://crdb.dcre.svc.cluster.local:26257/dcre_acs?sslmode=disable` | JDBC URL for the `acs` account-registry context. No `Stage` maps here yet: `shared/acs` is being built, and minting the stage (image knob, launch entry, scheduler) is that build's decision. The routing exists ahead of it so that adding the constant FAILS the `StageDatabases`/`StageNamespaces` switches until somebody names its database and namespace, instead of a set absorbing it into collections the way HCS was absorbed |
+| `AGT_ACS_SERVICE_DB_URL` | `jdbc:postgresql://crdb.dcre.svc.cluster.local:26257/dcre_acs?sslmode=disable` | JDBC URL for the `acs` account-registry context. Handed to the ACS census Job as its primary `DCRE_DB_URL`, AND to four other stages as their read-only account seam: CTV (`DCRE_CTV_ACCOUNTS_DB_URL`), MRV (`DCRE_MRV_ACCOUNTS_DB_URL`), and reserved for PTV and MIT. So this value is load-bearing on all three families, not just on ACS |
+
+### Second-datasource seams AGT injects (cross-context reads)
+
+Each of these is a read-only window from one stage into another bounded context's
+published views. **Every one fails CLOSED at the consumer**: `cde`, `ctv` and `mrv`
+detect `KUBERNETES_SERVICE_HOST` and refuse to start rather than fall back to their
+committed localhost default, naming the exact variable. AGT is the only thing that
+sets them, so a missing arm in `JobLauncher.stageEnv` is a crash-looping pod.
+
+| Injected on | Variable | Points at | Consumer status |
+|---|---|---|---|
+| `CDE` | `DCRE_CDE_HOLIDAYS_DB_URL` | `dcre_hcs` | Live: `cde` reads the holiday calendar it fail-closes without |
+| `CTV` | `DCRE_CTV_ACCOUNTS_DB_URL` | `dcre_acs` | Live: `acc_ctv_view` account tier |
+| `CTV` | `DCRE_CTV_MANDATES_DB_URL` | `dcre_man` | Live: `man_ctv_view` projection gate |
+| `MRV` | `DCRE_MRV_ACCOUNTS_DB_URL` | `dcre_acs` | Live: `acc_mrv_view`, `FAIL_ACCOUNT_NOT_FOUND` |
+| `PTV` | `DCRE_PTV_ACCOUNTS_DB_URL` | `dcre_acs` | **UNWIRED**: no committed code reads this yet; `ptv` still reads accounts directly and that read is being fixed |
+| `MIT` | `DCRE_MIT_ACCOUNTS_DB_URL` | `dcre_acs` | **UNWIRED**: no committed code reads this yet; `mit` still WRITES accounts directly, which a read-only datasource cannot fix on its own |
+
+Per-role `SELECT` grants on the PUBLISHED VIEWS only, never the base tables, are
+required for these seams and are an infra task. AGT does not and must not apply them.
 | `AGT_MAN_SERVICE_DB_URL` | `jdbc:postgresql://crdb.dcre.svc.cluster.local:26257/dcre_man?sslmode=disable` | JDBC URL for `dcre_man`; the DB URL follows the stage's flow family. Handed to the M10 mandates stage Jobs (`MRR`..`MRG`) as their primary DB, AND to every CTV stage pod as `DCRE_CTV_MANDATES_DB_URL` for CTV's second, read-only projection datasource: CTV stays on `dcre_col` primarily, so it reuses this knob rather than a second URL to keep in step. CTV fails at startup in-cluster if that variable is unset, so this value is load-bearing on the collections flow too |
 | `AGT_CTV_MANDATE_SOURCE` | `projection` | Which mandate store CTV's DC-flow gate reads, handed to every CTV stage pod as `DCRE_CTV_MANDATE_SOURCE` (SCRUM-107). The vocabulary is `projection` only: it reads `man_ctv_view` in `dcre_man`, and the `dcre_col.mandate` table the retired `legacy` value selected has been dropped. CTV FAILS CLOSED on `legacy`, so handing that value to a stage pod stops the pod from starting rather than degrading to a different gate. The token is carried verbatim and never interpreted here: CTV owns the vocabulary |
 | `AGT_REPORT_STALL_SCANS` | `20` | Bounded-attempt guard on the IMMEDIATE report trigger: consecutive scans that may see the same (flow, client, parent) still due before AGT WARNs. It makes a silent loop VISIBLE; it never retries, widens or falls back |

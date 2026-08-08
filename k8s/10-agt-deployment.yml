@@ -137,6 +137,13 @@ spec:
             # cross-family
             - name: AGT_HCS_IMAGE
               value: dcre-hcs:1.0.0
+            # SCRUM-107: the second cross-family shared context. NOTE FOR INFRA:
+            # switch-version.sh has STAGES_CROSS="HCS" and does not know about ACS,
+            # so it will not export this variable. Set here, and the script needs the
+            # same edit or the census stage stays launch-disabled (empty image =
+            # SCRUM-33 launch-disabled, which is silent by design).
+            - name: AGT_ACS_IMAGE
+              value: dcre-acs:1.0.0
           volumeMounts:
             - name: exchange
               mountPath: /exchange
