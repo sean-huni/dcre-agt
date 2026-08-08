@@ -35,9 +35,11 @@ class StageRosterTest {
     private static final List<String> MANDATES =
             List.of("MRR", "MRV", "MAS", "MIT", "MIR", "MRW", "MIX", "MSX", "MPX", "MRG");
     /** On NO sheet by design, and that is not drift: the six sheets specify the three
-     *  FAMILIES. verify-topology.sh declares acs, hcs and rpt in ALLOWED_shared and
-     *  exits 0 with them present. */
-    private static final List<String> CROSS = List.of("HCS", "ACS");
+     *  FAMILIES. verify-topology.sh declares hcs and rpt in ALLOWED_shared and exits 0
+     *  with them present. {@code acs} is deliberately NOT in ALLOWED_shared: the
+     *  directory was retired on 2026-08-09 and a resurrected one is reported UNDECLARED
+     *  rather than accepted. */
+    private static final List<String> CROSS = List.of("HCS");
 
     @Test
     void theEnumIsExactlyTheDiagramsRoster() {
@@ -51,8 +53,8 @@ class StageRosterTest {
         assertEquals(9, COLLECTIONS.size(), "collections roster");
         assertEquals(9, PAYMENTS.size(), "payments roster");
         assertEquals(10, MANDATES.size(), "mandates roster");
-        assertEquals(2, CROSS.size(), "cross-family roster");
-        assertEquals(30, required.size(), "28 stage services plus the two cross-family contexts");
+        assertEquals(1, CROSS.size(), "cross-family roster");
+        assertEquals(29, required.size(), "28 stage services plus the one cross-family context");
 
         final Set<String> actual = new java.util.LinkedHashSet<>();
         for (final Stage stage : Stage.values()) {
@@ -104,8 +106,43 @@ class StageRosterTest {
         // against dcre_hcs before any DDL, so every HCS pod died on startup.
         assertEquals(DbFamily.HCS, databases.dbFamily(Stage.HCS),
                 "HCS writes dcre_hcs, not the collections database it used to inherit");
-        assertEquals(DbFamily.ACS, databases.dbFamily(Stage.ACS),
-                "ACS writes dcre_acs; it is a bounded context, not a tenant of collections");
+    }
+
+    /**
+     * The retired account context, guarded by NAME on both enums.
+     *
+     * <p>{@code shared/acs} and {@code dcre_acs} were retired on 2026-08-09 in favour of
+     * one immutable versioned artifact each context materialises locally. This is a
+     * tripwire, not bookkeeping: the design it replaces was built on 2026-08-08 and is
+     * one revert away, it is still described at length in several READMEs where a reader
+     * could mistake the description for the design, and an {@code ACS} stage with no
+     * image is launch-disabled SILENTLY (SCRUM-33), so a resurrection would produce a
+     * census that never runs and says nothing. A forbidden literal has no failure mode of
+     * its own: it costs one string and can only ever fail the build.
+     */
+    @Test
+    void noStageCarriesTheRetiredAccountContext() {
+        for (final Stage stage : Stage.values()) {
+            assertNotEquals("ACS", stage.name(),
+                    "shared/acs was retired on 2026-08-09; an ACS stage has no image and no"
+                            + " service, and an unset image is launch-disabled silently");
+        }
+        // Control: the loop really reads the constants, so the absence above is a fact
+        // about the enum rather than about a loop that iterated nothing.
+        assertTrue(java.util.Arrays.stream(Stage.values()).anyMatch(s -> s.name().equals("HCS")),
+                "control: the Stage walk finds a constant that IS present");
+    }
+
+    /** Separate from the stage tripwire: one control per test, so losing either is visible. */
+    @Test
+    void noDatabaseFamilyCarriesTheRetiredAccountContext() {
+        for (final DbFamily family : DbFamily.values()) {
+            assertNotEquals("dcre_acs", family.database(),
+                    "dcre_acs is retired and infra no longer creates it; a family addressing"
+                            + " it hands every pod a database that does not exist");
+        }
+        assertTrue(java.util.Arrays.stream(DbFamily.values()).anyMatch(f -> f.database().equals("dcre_hcs")),
+                "control: the DbFamily walk finds a database that IS present");
     }
 
     /**
@@ -131,14 +168,7 @@ class StageRosterTest {
         assertEquals(Flow.COL, namespaces.namespaceFamilyOf(Stage.HCS),
                 "HCS has no namespace of its own: HcsScheduler launches it into dcre-col"
                         + " and its Jobs carry the col- prefix");
-        assertEquals(Flow.COL, namespaces.namespaceFamilyOf(Stage.ACS),
-                "ACS is hosted with HCS in dcre-col for the same reason: no namespace of"
-                        + " its own has been ruled into existence, and its readers span all"
-                        + " three families so no family has a better claim");
 
-        assertNotEquals(namespaces.namespaceFamilyOf(Stage.ACS).name(),
-                new StageDatabases().dbFamily(Stage.ACS).name(),
-                "ACS, like HCS, is hosted by one family and owned by neither");
         assertNotEquals(namespaces.namespaceFamilyOf(Stage.HCS).name(),
                 new StageDatabases().dbFamily(Stage.HCS).name(),
                 "HCS is the stage whose namespace and database DISAGREE. If this ever"

@@ -14,17 +14,25 @@ package za.co.fnb.dcre.agt.domain;
  * <p>The owner's 2026-08-08 ruling, in his words a "Violation of the 12FactorApp"
  * (https://12factor.net/): holiday data must never live in {@code dcre_col}, and
  * cross-family reference data gets its own bounded context and its own database.
- * {@code hcs} and {@code acs} are contexts in their own right on all three tests
- * (distinct invariants, distinct rate of change, distinct failure domains), so they
- * are families here rather than tenants of somebody else's database.
+ * {@code hcs} is a context in its own right on all three tests (distinct invariants,
+ * distinct rate of change, distinct failure domain), so it is a family here rather
+ * than a tenant of somebody else's database.
  *
  * <pre>
  * dcre_col   collections   CRR CTV CDE CRW CIR CIX CSX CPX CRG
  * dcre_pay   payments      PRR PTV PAI PRW PIR PIX PSX PPX PRG
  * dcre_man   mandates      MRR MRV MAS MIT MIR MRW MIX MSX MPX MRG
  * dcre_hcs   hcs           public_holiday
- * dcre_acs   acs           account
  * </pre>
+ *
+ * <p><b>A shared reference database is NOT automatically a bounded context.</b>
+ * {@code dcre_acs} was a fifth value here for one day and was retired on 2026-08-09:
+ * it had no authoritative source, no accountable owner, no ingestion of its own and no
+ * freshness contract, which made it a shared integration database wearing the costume
+ * of a context. Account reference rows now travel as ONE immutable versioned artifact
+ * and each consuming context materialises its OWN projection into its OWN database.
+ * The three tests above are the bar for minting a value here, and passing "it is
+ * reference data, so it is shared" off as passing them is what has to be refused.
  *
  * <p>{@code agt_ops} is the sixth database in the owner's table and is deliberately
  * NOT a value here: it is AGT's own, it is not sharded by family, and every stage pod
@@ -54,10 +62,7 @@ public enum DbFamily {
     MAN("dcre_man"),
 
     /** The holiday calendar context; {@code hcs} is its only writer (R-04). */
-    HCS("dcre_hcs"),
-
-    /** The account registry context; {@code acs} is its only writer (R-04). */
-    ACS("dcre_acs");
+    HCS("dcre_hcs");
 
     private final String database;
 

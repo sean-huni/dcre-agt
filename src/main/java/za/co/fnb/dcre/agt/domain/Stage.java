@@ -1,8 +1,8 @@
 package za.co.fnb.dcre.agt.domain;
 
 /**
- * The VERSION 1 stage roster: 28 stage services across three families plus the two
- * cross-family shared contexts, HCS and ACS. THE DIAGRAMS ARE THE SPECIFICATION
+ * The VERSION 1 stage roster: 28 stage services across three families plus the one
+ * cross-family shared context, HCS. THE DIAGRAMS ARE THE SPECIFICATION
  * (design-register/docs/diagrams, R-49) for the three FAMILIES; this enum is a
  * transcription of them plus the cross-family services, which appear on no sheet by
  * design and are declared in {@code verify-topology.sh}'s {@code ALLOWED_shared}.
@@ -11,7 +11,7 @@ package za.co.fnb.dcre.agt.domain;
  * collections  CRR CTV CDE CRW CIR   CIX CSX CPX   CRG
  * payments     PRR PTV PAI PRW PIR   PIX PSX PPX   PRG
  * mandates     MRR MRV MAS MIT MIR MRW   MIX MSX MPX   MRG
- * cross-family HCS ACS
+ * cross-family HCS
  * </pre>
  *
  * <p><b>PRG IS THE PAYMENTS REPORT GENERATOR.</b> Before the 2026-08-08 cutover the
@@ -39,18 +39,23 @@ public enum Stage {
     /** Mandates: MRR -> MRV -> MAS -> MIT -> {MIR, MRW}, the three leg readers, and MRG. */
     MRR, MRV, MAS, MIT, MIR, MRW, MIX, MSX, MPX, MRG,
 
-    /** Cross-family holiday-calendar sync (R-38): on no sheet, single writer of public_holiday. */
-    HCS,
-
     /**
-     * Cross-family account-registry census (SCRUM-107): on no sheet, single writer of
-     * {@code account} / {@code account_type} in {@code dcre_acs}.
+     * Cross-family holiday-calendar sync (R-38): on no sheet, single writer of
+     * {@code public_holiday}.
      *
      * <p><b>Absence from the sheets is not drift.</b> The six sheets specify the three
-     * FAMILIES; HCS, ACS and RPT are cross-family services by design and appear on none
-     * of them. {@code verify-topology.sh} declares all three in {@code ALLOWED_shared}
-     * and exits 0. Read the sheets for what a family contains, never for whether a
-     * cross-family service should exist.
+     * FAMILIES; HCS and RPT are cross-family services by design and appear on neither.
+     * {@code verify-topology.sh} declares both in {@code ALLOWED_shared} and exits 0.
+     * Read the sheets for what a family contains, never for whether a cross-family
+     * service should exist.
+     *
+     * <p>HCS is the ONLY cross-family stage. An {@code ACS} constant sat beside it for
+     * one day: {@code shared/acs} and {@code dcre_acs} were retired on 2026-08-09 in
+     * favour of one immutable versioned artifact that each context materialises locally,
+     * so there is no ACS image, no ACS service and nothing for a census to write. The
+     * enum is the roster; a constant with no service behind it mints launch intents for
+     * a stage that can never run, and an unset image is launch-disabled SILENTLY by
+     * design (SCRUM-33), so nothing would have said why.
      */
-    ACS
+    HCS
 }

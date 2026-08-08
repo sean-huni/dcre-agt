@@ -101,25 +101,6 @@ public class JobLauncher {
      *  start in-cluster without it, naming this variable. */
     public static final String CDE_HOLIDAYS_DB_URL_ENV = "DCRE_CDE_HOLIDAYS_DB_URL";
 
-    /** Env var carrying the dcre_acs url to CTV's account tier (acc_ctv_view). CTV's
-     *  THIRD datasource: dcre_col primary, dcre_man projection, dcre_acs accounts. */
-    public static final String CTV_ACCOUNTS_DB_URL_ENV = "DCRE_CTV_ACCOUNTS_DB_URL";
-
-    /** Env var carrying the dcre_acs url to MRV's account tier (acc_mrv_view), for
-     *  FAIL_ACCOUNT_NOT_FOUND. account/account_type left dcre_man for the acs context. */
-    public static final String MRV_ACCOUNTS_DB_URL_ENV = "DCRE_MRV_ACCOUNTS_DB_URL";
-
-    /** Env var reserved for PTV's account tier. NO COMMITTED CONSUMER READS IT YET:
-     *  ptv still reads accounts directly and that read is being fixed. Injected now so
-     *  the gap is visible rather than discovered at rollout. */
-    public static final String PTV_ACCOUNTS_DB_URL_ENV = "DCRE_PTV_ACCOUNTS_DB_URL";
-
-    /** Env var reserved for MIT's account tier. NO COMMITTED CONSUMER READS IT YET:
-     *  mit still WRITES accounts directly, which is the more serious of the two open
-     *  items, since a write across a context boundary cannot be fixed by a read-only
-     *  datasource alone. Injected now for the same reason as PTV's. */
-    public static final String MIT_ACCOUNTS_DB_URL_ENV = "DCRE_MIT_ACCOUNTS_DB_URL";
-
     /** Reserved durable-arg prefix carrying a pod env var rather than a Spring
      *  Batch program arg (SCRUM-78). Encoding sweep env into the durable launch
      *  args means the intent row alone rebuilds the same Job on a reconciled
@@ -159,7 +140,7 @@ public class JobLauncher {
                     Stage.PIX, Stage.PSX, Stage.PPX, Stage.PRG,
                     Stage.MRR, Stage.MRV, Stage.MAS, Stage.MIT, Stage.MIR, Stage.MRW,
                     Stage.MIX, Stage.MSX, Stage.MPX, Stage.MRG,
-                    Stage.HCS, Stage.ACS));
+                    Stage.HCS));
 
     /** Whole-file responder stages: carry the A-45 arrival identity params and
      *  the rejecting validator's outcome.hint. One per family: CIR, PIR, MIR. */
@@ -510,33 +491,35 @@ public class JobLauncher {
     }
 
     /**
-     * Stage-keyed extra pod env: the SECOND (and third) read-only datasources a stage
-     * opens onto another bounded context, plus the CTV gate's source token.
+     * Stage-keyed extra pod env: the SECOND read-only datasource a stage opens onto
+     * another bounded context, plus the CTV gate's source token.
      *
-     * <p>Each of these fails CLOSED at the consumer when unset in-cluster: cde, ctv and
-     * mrv all detect {@code KUBERNETES_SERVICE_HOST} and refuse to start rather than
+     * <p>Each of these fails CLOSED at the consumer when unset in-cluster: cde and ctv
+     * both detect {@code KUBERNETES_SERVICE_HOST} and refuse to start rather than
      * silently using their committed localhost dev default, naming the exact variable
      * in the message. So a stage missing from this switch is a crash-looping pod, not a
      * wrong answer. That is the good failure mode and it is why the arms below are
      * worth more than they look: AGT is the only thing that sets them.
      *
-     * <p>CTV carries three: the dcre_man url of its projection datasource
+     * <p>CTV carries two: the dcre_man url of its projection datasource
      * (CTV_MANDATES_DB_URL_ENV), reusing the same manServiceDbUrl knob every man stage
-     * pod gets rather than a second knob to keep in step; WHICH store the gate reads
+     * pod gets rather than a second knob to keep in step; and WHICH store the gate reads
      * (CTV_MANDATE_SOURCE_ENV) from agt.ctv-mandate-source, because pointing CTV at
      * dcre_man was never enough on its own (without the token the pod stayed on ctv's
-     * old default and never opened that datasource at all); and now the dcre_acs url of
-     * its account tier, since {@code account} left dcre_col for the acs context.
+     * old default and never opened that datasource at all).
      *
-     * <p><b>PTV and MIT are wired here BEFORE their consumers read them.</b> Neither
-     * variable appears in committed code today: verified with grep over the spring repo,
-     * exit=1 for both against exit=0 for the other three. They are declared anyway so
-     * the gap is visible now rather than discovered at rollout, and so the day those two
-     * services move off their direct cross-database read/write, the pod already has the
-     * url. An env var no process reads costs nothing; a missing one costs a crash loop.
+     * <p><b>There is no account seam here, and its absence is the decision.</b> Four
+     * account-tier urls pointing at {@code dcre_acs} were injected on 2026-08-08, one
+     * live (CTV) and three ahead of any consumer (MRV, PTV, MIT). {@code shared/acs} and
+     * {@code dcre_acs} were retired on 2026-08-09: account reference rows travel as one
+     * immutable versioned artifact and each context materialises its OWN projection into
+     * its OWN database, so ctv reads {@code dcre_col.account} over its PRIMARY datasource
+     * and needs no second seam for it. An env var no process reads is not free when the
+     * database it names does not exist: it documents a cross-context read that must not
+     * happen, and a pod that finds it can only use it to reach a database nothing creates.
      *
      * <p><b>The default arm is safe here, unlike in StageDatabases.</b> "This stage
-     * opens no second datasource" is the correct answer for 25 of the 30 stages, and a
+     * opens no second datasource" is the correct answer for 27 of the 29 stages, and a
      * stage that DOES need one and is forgotten fails closed at the consumer with the
      * variable named. Contrast the routing switches, where a default arm gave a
      * well-formed WRONG answer that nothing could observe. Same shape, opposite risk,
@@ -552,16 +535,9 @@ public class JobLauncher {
         return switch (stage) {
             case CTV -> java.util.List.of(
                     new EnvVar(CTV_MANDATES_DB_URL_ENV, config.manServiceDbUrl(), null),
-                    new EnvVar(CTV_MANDATE_SOURCE_ENV, config.ctvMandateSource(), null),
-                    new EnvVar(CTV_ACCOUNTS_DB_URL_ENV, config.acsServiceDbUrl(), null));
+                    new EnvVar(CTV_MANDATE_SOURCE_ENV, config.ctvMandateSource(), null));
             case CDE -> java.util.List.of(
                     new EnvVar(CDE_HOLIDAYS_DB_URL_ENV, config.hcsServiceDbUrl(), null));
-            case MRV -> java.util.List.of(
-                    new EnvVar(MRV_ACCOUNTS_DB_URL_ENV, config.acsServiceDbUrl(), null));
-            case PTV -> java.util.List.of(
-                    new EnvVar(PTV_ACCOUNTS_DB_URL_ENV, config.acsServiceDbUrl(), null));
-            case MIT -> java.util.List.of(
-                    new EnvVar(MIT_ACCOUNTS_DB_URL_ENV, config.acsServiceDbUrl(), null));
             default -> java.util.List.of();
         };
     }

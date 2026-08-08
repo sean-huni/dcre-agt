@@ -131,11 +131,6 @@ agt:
   crg-interval-seconds: ${AGT_CRG_INTERVAL_SECONDS:60}
   prg-interval-seconds: ${AGT_PRG_INTERVAL_SECONDS:60}
   hcs-interval-hours: ${AGT_HCS_INTERVAL_HOURS:6}
-  # PLACEHOLDER CADENCE, needs a ruling. HCS gets 6h because the holiday calendar
-  # changes yearly (R-38); nobody has stated the account registry's churn rate. Six
-  # hours purely so the census runs. Too slow means CTV and MRV validate against a
-  # stale registry and reject accounts that do exist.
-  acs-interval-hours: ${AGT_ACS_INTERVAL_HOURS:6}
   mrg-interval-seconds: ${AGT_MRG_INTERVAL_SECONDS:60}
   # SCRUM-91: expiry is a view predicate now (no sweep). Suspension moved into MRG.
   mrg-suspend-interval-seconds: ${AGT_MRG_SUSPEND_INTERVAL_SECONDS:60}
@@ -158,11 +153,11 @@ agt:
   # refuses to start unless current_database() is dcre_hcs, so without this knob
   # every HCS pod dies on startup.
   hcs-service-db-url: ${AGT_HCS_SERVICE_DB_URL:jdbc:postgresql://crdb.dcre.svc.cluster.local:26257/dcre_hcs?sslmode=disable}
-  # The account registry, the second cross-family reference context. No Stage maps
-  # here yet (shared/acs is being built); the routing exists ahead of the stage so
-  # that adding the constant FAILS the StageDatabases/StageNamespaces switches until
-  # somebody names its database and namespace, rather than defaulting to collections.
-  acs-service-db-url: ${AGT_ACS_SERVICE_DB_URL:jdbc:postgresql://crdb.dcre.svc.cluster.local:26257/dcre_acs?sslmode=disable}
+  # HCS is the ONLY cross-family reference context. An acs-service-db-url knob sat
+  # here for one day: shared/acs and dcre_acs were retired on 2026-08-09 because the
+  # database had no authoritative source, no owner, no ingestion and no freshness
+  # contract. Account reference rows travel as one immutable versioned artifact and
+  # each context materialises its own projection, so no knob points at dcre_acs.
   # SCRUM-107: the mandate store CTV's DC-flow gate reads, handed to every CTV
   # stage pod as DCRE_CTV_MANDATE_SOURCE. Default `projection` mirrors ctv's own
   # application.yml default: dcre_man man_ctv_view is the authority, and the

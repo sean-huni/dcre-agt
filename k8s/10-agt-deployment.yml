@@ -53,10 +53,11 @@ spec:
             # quietly rebuilding the calendar in the collections database.
             - name: AGT_HCS_SERVICE_DB_URL
               value: jdbc:postgresql://crdb.dcre.svc.cluster.local:26257/dcre_hcs?sslmode=disable
-            # No Stage maps to ACS yet (shared/acs is being built); set here so the
-            # database exists in the deployment's vocabulary the day the stage lands.
-            - name: AGT_ACS_SERVICE_DB_URL
-              value: jdbc:postgresql://crdb.dcre.svc.cluster.local:26257/dcre_acs?sslmode=disable
+            # HCS is the only cross-family reference context. AGT_ACS_SERVICE_DB_URL sat
+            # here for one day and was removed on 2026-08-09 with shared/acs and
+            # dcre_acs: the account reference travels as one immutable versioned
+            # artifact that each context materialises locally, and infra no longer
+            # creates that database.
             - name: DCRE_EXCHANGE_ROOT
               value: /exchange
             - name: AGT_NAMESPACE
@@ -137,13 +138,6 @@ spec:
             # cross-family
             - name: AGT_HCS_IMAGE
               value: dcre-hcs:1.0.0
-            # SCRUM-107: the second cross-family shared context. NOTE FOR INFRA:
-            # switch-version.sh has STAGES_CROSS="HCS" and does not know about ACS,
-            # so it will not export this variable. Set here, and the script needs the
-            # same edit or the census stage stays launch-disabled (empty image =
-            # SCRUM-33 launch-disabled, which is silent by design).
-            - name: AGT_ACS_IMAGE
-              value: dcre-acs:1.0.0
           volumeMounts:
             - name: exchange
               mountPath: /exchange

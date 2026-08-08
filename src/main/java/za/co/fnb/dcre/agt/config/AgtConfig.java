@@ -73,16 +73,6 @@ public interface AgtConfig {
     @WithDefault("6")
     int hcsIntervalHours();
 
-    /** ACS account-registry census clock-window length in hours (SCRUM-107).
-     *
-     *  <p>PLACEHOLDER CADENCE, needs a ruling. R-38 gives HCS six hours because the
-     *  holiday calendar changes yearly; nothing equivalent has been decided for the
-     *  account registry, whose churn rate is a business fact nobody has stated. Six
-     *  hours purely so the stage runs at all. Too slow means CTV and MRV validate
-     *  against a stale registry and reject accounts that do exist. */
-    @WithDefault("6")
-    int acsIntervalHours();
-
     /** MRG mandates-report clock-window length (M10/SCRUM-79); dev default 60s. */
     @WithDefault("60")
     long mrgIntervalSeconds();
@@ -130,18 +120,6 @@ public interface AgtConfig {
      *  the collections database. This knob is the fix. */
     @WithDefault("jdbc:postgresql://crdb.dcre.svc.cluster.local:26257/dcre_hcs?sslmode=disable")
     String hcsServiceDbUrl();
-
-    /** JDBC url the ACS account-registry Job uses for dcre_acs (owner ruling 2026-08-08).
-     *
-     *  <p>ACS has no {@link za.co.fnb.dcre.agt.domain.Stage} yet: shared/acs is being
-     *  built as this lands, and minting the stage is that build's decision (it needs an
-     *  image knob, a launch entry and a scheduler, not just a url). The ROUTING exists
-     *  ahead of it deliberately, so that adding the stage constant fails the
-     *  StageDatabases and StageNamespaces switches until somebody names its database
-     *  and its namespace, instead of a set quietly absorbing it into collections the way
-     *  HCS was absorbed. */
-    @WithDefault("jdbc:postgresql://crdb.dcre.svc.cluster.local:26257/dcre_acs?sslmode=disable")
-    String acsServiceDbUrl();
 
     /** Which mandate store CTV's DC-flow gate reads (SCRUM-107).
      *  Handed to every CTV stage pod as DCRE_CTV_MANDATE_SOURCE. Values are ctv's

@@ -96,6 +96,4 @@ public interface AgtImages {
     // ---- cross-family ----
 
     Optional<String> hcsImage();
-
-    Optional<String> acsImage();
 }

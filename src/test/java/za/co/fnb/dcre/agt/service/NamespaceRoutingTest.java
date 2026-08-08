@@ -72,7 +72,7 @@ class NamespaceRoutingTest {
             overrides.put("agt.pay-clients", " fnbrf01 ");
             for (final String stage : java.util.List.of(
                     "crr", "ctv", "cde", "crg", "prr", "ptv", "prg",
-                    "mrr", "mrv", "mit", "hcs", "acs")) {
+                    "mrr", "mrv", "mit", "hcs")) {
                 overrides.put("agt." + stage + "-image", "dcre-" + stage + ":test");
             }
             return overrides;
@@ -264,26 +264,25 @@ class NamespaceRoutingTest {
     }
 
     /**
-     * ALL FIVE service databases, asserted over {@link DbFamily} rather than over the
+     * ALL FOUR service databases, asserted over {@link DbFamily} rather than over the
      * stages that happen to exist.
      *
      * <p>It used to iterate stages and assert "three distinct databases". That shape
-     * is blind to a family with no stage yet (ACS has none today) and, worse, it
-     * expressed the expected count as a number the reader could bump without deciding
-     * anything. The expectation is now a literal map of family to database: a family
-     * ADDED to the enum fails the size assertion until it is named here, and a family
-     * MISROUTED fails its own row. A fixture whose rows all share a value cannot
-     * exercise what that value drives, which is exactly how the previous three-family
-     * version stayed green while HCS was routed to the collections database.
+     * is blind to a family with no stage yet and, worse, it expressed the expected count
+     * as a number the reader could bump without deciding anything. The expectation is now
+     * a literal map of family to database: a family ADDED to the enum fails the size
+     * assertion until it is named here, and a family MISROUTED fails its own row. A
+     * fixture whose rows all share a value cannot exercise what that value drives, which
+     * is exactly how the previous three-family version stayed green while HCS was routed
+     * to the collections database.
      */
     @Test
-    void everyServiceDatabaseIsRoutedToItsOwnFamilyAndAllFiveAreDistinct() {
+    void everyServiceDatabaseIsRoutedToItsOwnFamilyAndAllFourAreDistinct() {
         final java.util.Map<DbFamily, String> expected = new java.util.EnumMap<>(DbFamily.class);
         expected.put(DbFamily.COL, "/dcre_col");
         expected.put(DbFamily.PAY, "/dcre_pay");
         expected.put(DbFamily.MAN, "/dcre_man");
         expected.put(DbFamily.HCS, "/dcre_hcs");
-        expected.put(DbFamily.ACS, "/dcre_acs");
         assertEquals(DbFamily.values().length, expected.size(),
                 "a family added to DbFamily must be named here deliberately, with the database"
                         + " it owns; absent from this map it would be routed by nothing and"
@@ -344,43 +343,19 @@ class NamespaceRoutingTest {
     }
 
     /**
-     * The ACS census pod writes the account registry's own database.
+     * The two cross-context read seams, asserted on the Job specs.
      *
-     * <p>ACS is a NEW stage, not a rename: {@code shared/acs} owns {@code account} and
-     * {@code account_type}, which left {@code dcre_col} and {@code dcre_man}. Its job is
-     * the HCS shape exactly (one identifying {@code window} parameter), so it is
-     * launched the same way and routed the same way, and it is hosted in the collections
-     * namespace for the same reason HCS is: no namespace of its own exists.
-     */
-    @Test
-    void theAccountCensusPodWritesTheAccountRegistryDatabase() {
-        final String runKey = "acsclock-" + suffix();
-        launcher.launchClock(za.co.fnb.dcre.agt.domain.Flow.COL, Stage.ACS, runKey,
-                java.util.List.of("window=" + runKey));
-        Job acsJob = k8s.batch().v1().jobs().inNamespace("dcre-col")
-                .withName(JobLauncher.clockJobName(za.co.fnb.dcre.agt.domain.Flow.COL, Stage.ACS, runKey)).get();
-        assertNotNull(acsJob, "ACS clock job created in dcre-col, where it is hosted");
-        assertTrue(dbUrlOf(acsJob).contains("/dcre_acs"),
-                "the account registry's single writer must address dcre_acs, got " + dbUrlOf(acsJob));
-        assertFalse(dbUrlOf(acsJob).contains("/dcre_col"), "got " + dbUrlOf(acsJob));
-        assertFalse(dbUrlOf(acsJob).contains("/dcre_man"),
-                "account/account_type left dcre_man too, got " + dbUrlOf(acsJob));
-    }
-
-    /**
-     * The five cross-context read seams, asserted on the Job specs.
+     * <p>Both fail CLOSED at the consumer: cde and ctv detect KUBERNETES_SERVICE_HOST
+     * and refuse to start rather than use their localhost dev default, naming the exact
+     * variable. AGT is the only thing that sets them, so a missing arm in
+     * {@code stageEnv} is a crash-looping pod at cutover, which is precisely the failure
+     * this test exists to prevent.
      *
-     * <p>Every one of these fails CLOSED at the consumer: cde, ctv and mrv detect
-     * KUBERNETES_SERVICE_HOST and refuse to start rather than use their localhost dev
-     * default, naming the exact variable. AGT is the only thing that sets them, so a
-     * missing arm in {@code stageEnv} is a crash-looping pod at cutover, which is
-     * precisely the failure this test exists to prevent.
-     *
-     * <p>PTV and MIT are asserted even though no committed consumer reads their
-     * variables yet (verified by grep over the spring repo: exit=1 for both, against
-     * exit=0 for the other three). Wiring them now makes the gap visible rather than
-     * discovered at rollout, and the assertion is what stops the arms being "cleaned up"
-     * as dead before the consumers land.
+     * <p>The two rows point at DIFFERENT databases on purpose. There were five rows
+     * until 2026-08-09, four of them account seams addressing {@code dcre_acs}; those
+     * went with {@code shared/acs}. A fixture whose rows all share a value cannot
+     * exercise what that value drives, so the surviving pair keeping {@code dcre_hcs}
+     * and {@code dcre_man} apart is what stops a single wrong url passing both rows.
      */
     @Test
     void everyCrossContextReadSeamIsInjectedOnItsOwnStage() {
@@ -390,13 +365,7 @@ class NamespaceRoutingTest {
                 new Seam(Stage.CDE, "onhost-req", "FNBCC01", "dcre-col",
                         JobLauncher.CDE_HOLIDAYS_DB_URL_ENV, "/dcre_hcs"),
                 new Seam(Stage.CTV, "onhost-req", "FNBCC01", "dcre-col",
-                        JobLauncher.CTV_ACCOUNTS_DB_URL_ENV, "/dcre_acs"),
-                new Seam(Stage.MRV, "onhost-req-man", "FNBCC01", "dcre-man",
-                        JobLauncher.MRV_ACCOUNTS_DB_URL_ENV, "/dcre_acs"),
-                new Seam(Stage.PTV, "onhost-req-endo", "FNBRF01", "dcre-pay",
-                        JobLauncher.PTV_ACCOUNTS_DB_URL_ENV, "/dcre_acs"),
-                new Seam(Stage.MIT, "onhost-req-man", "FNBCC01", "dcre-man",
-                        JobLauncher.MIT_ACCOUNTS_DB_URL_ENV, "/dcre_acs"));
+                        JobLauncher.CTV_MANDATES_DB_URL_ENV, "/dcre_man"));
 
         for (final Seam seam : seams) {
             final UUID arrivalId = insertArrival(seam.route(), seam.client());
@@ -419,22 +388,69 @@ class NamespaceRoutingTest {
      *  stage-keyed, never blanket-added to every launched pod. */
     @Test
     void aStageWithNoCrossContextReadCarriesNoneOfTheSeams() {
-        final UUID arrivalId = insertArrival("onhost-req", "FNBCC01");
-        launcher.launch(arrivalId, Stage.CRR);
-        final Job crrJob = k8s.batch().v1().jobs().inNamespace("dcre-col")
-                .withName(JobLauncher.jobName(za.co.fnb.dcre.agt.domain.Flow.COL, Stage.CRR, arrivalId)).get();
-        assertNotNull(crrJob, "CRR job created in dcre-col");
-        final java.util.Set<String> names = crrJob.getSpec().getTemplate().getSpec()
-                .getContainers().get(0).getEnv().stream()
-                .map(io.fabric8.kubernetes.api.model.EnvVar::getName)
-                .collect(java.util.stream.Collectors.toSet());
+        final java.util.Set<String> names = envNamesOfLaunched(Stage.CRR, "onhost-req", "FNBCC01", "dcre-col");
         for (final String seam : java.util.List.of(
-                JobLauncher.CDE_HOLIDAYS_DB_URL_ENV, JobLauncher.CTV_ACCOUNTS_DB_URL_ENV,
-                JobLauncher.MRV_ACCOUNTS_DB_URL_ENV, JobLauncher.PTV_ACCOUNTS_DB_URL_ENV,
-                JobLauncher.MIT_ACCOUNTS_DB_URL_ENV)) {
+                JobLauncher.CDE_HOLIDAYS_DB_URL_ENV, JobLauncher.CTV_MANDATES_DB_URL_ENV,
+                JobLauncher.CTV_MANDATE_SOURCE_ENV)) {
             assertFalse(names.contains(seam), "CRR opens no second datasource; " + seam
                     + " must not be on its pod. Got " + names);
         }
+        // Control: the walk really reads this pod's env, so the absences above are facts
+        // about the Job spec rather than about an empty env list.
+        assertTrue(names.contains(JobLauncher.DB_URL_ENV),
+                "control: every stage pod carries its primary datasource url. Got " + names);
+    }
+
+    /**
+     * THE RETIRED ACCOUNT SEAMS, asserted on the stages that used to carry them.
+     *
+     * <p>{@code shared/acs} and {@code dcre_acs} were retired on 2026-08-09: the account
+     * reference travels as one immutable versioned artifact each context materialises
+     * into its OWN database, and infra no longer creates {@code dcre_acs}. Four
+     * account-tier variables were injected on 2026-08-08, one live and three ahead of any
+     * consumer, and every one of them now names a database that does not exist.
+     *
+     * <p>This is a tripwire on the runtime shape rather than on source text: an
+     * {@code ACCOUNTS_DB_URL} variable reappearing on a pod means somebody restored the
+     * cross-context read, and the pod would carry a url nothing can connect to. Asserted
+     * on all four stages, because a fix applied where you happened to look is a
+     * coincidence rather than a control.
+     */
+    @Test
+    void noPodCarriesARetiredAccountSeam() {
+        record Retired(Stage stage, String route, String client, String namespace) { }
+        final java.util.List<Retired> stages = java.util.List.of(
+                new Retired(Stage.CTV, "onhost-req", "FNBCC01", "dcre-col"),
+                new Retired(Stage.MRV, "onhost-req-man", "FNBCC01", "dcre-man"),
+                new Retired(Stage.PTV, "onhost-req-endo", "FNBRF01", "dcre-pay"),
+                new Retired(Stage.MIT, "onhost-req-man", "FNBCC01", "dcre-man"));
+
+        for (final Retired retired : stages) {
+            final java.util.Set<String> names = envNamesOfLaunched(
+                    retired.stage(), retired.route(), retired.client(), retired.namespace());
+            assertTrue(names.contains(JobLauncher.DB_URL_ENV),
+                    "control: " + retired.stage() + " carries its primary url. Got " + names);
+            for (final String name : names) {
+                assertFalse(name.endsWith("_ACCOUNTS_DB_URL"),
+                        retired.stage() + " carries " + name + ", which addresses the retired"
+                                + " dcre_acs; the account reference is materialised locally now");
+            }
+        }
+    }
+
+    /** Env var NAMES on the Job a DAG launch of this stage builds. */
+    private java.util.Set<String> envNamesOfLaunched(final Stage stage, final String route,
+                                                     final String client, final String namespace) {
+        final UUID arrivalId = insertArrival(route, client);
+        launcher.launch(arrivalId, stage);
+        final Job job = k8s.batch().v1().jobs().inNamespace(namespace)
+                .withName(JobLauncher.jobName(za.co.fnb.dcre.agt.domain.Flow.valueOf(
+                        namespace.substring("dcre-".length()).toUpperCase(java.util.Locale.ROOT)),
+                        stage, arrivalId)).get();
+        assertNotNull(job, stage + " job created in " + namespace);
+        return job.getSpec().getTemplate().getSpec().getContainers().get(0).getEnv().stream()
+                .map(io.fabric8.kubernetes.api.model.EnvVar::getName)
+                .collect(java.util.stream.Collectors.toSet());
     }
 
     /**
@@ -458,7 +474,9 @@ class NamespaceRoutingTest {
         // DCRE_COL_DB_URL is deliberately absent from this list: it is a REAL,
         // launch-scoped SECOND datasource for the MRG suspension sweep. These four are
         // the family-specific PRIMARY names that must never exist, one of which is the
-        // name eight payments services were reading from nobody.
+        // name eight payments services were reading from nobody. DCRE_ACS_DB_URL stays
+        // on the list as a RETIRED-name token: dcre_acs went on 2026-08-09 and a pod
+        // carrying that variable would be addressing a database infra no longer creates.
         final java.util.List<String> banned = java.util.List.of(
                 "DCRE_PAY_DB_URL", "DCRE_MAN_DB_URL", "DCRE_HCS_DB_URL", "DCRE_ACS_DB_URL");
 

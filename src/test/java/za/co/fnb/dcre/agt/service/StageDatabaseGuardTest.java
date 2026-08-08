@@ -91,15 +91,23 @@ class StageDatabaseGuardTest {
                 "the guard must echo the offending url so it can be found in config, got: " + message);
     }
 
-    /** The same refusal for the account context, so the guard is not HCS-specific. */
+    /**
+     * The same refusal for a FAMILY database, so the guard is not HCS-specific.
+     *
+     * <p>This arm used to point at the ACS account context, which was retired with
+     * {@code shared/acs} and {@code dcre_acs} on 2026-08-09. It is repointed rather than
+     * deleted: the property under test is that the cross-check reads the family from the
+     * enum instead of special-casing one of them, and losing the only second family here
+     * would leave that property asserted nowhere.
+     */
     @Test
-    void theAccountContextIsGuardedTheSameWay() {
-        final StageDatabases databases = databasesWith(Map.of("acsServiceDbUrl", COLLECTIONS));
+    void aSecondFamilyIsGuardedTheSameWay() {
+        final StageDatabases databases = databasesWith(Map.of("payServiceDbUrl", COLLECTIONS));
 
         final IllegalStateException thrown = assertThrows(IllegalStateException.class,
-                () -> databases.urlFor(DbFamily.ACS));
+                () -> databases.urlFor(DbFamily.PAY));
 
-        assertTrue(thrown.getMessage().contains("ACS family owns database 'dcre_acs'"),
+        assertTrue(thrown.getMessage().contains("PAY family owns database 'dcre_pay'"),
                 "got: " + thrown.getMessage());
     }
 

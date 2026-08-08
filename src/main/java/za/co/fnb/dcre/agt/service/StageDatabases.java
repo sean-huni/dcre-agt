@@ -66,7 +66,6 @@ public class StageDatabases {
             case PAY -> config.payServiceDbUrl();
             case MAN -> config.manServiceDbUrl();
             case HCS -> config.hcsServiceDbUrl();
-            case ACS -> config.acsServiceDbUrl();
         };
         return requireAddresses(family, url);
     }
@@ -76,11 +75,12 @@ public class StageDatabases {
      *
      * <p>Exhaustive, no default arm: this is the single place that says which
      * database owns a stage's writes, and a new constant must be assigned one before
-     * anything compiles. That is not theoretical. {@code ACS} landed while this file
-     * was being written, and adding the constant to {@link Stage} broke THIS switch
-     * until its database was named, which is exactly the outcome a set with an
-     * "everything else" arm would have denied us: it would have absorbed the new stage
-     * into collections silently, the way {@code HCS} was absorbed.
+     * anything compiles. That is not theoretical, and it has now been proved in BOTH
+     * directions by the same short-lived constant. {@code ACS} landed on 2026-08-08 and
+     * adding it to {@link Stage} broke THIS switch until its database was named, which
+     * a set with an "everything else" arm would have absorbed into collections
+     * silently, the way {@code HCS} was absorbed. It was retired on 2026-08-09 and
+     * REMOVING it broke this switch too, so the deletion could not be half-done.
      *
      * <p><b>HCS is its own family and no longer sits with collections.</b> It was
      * enumerated into {@code Flow.COL} here with the reasoning that it is the single
@@ -96,7 +96,6 @@ public class StageDatabases {
             case PRR, PTV, PAI, PRW, PIR, PIX, PSX, PPX, PRG -> DbFamily.PAY;
             case MRR, MRV, MAS, MIT, MIR, MRW, MIX, MSX, MPX, MRG -> DbFamily.MAN;
             case HCS -> DbFamily.HCS;
-            case ACS -> DbFamily.ACS;
         };
     }
 
