@@ -1,23 +1,62 @@
 # dcre-agt
 
-Collections Agent: the only long-running service in the DCRE Collections pipeline.
+The DCRE orchestrator. AGT is the only long-running service in the platform: everything
+else is a short-lived Kubernetes `Job` that AGT mints, watches and reaps.
 
-## What it does
+AGT watches the per-client inbound exchange drop zones, claims each stable file arrival
+into a durable ledger (SHA-256 content identity, R-31 filename tokens, same-key-different-hash
+quarantine), and drives the three request DAGs level-triggered from that ledger. Each pipeline
+stage becomes a write-ahead, deterministically-named Kubernetes `Job`; AGT then observes the
+externally reported termination facts as the sole authority for stage completion (R-33). It
+also launches the clock-driven executors (CRW process-date, CRG/PRG/MRG report windows, the
+MRG suspension sweep, HCS holiday-calendar sync), reconciles Jobs against intents after any
+restart, and relaunches same-identity Jobs that die mid-run instead of leaving an arrival stuck.
 
-AGT watches the per-client inbound exchange drop zones, registers stable file arrivals into a durable ledger (SHA-256 content identity, R-31 filename tokens, same-key-different-hash quarantine), and drives the three request DAGs level-triggered from that ledger: minting each pipeline stage as a write-ahead, deterministically-named Kubernetes Job, then observing its externally reported termination facts as the sole authority for stage completion (R-33). It also launches the clock-driven executors (CRW process-date, CRG/PRG/MRG report windows, HCS holiday-calendar-sync) on interval windows, reconciles Jobs against intents after any restart, and bounds/relaunches same-identity Jobs that die mid-run (OrphanSweeper) instead of leaving an arrival stuck.
+**AGT is the only component that decides which database and which namespace each stage runs
+against.** That decision is two separate exhaustive switches, and the section
+[How stage routing works](#how-stage-routing-works) is the one to read before changing anything.
 
-## The roster IS the diagrams
+State lives in AGT's own `agt_ops` database and in the Kubernetes API. Nothing lives only in
+memory: `LeaseService` and `Reconciler` rebuild everything from the ledgers on restart.
 
-THE DIAGRAMS ARE THE SPECIFICATION (`design-register/docs/diagrams`, R-49). AGT launches exactly the 28 stage services on the six sheets plus the cross-family HCS, and nothing else. `StageRosterTest` compares `Stage` to the sheets as a SET, never a size: collections once held 9 of 9 required services with four misnamed, and a count check reported 9/9 and passed.
+---
+
+## The v1 roster and the five databases
+
+THE DIAGRAMS ARE THE SPECIFICATION (`dcre-design-register`, `docs/diagrams`, R-49). AGT
+launches exactly the 28 stage services on the six sheets plus the cross-family HCS, and
+nothing else. `Stage` is a transcription of them.
 
 ```
-collections   CRR CTV CDE CRW CIR   CIX CSX CPX   CRG     -> dcre_col
-payments      PRR PTV PAI PRW PIR   PIX PSX PPX   PRG     -> dcre_pay
-mandates      MRR MRV MAS MIT MIR MRW   MIX MSX MPX MRG   -> dcre_man
-cross-family  HCS                                         -> dcre_col
+family        stages                                            database    namespace
+------------  ------------------------------------------------  ----------  ---------
+collections   CRR CTV CDE CRW CIR   CIX CSX CPX   CRG            dcre_col    dcre-col
+payments      PRR PTV PAI PRW PIR   PIX PSX PPX   PRG            dcre_pay    dcre-pay
+mandates      MRR MRV MAS MIT MIR MRW   MIX MSX MPX   MRG        dcre_man    dcre-man
+cross-family  HCS                                               dcre_hcs    dcre-col
 ```
 
-**PRG IS THE PAYMENTS REPORT GENERATOR.** Before the 2026-08-08 cutover the same token named the COLLECTIONS one, which is now CRG. The token did not move, it changed MEANING, so a find-and-replace over this repository produces a build that compiles and is semantically inverted. Read every occurrence in context.
+**HCS is the row to read twice.** It is hosted in the *collections namespace* and it writes
+its *own database*. Those are two different answers to two different questions, and until
+2026-08-08 one enum gave both. See [How stage routing works](#how-stage-routing-works).
+
+The fifth database is `agt_ops`, AGT's own ledger. It is deliberately not a family: it is not
+sharded by flow, and every stage pod receives it under its own name (`DCRE_AGTOPS_DB_URL`) for
+the platform-batch heartbeat writer.
+
+| Database | Owner | AGT's relationship to it |
+|---|---|---|
+| `agt_ops` | AGT | Read/write. Its own ledgers: `file_arrival`, `launch_intent`, `stage_outcome`, the lease. |
+| `dcre_col` | collections services | Read-only, via a second datasource, on published views only. Also handed to collections stage pods. |
+| `dcre_pay` | payments services | Read-only, via a third datasource, on published views only. Also handed to payments stage pods. |
+| `dcre_man` | mandates services | AGT never opens a datasource here. It only hands the URL to pods. |
+| `dcre_hcs` | `dcre-hcs` | AGT never opens a datasource here. It only hands the URL to pods. |
+
+**`PRG` IS THE PAYMENTS REPORT GENERATOR.** Before the 2026-08-08 cutover the same token named
+the COLLECTIONS one, which is now `CRG`. The token did not move, it changed MEANING, so a
+find-and-replace over this repository produces a build that compiles and is semantically
+inverted. Read every occurrence in context. Pinned by
+`StageRosterTest.prgIsThePaymentsGeneratorAndCrgIsTheCollectionsOne`.
 
 Each family's request DAG is on its own sheet, and no stage appears in two of them:
 
@@ -25,155 +64,870 @@ Each family's request DAG is on its own sheet, and no stage appears in two of th
 - ENDO Payments: `PRR -> PTV -> PAI -> {PRW, PIR}`
 - Mandates: `MRR -> MRV -> MAS -> MIT -> {MIR, MRW}`
 
-Response routes are token-picked, and the FLOW selects the family's reader: `fint-resp` carries both collections and payments replies (both families send pain.008 and the reply has no family marker), so it launches CIX/CSX/CPX or PIX/PSX/PPX by the reading client's flow; `fint-resp-man` picks MIX/MSX/MPX.
+Response routes are token-picked, and the FLOW selects the family's reader. `fint-resp`
+carries both collections and payments replies (both families send pain.008 and the reply has
+no family marker), so it launches CIX/CSX/CPX or PIX/PSX/PPX by the reading client's flow;
+`fint-resp-man` picks MIX/MSX/MPX.
 
 ### The timing rule
 
-Owner, 2026-08-08: "CRW TxList are processed on the collection-day, but for payments Tx's processed immediately."
+Owner, 2026-08-08: "CRW TxList are processed on the collection-day, but for payments Tx's
+processed immediately."
 
-Collections waits: CRW is a clock-driven Process-Date Executor, CDE estimates the collection day, and a DC arrival stays `DAG_RUNNING` until `crw_emission_owed` says nothing is owed. **Payments does not wait at all**: there is no CDE analogue on the payments sheet, PRW is a real DAG stage that runs the moment PAI accepts, and `RouteDags.ENDO` carries `Emission.NONE`. PRW forks from CRW and both emit `pain.008`, which makes the collection-day wait easy to inherit silently, so it is asserted in both directions in `EmissionGatedTerminalTest` rather than described.
+Collections waits: CRW is a clock-driven Process-Date Executor, CDE estimates the collection
+day, and a DC arrival stays `DAG_RUNNING` until `crw_emission_owed` says nothing is owed.
+**Payments does not wait at all.** There is no CDE analogue on the payments sheet, PRW is a
+real DAG stage that runs the moment PAI accepts, and `RouteDags.ENDO` carries `Emission.NONE`.
+PRW forks from CRW and both emit `pain.008`, which makes the collection-day wait easy to
+inherit silently, so it is asserted in both directions in `EmissionGatedTerminalTest` rather
+than described.
 
-## Architecture and principles
+---
 
-- **SOLID**: each control loop is a single-responsibility `@ApplicationScoped` bean with one job: `DirectoryWatcher` (arrival discovery), `ArrivalService` (claim/hash/dedup), `DagEngine` (pure DAG decision logic, unit-testable via `computeLaunches()`/`terminalState()`), `JobLauncher` (write-ahead Job creation), `OutcomeWatcher` (termination observation), `Reconciler` (post-restart/reap recovery), `OrphanRelauncher` (bounded same-identity relaunch), `LeaseService` (single-writer CAS lease), `CrwScheduler`/`PrgScheduler`/`HcsScheduler`/`MrgScheduler` (clock windows), `MetricsService` (ledger-derived gauges).
-- **12FactorApp Alignment** (https://12factor.net/): every override point is `${ENV_VAR:default}` in `application.yml` with a working dev default committed (clean clone runs with no `.env`); config never hardcodes URLs/images/secrets; the process is stateless (all state lives in `agt_ops` and the K8s API, never in memory alone: `LeaseService`/`Reconciler` rebuild everything from the ledgers on restart); CockroachDB, Kubernetes, and the OTLP collector are attached backing services reached only via env-configured endpoints.
-- **Layer-first packages**: `config` (SmallRye `@ConfigMapping`), `domain` (enums/records: `Stage`, `Outcome`, `ArrivalStatus`, `FileArrival`, `LaunchIntent`), `repo` (JDBC access to the three ledgers), `service` (control loops).
-- **Idempotent restart semantics**: `launch_intent` is write-ahead (intent row inserted before the Job), so a crash between intent-insert and Job-create is safe; Job names embed the full 128-bit arrival UUID (`dcre-<stage>-<uuid-no-dashes>`), so a 409 Conflict on re-create is treated as already-launched; `stage_outcome` inserts are `UNIQUE(intent_id, attempt)`, so re-observation is a no-op; the `Reconciler` (every 5s) is status-driven, never blind-recreates a `LAUNCHED` intent, and resolves reaped-before-observed Jobs from the durable `/exchange/outcomes/<job>` seam before falling back to a bounded relaunch.
-- **OrphanSweeper** (`Reconciler` + `OrphanRelauncher`): a `LAUNCHED` intent whose current attempt ended TECH-class (dead pod, no live Job, no readable outcome after the reap grace window) gets a same-identity Job recreate up to `agt.orphan-max-attempts` (default 3) with `agt.orphan-backoff-seconds` (default 60) between attempts; exhausting the budget records a terminal `TECH_EXHAUSTED` outcome and fails the arrival (`DAG_FAILED`) rather than leaving a silent zombie. Business outcomes are never relaunched; clock intents self-heal at the next window boundary instead.
-- **Fail-closed defaults**: unparseable filenames, unknown fint-resp tokens (either response route), and missing stage images all quarantine/refuse rather than guess; `BUSINESS_FILE_REJECTED`/`BUSINESS_FILE_FATAL` route to the route family's responder only (CIR, or MIR on `onhost-req-man`: whole-file NACK); a tech-failed responder keeps the arrival open instead of closing it without a response ever reaching OnHost.
+## How stage routing works
 
-## Prerequisites
+This is the thing people get wrong, so it is written out rather than left to the code.
 
-- Java 25
-- Docker (for `./gradlew test`, which runs against a real Testcontainers CockroachDB, and for building/loading images)
-- A running `dcre-dev` kind cluster + CockroachDB + exchange volume, provisioned by `dcre-infra` (see Quickstart)
+There are **two separate exhaustive switches over `Stage`**, and the separation is deliberate:
 
-## Quickstart
+| Question | Answered by | Returns |
+|---|---|---|
+| Which DATABASE does this stage's pod write? | `service/StageDatabases.dbFamily(Stage)` | `domain/DbFamily` (COL, PAY, MAN, HCS) |
+| Which NAMESPACE does this stage's Job land in? | `service/StageNamespaces.namespaceFamilyOf(Stage)` | `domain/Flow` (COL, PAY, MAN) |
 
-Clean clone runs with no `.env`: every setting in `application.yml` has a working dev default.
+They were one switch until 2026-08-08. While the two answers agreed the conflation was
+invisible. **HCS is where they diverge**: it is hosted in `dcre-col` and it owns `dcre_hcs`.
+One enum answering two questions gives the wrong answer to one of them the moment they
+diverge, silently, because both answers are well-formed and a write to the wrong database is
+perfectly valid SQL.
+
+### Neither switch has a default arm, and that is the feature
+
+Adding a constant to `Stage` **breaks the build** in `StageDatabases`, `StageNamespaces` and
+`StageImages` alike, until somebody names its database, its namespace and its image. There is
+no "everything else" arm anywhere in the routing path. `JobLauncher.LAUNCHABLE` is a fourth
+tripwire: it lists every launchable stage explicitly, and `StageRosterTest` asserts it equals
+all of `Stage`, so a new constant fails that assertion until it is listed deliberately. It used
+to be an `EnumSet.complementOf`, which failed OPEN: every stage added afterwards became
+launchable by default and nothing said so.
+
+This has been proved in both directions by one short-lived constant. `ACS` was added on
+2026-08-08 and broke every switch until its database was named. It was retired on 2026-08-09
+and **removing it broke them again**, so the deletion could not be half-done. A `Map` lookup or
+an `EnumSet.complementOf` would have absorbed both silently.
+
+Treat a compile error here as the design working. Do not add a default arm to make it go away.
+
+### The two fail-closed guards on top
+
+1. **`StageDatabases.requireAddresses`.** The family's configured URL must address the database
+   that family owns, compared by parsing the database segment out of the JDBC URL. Pointing
+   `AGT_PAY_SERVICE_DB_URL` at `dcre_col` is a one-variable typo that otherwise reads as a
+   working deployment. It fails at Job-BUILD time, before a pod exists, and the message names
+   both sides. This is the AGT-side twin of `shared/hcs`'s `FamilyGuard`, which compares
+   `current_database()` before any DDL.
+2. **`StageNamespaces.requireCorrectNamespace`.** The namespace a Job is going into must be the
+   one its stage is hosted in. The namespace comes from the durable intent row, so this also
+   catches a reconciled re-create that would rebuild a pod into the wrong family.
+
+Between them, a Job cannot be built into the wrong namespace and a pod cannot be handed the
+wrong database.
+
+### Route to flow
+
+`FlowNamespaces.flowForRoute` maps an inbound route to a flow, and **its default arm throws**
+(SCRUM-107). It used to read `default -> Flow.COL`, which meant an unrecognised route resolved
+to collections: observed live, an unknown route produced a CRR Job in `dcre-col`. A catch-all
+that returns the happy path cannot tell "collections" from "I have never heard of this route".
+
+| Route | Flow |
+|---|---|
+| `onhost-req` | COL |
+| `onhost-req-endo` | PAY |
+| `onhost-req-man`, `fint-resp-man` | MAN |
+| `fint-resp` | PAY if the reading client is in `AGT_PAY_CLIENTS`, else COL |
+| anything else | `IllegalArgumentException` |
+
+`FlowNamespaces.flowForNamespace` is the inverse, used when rebuilding a Job spec from a
+durable intent row. The legacy control namespace (`dcre`) resolves to COL, because everything
+that predates flow namespaces was collections. An unknown namespace throws.
+
+### Tests that pin the routing
+
+| Test | Pins |
+|---|---|
+| `service/StageRosterTest` | `Stage` equals the diagrams' roster as a SET, every stage has exactly one database family and exactly one namespace family, `LAUNCHABLE` equals all of `Stage`, and PRG/CRG are not inverted |
+| `service/StageDatabaseGuardTest` | The URL-addresses-the-right-database guard |
+| `service/NamespaceRoutingTest` | Namespace resolution, legacy relaunch, and that no pod carries a retired account seam |
+| `service/RouteRegistryConsistencyTest` | Route registry agreement across `RouteDags` / `DirectoryWatcher` / `FlowNamespaces` |
+| `AgtCtvMandateSourceDefaultTest` | The `@WithDefault` and the yml default for `agt.ctv-mandate-source` agree (two homes for one fact) |
+
+`StageRosterTest` compares against the sheets as a SET, never a size. Collections once held
+9 of 9 required services with four of them misnamed, and a count check reported 9/9 and passed.
+
+---
+
+## Setup
+
+Everything below is verified on macOS 26.5.2 (Darwin 25.5.0, arm64) on 2026-08-09. Nothing here
+is macOS-specific except the Homebrew commands.
+
+| Tool | Version needed | Check it | Get it |
+|---|---|---|---|
+| JDK | **25** (Temurin) | `java -version` | SDKMAN, see below |
+| Gradle | none installed; the wrapper is **9.3.1** | `./gradlew --version` | Ships in the repo |
+| Docker | any recent engine, running | `docker info` | Docker Desktop or colima |
+| kubectl | any 1.3x | `kubectl version --client` | `brew install kubectl` |
+| kind | any recent | `kind get clusters` | `brew install kind` |
+| Python 3 | for the manifest-arch check only | `python3 --version` | Preinstalled on macOS |
+
+### JDK 25 via SDKMAN
+
+`.sdkmanrc` pins `java=25-tem` and is the single source of truth for the JDK. The build does
+**not** declare a Gradle toolchain block; it declares `sourceCompatibility` and
+`targetCompatibility` as `JavaVersion.VERSION_25`, so whatever JDK Gradle runs on must already
+be 25.
 
 ```bash
-# 1. bring up the dev cluster + CRDB + exchange hostPath (from dcre-infra)
-../../../../../infra/dcre-infra/scripts/kind-up.sh
+curl -s "https://get.sdkman.io" | bash          # once per machine
+source "$HOME/.sdkman/bin/sdkman-init.sh"
+cd <this repo>
+sdk env install                                  # installs exactly what .sdkmanrc pins
+sdk env                                          # activates it in this shell
+java -version                                    # expect: openjdk version "25"
+```
 
-# 2. run AGT locally against that stack
+If `sdk env` does nothing automatically when you `cd` here, set `sdkman_auto_env=true` in
+`~/.sdkman/etc/config`.
+
+### Docker is required for the tests
+
+`./gradlew test` boots a real `cockroachdb/cockroach:v26.2.3` Testcontainer. Without a running
+Docker engine the suite cannot start. This is not optional and there is no mock fallback.
+
+### The dev cluster
+
+AGT needs a CockroachDB with the five databases, a `dcre-exchange` PVC, and the `dcre`,
+`dcre-col`, `dcre-pay`, `dcre-man` namespaces. All of that is provisioned by `dcre-infra`,
+which is a sibling checkout under `env/repo/infra`:
+
+```bash
+../../../../../infra/dcre-infra/scripts/kind-up.sh
+```
+
+Verify it landed:
+
+```bash
+kind get clusters                                # expect: dcre-dev
+kubectl config current-context                   # expect: kind-dcre-dev
+kubectl get ns | grep dcre                       # expect: dcre, dcre-col, dcre-pay, dcre-man
+kubectl exec -n dcre crdb-0 -- ./cockroach sql --insecure --database=defaultdb \
+  -e "SHOW DATABASES;"                           # expect all five, see Known gaps
+```
+
+`dcre-infra/scripts/verify-databases.sh` is the authoritative check and expects exactly
+`agt_ops dcre_col dcre_man dcre_pay dcre_hcs`.
+
+---
+
+## Build
+
+```bash
+./gradlew clean build
+```
+
+Run on this working tree at commit `SCRUM-107-feat-three-family-topology` on 2026-08-09, with
+Docker running and no `.env` present. The runner's own closing lines, plus the captured exit
+code:
+
+```
+BUILD SUCCESSFUL in 4m 8s
+14 actionable tasks: 14 executed
+gradle_exit=0
+elapsed_seconds=248
+```
+
+`clean build` runs the full test suite, so budget roughly **4 minutes**. Most of that is the
+suite, not compilation.
+
+### What it produces
+
+| Path | What it is |
+|---|---|
+| `build/quarkus-app/quarkus-run.jar` | The fast-jar launcher. This is what the container runs. |
+| `build/quarkus-app/app/agt-2.0.1.jar` | The application classes. Version comes from `build.gradle`. |
+| `build/quarkus-app/lib/` | Dependency jars |
+| `build/libs/agt-2.0.1.jar` | The plain Gradle jar. **Not** what the container runs. |
+
+Note `build/quarkus-app/` is the Quarkus fast-jar layout. Copying `build/libs/agt-2.0.1.jar`
+into an image on its own produces something that will not start.
+
+### Tests only
+
+```bash
+./gradlew test                    # whole suite
+./gradlew test --tests '*StageRosterTest'
+./gradlew test --tests 'za.co.fnb.dcre.agt.service.*'
+```
+
+**Current suite: 241 tests in 35 test classes, 0 failures, 0 errors, 0 skipped.** Derived by
+aggregating `build/test-results/test/TEST-*.xml` after the run above, not by reading a report
+summary. There are 36 `.java` files under `src/test/java`; `CrdbTestResource.java` is a
+`QuarkusTestResourceLifecycleManager` helper, not a test class, which is the difference between
+36 and 35.
+
+The suite mixes pure unit tests (`DagEngineTest`, `ClockJobNameTest`, `FlowNamespacesTest`,
+the routing guards) with `@QuarkusTest` classes across several `TestProfile`s, each booting a
+Quarkus context plus a CockroachDB container. `build.gradle` sets `maxHeapSize = '4g'` on the
+`test` task for exactly this reason: Gradle's 512m default kills the worker with a message
+that names no cause.
+
+Expect noise in the log that is not failure:
+
+- `Failed to export LogsRequestMarshaler ... Connection refused: localhost/127.0.0.1:4317` is
+  the OTLP exporter with no collector running locally. Harmless.
+- `QUARANTINED ...`, `report-stall ...`, `sla stage=FINT ...` lines are tests asserting the
+  fail-closed paths, printed by the code under test.
+
+---
+
+## Run locally
+
+```bash
 ./gradlew quarkusDev
 ```
 
-AGT resolves `agt.exchange-root` (default `../../../../../infra/dcre-infra/exchange`) relative to its own working directory, so `quarkusDev` from this module directory lines up with the `dcre-infra` checkout as a sibling under `env/repo`.
+AGT then listens on `http://localhost:8080`, with health at `/q/health/live` and
+`/q/health/ready`.
 
-## Configuration
+### Clean-clone rule
 
-12FactorApp Alignment (https://12factor.net/): all values below are `${ENV_VAR:default}` in `src/main/resources/application.yml`; override via real environment variables, never by editing the file.
+**A fresh clone runs with no `.env` at all.** Every setting in
+`src/main/resources/application.yml` is written as `${ENV_VAR:working-default}`, so the
+committed defaults are a working dev configuration (12FactorApp Alignment,
+https://12factor.net/). There is no `.env` and no `.env.example` in the repository; `.env` is
+gitignored and is purely the override point.
+
+Precedence, highest first: real environment variable, then `.env`, then the yml default.
+
+Two things a clean clone still needs from outside the repo, and neither is a `.env` matter:
+
+1. **A reachable CockroachDB.** `quarkus.liquibase.migrate-at-start` is `true` and the default
+   `AGT_DB_URL` is `jdbc:postgresql://localhost:26257/agt_ops?sslmode=disable`. With nothing on
+   26257 the process starts and then fails its migration. Run `kind-up.sh` first, or
+   `kubectl port-forward -n dcre svc/crdb 26257:26257`.
+2. **The exchange tree.** `agt.exchange-root` defaults to the relative path
+   `../../../../../infra/dcre-infra/exchange`, which from this module resolves to
+   `env/repo/infra/dcre-infra/exchange`. Verified 2026-08-09 with
+   `realpath ../../../../../infra/dcre-infra/exchange` (exit 0). A relative default breaks
+   silently if the module moves, and often by creating a wrong directory tree rather than
+   erroring, so an unexplained new `exchange/` directory means this default no longer resolves.
+
+### Running against a port-forwarded cluster
+
+```bash
+kubectl port-forward -n dcre svc/crdb 26257:26257 &
+AGT_LAUNCH_ENABLED=false ./gradlew quarkusDev
+```
+
+`AGT_LAUNCH_ENABLED=false` stops AGT minting Jobs against whatever cluster your kubeconfig
+points at. Set it whenever you run locally against a shared cluster. The two gates are fully
+independent: `AGT_LAUNCH_ENABLED` gates Job creation and every clock scheduler,
+`AGT_OBSERVE_ENABLED` gates `OutcomeWatcher` alone, and all four combinations are reachable.
+
+The `%test` profile in `application.yml` disables the scheduler entirely, sets
+`agt.launch-enabled: false`, uses a random HTTP port (8081 collides with kubectl
+port-forwards), and points `exchange-root` at `build/test-exchange`.
+
+---
+
+## Configuration: what AGT reads
+
+12FactorApp Alignment (https://12factor.net/): every value below is `${ENV_VAR:default}` in
+`src/main/resources/application.yml`. Override via real environment variables, never by editing
+the file.
+
+`application.yml` references **74** distinct environment variables. One more,
+`AGT_OBSERVE_ENABLED`, binds through the `agt` `@ConfigMapping` prefix and has a
+`@WithDefault` but no yml line, giving **75** readable in total.
+
+### AGT's own datasources
+
+| Variable | Default | Required | Purpose |
+|---|---|---|---|
+| `AGT_DB_URL` | `jdbc:postgresql://localhost:26257/agt_ops?sslmode=disable` | yes | AGT's own ledger database. Liquibase migrates it at start. |
+| `AGT_DB_USER` | `root` | yes | `agt_ops` datasource user |
+| `AGT_DB_PASSWORD` | (empty) | no | `agt_ops` datasource password |
+| `AGT_COLLECTIONS_DB_URL` | `jdbc:postgresql://localhost:26257/dcre_col?sslmode=disable` | yes in cluster | Read-only window into `dcre_col` (`prg_report_due`, `prg_sla_pending`, `crw_emission_owed`). Absent in-cluster, readiness stays DOWN forever with "Connection to localhost:26257 refused". |
+| `AGT_COLLECTIONS_DB_USER` | `root` | no | |
+| `AGT_COLLECTIONS_DB_PASSWORD` | (empty) | no | |
+| `AGT_PAYMENTS_DB_URL` | `jdbc:postgresql://localhost:26257/dcre_pay?sslmode=disable` | yes in cluster | Read-only window into `dcre_pay`. **A separate READ SEAM, not a rename**: both databases publish views called `prg_report_due` and `prg_sla_pending`, so a single datasource leaves one family's IMMEDIATE reports permanently undiscovered, with no exception and no log line. |
+| `AGT_PAYMENTS_DB_USER` | `root` | no | |
+| `AGT_PAYMENTS_DB_PASSWORD` | (empty) | no | |
+
+AGT opens **no** datasource against `dcre_man` or `dcre_hcs`. It only hands those URLs to pods.
+
+### Namespaces and identity
+
+| Variable | Default | Required | Purpose |
+|---|---|---|---|
+| `AGT_NAMESPACE` | `dcre` | yes | AGT's own CONTROL namespace only: the Kubernetes client, AGT's Deployment, and the shared `crdb`/`lgtm` infrastructure. Stage Jobs do **not** land here. |
+| `AGT_NAMESPACE_COL` | `dcre-col` | no | Flow namespace for collections stage Jobs (`col-*`), and for HCS |
+| `AGT_NAMESPACE_PAY` | `dcre-pay` | no | Flow namespace for payments stage Jobs (`pay-*`) |
+| `AGT_NAMESPACE_MAN` | `dcre-man` | no | Flow namespace for mandates stage Jobs (`man-*`) |
+| `HOSTNAME` | `local-agt` | yes | Lease holder id. **Must be unique per running instance**; in Kubernetes the pod name supplies it automatically. Two instances sharing one holder id both believe they hold the single-writer lease. |
+| `DCRE_EXCHANGE_ROOT` | `../../../../../infra/dcre-infra/exchange` | yes | Root of the exchange directory tree (R-30). `/exchange` in cluster. |
+
+### Gates
+
+| Variable | Default | Required | Purpose |
+|---|---|---|---|
+| `AGT_LAUNCH_ENABLED` | `true` | no | Gate for Kubernetes Job creation |
+| `AGT_OBSERVE_ENABLED` | `true` | no | Gate for termination observation. Independent of the above: observation stays on when launching is paused. Has no line in `application.yml`; it binds from the `@WithDefault` on `AgtConfig.observeEnabled()`. |
+
+### Client rosters
+
+| Variable | Default | Required | Purpose |
+|---|---|---|---|
+| `AGT_PAY_CLIENTS` | `FNBRF01` | no | INTERIM (R-42): comma-separated client tokens whose `fint-resp` arrivals and clock jobs ride the pay flow, until the R-14 client reference table lands. Trimmed and uppercased on read. |
+| `AGT_MAN_CLIENTS` | `FNBCC01,FNBCC02,FNBRF01` | no | INTERIM (R-42 analog for M10): mandate-capable client tokens. MRG windows launch only for these. Trimmed and uppercased on read. |
+
+The per-client inbound exchange layout (clients `FNBCC01`, `FNBCC02`, `FNBRF01`, each with
+`onhost-req` / `onhost-req-endo` / `fint-resp` / `onhost-req-man` / `fint-resp-man`) is
+structured data under `agt.exchange.clients.*` in `application.yml`, not an environment
+variable. Adding a client means editing that file.
+
+### The stage database URLs (handed to pods, never opened by AGT)
+
+| Variable | Default | Required | Purpose |
+|---|---|---|---|
+| `AGT_SERVICE_DB_URL` | `jdbc:postgresql://crdb.dcre.svc.cluster.local:26257/dcre_col?sslmode=disable` | yes in cluster | The URL every COLLECTIONS stage pod gets as `DCRE_DB_URL`. Also the `DCRE_COL_DB_URL` handed to the MRG suspension sweep. **No longer handed to HCS.** |
+| `AGT_PAY_SERVICE_DB_URL` | `...:26257/dcre_pay?sslmode=disable` | yes in cluster | Every PAYMENTS stage pod's `DCRE_DB_URL`. Without it every payments stage receives the collections URL and builds the payments schema inside `dcre_col` without erroring. |
+| `AGT_MAN_SERVICE_DB_URL` | `...:26257/dcre_man?sslmode=disable` | yes in cluster | Every MANDATES stage pod's `DCRE_DB_URL`, **and** every CTV pod's `DCRE_CTV_MANDATES_DB_URL`. One knob feeds both deliberately, so the two cannot drift. |
+| `AGT_HCS_SERVICE_DB_URL` | `...:26257/dcre_hcs?sslmode=disable` | yes in cluster | The HCS pod's `DCRE_DB_URL`, **and** every CDE pod's `DCRE_CDE_HOLIDAYS_DB_URL`. `shared/hcs` carries a `FamilyGuard` on `current_database()`, so with the pre-2026-08-08 routing every HCS pod dies on startup. |
+| `AGT_AGTOPS_DB_URL` | `...:26257/agt_ops?sslmode=disable` | yes in cluster | Handed to **every** stage pod so the platform-batch heartbeat writer can reach `agt_ops`. Identical for all flows. |
+| `AGT_AGTOPS_DB_USER` | `root` | no | The heartbeat writer's user |
+
+All five use the FQDN `crdb.dcre.svc.cluster.local`, not the short name `crdb`. Stage pods run
+in the flow namespaces, where `crdb` does not resolve.
+
+### The 29 stage images
+
+One knob per stage, all defaulting to **empty**, which means **launch-disabled**.
+
+| Family | Variables |
+|---|---|
+| collections | `AGT_CRR_IMAGE` `AGT_CTV_IMAGE` `AGT_CDE_IMAGE` `AGT_CRW_IMAGE` `AGT_CIR_IMAGE` `AGT_CIX_IMAGE` `AGT_CSX_IMAGE` `AGT_CPX_IMAGE` `AGT_CRG_IMAGE` |
+| payments | `AGT_PRR_IMAGE` `AGT_PTV_IMAGE` `AGT_PAI_IMAGE` `AGT_PRW_IMAGE` `AGT_PIR_IMAGE` `AGT_PIX_IMAGE` `AGT_PSX_IMAGE` `AGT_PPX_IMAGE` `AGT_PRG_IMAGE` |
+| mandates | `AGT_MRR_IMAGE` `AGT_MRV_IMAGE` `AGT_MAS_IMAGE` `AGT_MIT_IMAGE` `AGT_MIR_IMAGE` `AGT_MRW_IMAGE` `AGT_MIX_IMAGE` `AGT_MSX_IMAGE` `AGT_MPX_IMAGE` `AGT_MRG_IMAGE` |
+| cross-family | `AGT_HCS_IMAGE` |
+
+`CIX`/`CSX`/`CPX` are the three `fint-resp` leg readers (ISR/SBSR/PBSR), formerly
+`IXR`/`SXR`/`PXR`. `PAI` is the Account Init Service, formerly `AIS` on the collections family.
+`AGT_CRG_IMAGE` is the collections report generator; **`AGT_PRG_IMAGE` changed meaning at the
+2026-08-08 cutover** and now names the payments one.
+
+The names are a cross-repo contract with `dcre-infra/scripts/switch-version.sh`, which sets
+`AGT_<STAGE>_IMAGE=dcre-<stage>:<version>` for every stage in the roster. Renaming a knob here
+makes that export silently inert. Verified 2026-08-09: 29 knobs in `application.yml` and 29 in
+`k8s/10-agt-deployment.yml`.
+
+**An unset image is launch-disabled SILENTLY, by design (SCRUM-33).** A clock scheduler skips
+its windows and a DAG launch fails fast. There is no stub fallback. See
+[Troubleshooting](#troubleshooting).
+
+### Cadences and window lengths
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `AGT_DB_URL` | `jdbc:postgresql://localhost:26257/agt_ops?sslmode=disable` | JDBC URL for AGT's own ledger DB (`agt_ops`) |
-| `AGT_DB_USER` | `root` | `agt_ops` datasource username |
-| `AGT_DB_PASSWORD` | (empty) | `agt_ops` datasource password |
-| `DCRE_EXCHANGE_ROOT` | `../../../../../infra/dcre-infra/exchange` | Root of the exchange directory tree (R-30 contract) |
-| `AGT_NAMESPACE` | `dcre` | AGT's own CONTROL namespace only (K8s client, deployment, crdb/lgtm shared infra); stage Jobs launch into the flow namespaces below (SCRUM-70) |
-| `AGT_NAMESPACE_COL` | `dcre-col` | Flow namespace for Collections stage Jobs (`col-*`: onhost-req, CRW window, HCS, collections-client CRG/fint-resp) |
-| `AGT_NAMESPACE_PAY` | `dcre-pay` | Flow namespace for Payments stage Jobs (`pay-*`: onhost-req-endo, pay-client PRG/fint-resp) |
-| `AGT_NAMESPACE_MAN` | `dcre-man` | Flow namespace for Mandates stage Jobs (`man-*`: onhost-req-man, fint-resp-man, MRG windows) |
-| `AGT_PAY_CLIENTS` | `FNBRF01` | INTERIM (R-42) comma-separated client tokens on the pay flow, until the R-14 client table lands; trimmed + uppercased on read |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://localhost:4317` | OTLP endpoint for traces/metrics export |
-| `AGT_LAUNCH_ENABLED` | `true` | Gate for K8s Job creation; observation stays on independently |
-| `AGT_CRR_IMAGE` / `AGT_CTV_IMAGE` / `AGT_CDE_IMAGE` / `AGT_CRW_IMAGE` / `AGT_CIR_IMAGE` / `AGT_CIX_IMAGE` / `AGT_CSX_IMAGE` / `AGT_CPX_IMAGE` / `AGT_CRG_IMAGE` | (empty) | The nine COLLECTIONS stage images. `CIX`/`CSX`/`CPX` are the three fint-resp leg readers (ISR/SBSR/PBSR), formerly `IXR`/`SXR`/`PXR`; **`CRG` is the collections report generator**, formerly called `PRG` |
-| `AGT_PRR_IMAGE` / `AGT_PTV_IMAGE` / `AGT_PAI_IMAGE` / `AGT_PRW_IMAGE` / `AGT_PIR_IMAGE` / `AGT_PIX_IMAGE` / `AGT_PSX_IMAGE` / `AGT_PPX_IMAGE` / `AGT_PRG_IMAGE` | (empty) | The nine PAYMENTS stage images. `PAI` is the Account Init Service, formerly `AIS` on the collections family; **`AGT_PRG_IMAGE` CHANGED MEANING at the 2026-08-08 cutover: it named the collections report generator and now names the payments one** |
-| `AGT_MRR_IMAGE` / `AGT_MRV_IMAGE` / `AGT_MAS_IMAGE` / `AGT_MIT_IMAGE` / `AGT_MIR_IMAGE` / `AGT_MRW_IMAGE` / `AGT_MIX_IMAGE` / `AGT_MSX_IMAGE` / `AGT_MPX_IMAGE` / `AGT_MRG_IMAGE` | (empty) | The ten MANDATES stage images |
-| `AGT_HCS_IMAGE` | (empty) | HCS holiday-calendar-sync clock executor image (cross-family; on no sheet) |
-| `AGT_MAN_CLIENTS` | `FNBCC01,FNBCC02,FNBRF01` | INTERIM comma-separated mandate-capable client tokens (MRG windows launch only for these), until the R-14 client table lands; trimmed + uppercased on read |
-| `AGT_CRW_INTERVAL_SECONDS` | `60` | CRW Process-Date Executor window length (COLLECTIONS ONLY: this is the collection-day clock, and payments has no analogue) |
-| `AGT_CRG_INTERVAL_SECONDS` | `60` | CRG collections-report clock-window length |
-| `AGT_PRG_INTERVAL_SECONDS` | `60` | PRG payments-report clock-window length. Its own knob, not shared with CRG: collections transaction lists are processed ON the collection day and payments transactions IMMEDIATELY, so the two cadences have no reason to move together |
-| `AGT_HCS_INTERVAL_HOURS` | `6` | HCS holiday-sync re-sync cadence |
-| `AGT_MRG_INTERVAL_SECONDS` | `60` | MRG mandates-report clock-window length |
-| `AGT_MRG_SUSPEND_INTERVAL_SECONDS` | `60` | MRG suspension-sweep clock-window length (SCRUM-91); mandate expiry is a view predicate and has no sweep |
-| `AGT_COLLECTIONS_DB_URL` | `jdbc:postgresql://localhost:26257/dcre_col?sslmode=disable` | AGT's own read-only window into `dcre_col` (`prg_report_due`, `prg_sla_pending`, `crw_emission_owed`) |
-| `AGT_PAYMENTS_DB_URL` | `jdbc:postgresql://localhost:26257/dcre_pay?sslmode=disable` | AGT's own read-only window into `dcre_pay`. **A separate READ SEAM, not a rename**: both databases publish views called `prg_report_due` and `prg_sla_pending`, so a single datasource leaves one family's IMMEDIATE reports permanently undiscovered, with no exception and no log line |
-| `AGT_SERVICE_DB_URL` | `jdbc:postgresql://crdb.dcre.svc.cluster.local:26257/dcre_col?sslmode=disable` | JDBC URL handed to launched COLLECTIONS stage Jobs for `dcre_col` (FQDN: stage pods run in the flow namespaces, where the short `crdb` name does not resolve). It is NOT handed to HCS any more; see `AGT_HCS_SERVICE_DB_URL` |
-| `AGT_PAY_SERVICE_DB_URL` | `jdbc:postgresql://crdb.dcre.svc.cluster.local:26257/dcre_pay?sslmode=disable` | JDBC URL handed to launched PAYMENTS stage Jobs. Without it every payments stage receives the collections URL and builds the payments schema inside `dcre_col` without erroring, because the write is perfectly valid against the wrong database (`StageDatabases` resolves the four families with no default arm) |
-| `AGT_HCS_SERVICE_DB_URL` | `jdbc:postgresql://crdb.dcre.svc.cluster.local:26257/dcre_hcs?sslmode=disable` | JDBC URL handed to the HCS holiday-sync Job. Owner ruling 2026-08-08: holiday data in `dcre_col` is a 12FactorApp violation (https://12factor.net/), so the calendar owns its own context and database. HCS previously received `AGT_SERVICE_DB_URL`, because one enum named both the NAMESPACE a stage runs in and the DATABASE it writes, and HCS runs in `dcre-col`. `shared/hcs` now carries a `FamilyGuard` comparing `current_database()` against `dcre_hcs` before any DDL, so with the old routing **every HCS pod dies on startup** |
-| `AGT_MAN_SERVICE_DB_URL` | `jdbc:postgresql://crdb.dcre.svc.cluster.local:26257/dcre_man?sslmode=disable` | JDBC URL for `dcre_man`; the DB URL follows the stage's flow family. Handed to the M10 mandates stage Jobs (`MRR`..`MRG`) as their primary DB, AND to every CTV stage pod as `DCRE_CTV_MANDATES_DB_URL` for CTV's second, read-only projection datasource: CTV stays on `dcre_col` primarily, so it reuses this knob rather than a second URL to keep in step. CTV fails at startup in-cluster if that variable is unset, so this value is load-bearing on the collections flow too |
-| `AGT_CTV_MANDATE_SOURCE` | `projection` | Which mandate store CTV's DC-flow gate reads, handed to every CTV stage pod as `DCRE_CTV_MANDATE_SOURCE` (SCRUM-107). The vocabulary is `projection` only: it reads `man_ctv_view` in `dcre_man`, and the `dcre_col.mandate` table the retired `legacy` value selected has been dropped. CTV FAILS CLOSED on `legacy`, so handing that value to a stage pod stops the pod from starting rather than degrading to a different gate. The token is carried verbatim and never interpreted here: CTV owns the vocabulary |
-| `AGT_REPORT_STALL_SCANS` | `20` | Bounded-attempt guard on the IMMEDIATE report trigger: consecutive scans that may see the same (flow, client, parent) still due before AGT WARNs. It makes a silent loop VISIBLE; it never retries, widens or falls back |
-| `AGT_STAGE_MEMORY_LIMIT` | `768Mi` | Stage-pod memory limit |
-| `AGT_STAGE_DEADLINE_SECONDS` | `900` | Stage Job `activeDeadlineSeconds` |
-| `AGT_ORPHAN_MAX_ATTEMPTS` | `3` | OrphanSweeper: bounded same-identity relaunch attempts |
-| `AGT_ORPHAN_BACKOFF_SECONDS` | `60` | OrphanSweeper: minimum seconds between relaunch attempts |
-| `HOSTNAME` | `local-agt` | DB lease holder id (must be unique per running instance) |
+| `AGT_CRW_INTERVAL_SECONDS` | `60` | CRW Process-Date Executor window. COLLECTIONS ONLY: this is the collection-day clock and payments has no analogue. |
+| `AGT_CRG_INTERVAL_SECONDS` | `60` | CRG collections-report window |
+| `AGT_PRG_INTERVAL_SECONDS` | `60` | PRG payments-report window. Its own knob, not shared with CRG: collections wait for the collection day and payments do not, so the two cadences have no reason to move together. |
+| `AGT_MRG_INTERVAL_SECONDS` | `60` | MRG mandates-report window |
+| `AGT_MRG_SUSPEND_INTERVAL_SECONDS` | `60` | MRG suspension-sweep window (SCRUM-91). Mandate expiry is a view predicate and has no sweep. |
+| `AGT_HCS_INTERVAL_HOURS` | `6` | HCS holiday re-sync cadence, so `public_holiday` re-syncs from Nager.Date four times a day |
+| `AGT_REPORT_SCAN_SECONDS` | `15` | `*_report_due` scan cadence. Binds `dcre.agt.report-scan-seconds`, outside the `agt` prefix. |
+| `AGT_SLA_SCAN_SECONDS` | `300` | `*_sla_pending` scan cadence. Binds `dcre.agt.sla-scan-seconds`. |
 
-Per-client inbound exchange layout (clients `FNBCC01`, `FNBCC02`, `FNBRF01`, each with `onhost-req`/`onhost-req-endo`/`fint-resp`/`onhost-req-man`/`fint-resp-man` channels) is data in `agt.exchange.clients.*`, not an env var; edit `application.yml` to add a client.
+### Recovery, limits and thresholds
 
-### Second-datasource seams AGT injects (cross-context reads)
+| Variable | Default | Purpose |
+|---|---|---|
+| `AGT_ORPHAN_MAX_ATTEMPTS` | `3` | Bounded same-identity relaunch attempts for a died arrival Job |
+| `AGT_INFRA_MAX_ATTEMPTS` | `10` | Separate, larger ceiling for `TECH_CONFIG_FAILED` (pod exit **78**, `EX_CONFIG`, a platform-batch failure before the runner phase). Infrastructure, not a job outcome, so a config restart cannot turn a defect-free arrival into a terminal `DAG_FAILED` in minutes. Still bounded: exhaustion mints `TECH_EXHAUSTED`. |
+| `AGT_ORPHAN_BACKOFF_SECONDS` | `60` | Minimum seconds between relaunch attempts of one intent |
+| `AGT_HEARTBEAT_TTL_SECONDS` | `45` | Wedged-but-alive detection. A `LAUNCHED` intent whose `heartbeat_at` fell behind is relaunched. Stage pods beat every 10s, so 45s is about 4 missed beats. |
+| `AGT_SELF_LIVENESS_TTL_SECONDS` | `15` | AGT self-liveness. `/q/health/live` goes DOWN if the reconciler has not ticked within this window; Kubernetes restarts the pod and the lease CAS re-acquires. 3x the 5s reconcile interval. |
+| `AGT_STAGE_MEMORY_REQUEST` | `512Mi` | Stage-pod memory request |
+| `AGT_STAGE_MEMORY_LIMIT` | `768Mi` | Stage-pod memory limit. Large-copybook runs (300k tx) need more: CTV OOMed at 768Mi across partition workers on 2026-07-14. |
+| `AGT_STAGE_DEADLINE_SECONDS` | `900` | Stage Job `activeDeadlineSeconds`. Same 300k-tx caveat. |
+| `AGT_SLA_AMBER_HOURS` | `20` | Fintegrate SLA amber warn threshold |
+| `AGT_SLA_RED_HOURS` | `24` | Fintegrate SLA red breach threshold; the Grafana alert on the red gauge drives the ops runbook |
+| `AGT_REPORT_STALL_SCANS` | `20` | Consecutive scans that may see the same (flow, client, parent) still due before AGT WARNs. It makes a silent loop VISIBLE. It never retries, widens or falls back. |
 
-Each of these is a read-only window from one stage into another bounded context's
-published views. **Both fail CLOSED at the consumer**: `cde` and `ctv` detect
-`KUBERNETES_SERVICE_HOST` and refuse to start rather than fall back to their
-committed localhost default, naming the exact variable. AGT is the only thing that
-sets them, so a missing arm in `JobLauncher.stageEnv` is a crash-looping pod.
+### Other
 
-| Injected on | Variable | Points at | Consumer status |
+| Variable | Default | Purpose |
+|---|---|---|
+| `AGT_CTV_MANDATE_SOURCE` | `projection` | Which mandate store CTV's DC-flow gate reads. Vocabulary is `projection` only: `man_ctv_view` in `dcre_man`. CTV **fails closed** on the retired `legacy` value (throws at bean creation), and the `dcre_col.mandate` table it selected has been dropped. AGT carries the token verbatim and never interprets it. |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://localhost:4317` | OTLP endpoint for traces, metrics and logs |
+
+---
+
+## Configuration: what AGT injects into stage Jobs
+
+**This is a different list from the one above and conflating the two is the defect class that
+has already shipped here.** AGT documented `pay-service-db-url` as "handed to every payments
+stage pod as `DCRE_DB_URL`" while eight of the nine payments services were reading
+`DCRE_PAY_DB_URL`, which nothing set. Both sides were green: five tests pinned the consumer
+side of the name and nothing pinned AGT's, so the only symptom was a pod falling back to its
+committed localhost default, which in a cluster is the pod itself.
+
+These variable names are a **hand-maintained cross-repo wire contract**. The consumers are in
+different git repositories and are not on AGT's classpath, so no test here can read what they
+declare. `StageRosterTest.everyStagePodReadsItsDatabaseFromOneEnvNameSharedByAllFamilies` pins
+the literal where it is made, which is the most this repo can assert on its own, and
+`NamespaceRoutingTest` asserts that no pod ever carries `DCRE_PAY_DB_URL`. The durable fix is
+to generate both sides from one schema, and it is not done.
+
+**That drift is not fully repaired.** Checked against the sibling checkouts on 2026-08-09: two
+payments services still read the variable nothing sets. See Known gaps, item 3.
+
+### On every stage pod, always
+
+Set in both `JobLauncher.serviceJob` (DAG stages) and `JobLauncher.clockJob` (clock windows).
+
+| Variable | Value | Source |
+|---|---|---|
+| `JOB_NAME` | the Kubernetes Job name | Computed. The pod's heartbeat writer keys on it. |
+| `DCRE_DB_URL` | the stage's family database URL | `StageDatabases.urlFor(stage)` |
+| `DCRE_EXCHANGE_ROOT` | `/exchange` | Hard-coded, matching the `dcre-exchange` PVC mount |
+| `DCRE_AGTOPS_DB_URL` | `agt_ops` URL | `AGT_AGTOPS_DB_URL` |
+| `DCRE_AGTOPS_DB_USER` | `root` | `AGT_AGTOPS_DB_USER` |
+
+### Stage-keyed second datasource seams
+
+Set by `JobLauncher.stageEnv`, on DAG service Jobs only. Each is a read-only window from one
+stage into another bounded context's published views. **Both fail CLOSED at the consumer**:
+`cde` and `ctv` detect `KUBERNETES_SERVICE_HOST` and refuse to start rather than fall back to
+their committed localhost default, naming the exact variable. AGT is the only thing that sets
+them, so a missing arm here is a crash-looping pod, not a wrong answer.
+
+| Stage | Variable | Points at | Fed by |
 |---|---|---|---|
-| `CDE` | `DCRE_CDE_HOLIDAYS_DB_URL` | `dcre_hcs` | Live: `cde` reads the holiday calendar it fail-closes without |
-| `CTV` | `DCRE_CTV_MANDATES_DB_URL` | `dcre_man` | Live: `man_ctv_view` projection gate |
+| `CTV` | `DCRE_CTV_MANDATES_DB_URL` | `dcre_man`, the `man_ctv_view` projection | `AGT_MAN_SERVICE_DB_URL` |
+| `CTV` | `DCRE_CTV_MANDATE_SOURCE` | not a URL: selects which store the gate reads | `AGT_CTV_MANDATE_SOURCE` |
+| `CDE` | `DCRE_CDE_HOLIDAYS_DB_URL` | `dcre_hcs`, the holiday calendar | `AGT_HCS_SERVICE_DB_URL` |
 
-Per-role `SELECT` grants on the PUBLISHED VIEWS only, never the base tables, are
-required for these seams and are an infra task. AGT does not and must not apply them.
+The `stageEnv` switch **does** have a default arm, and that asymmetry with the routing switches
+is deliberate. "This stage opens no second datasource" is the correct answer for 27 of the 29
+stages, and a stage that needs one and is forgotten fails closed at the consumer with the
+variable named. In the routing switches a default arm gave a well-formed WRONG answer that
+nothing could observe. Same shape, opposite risk.
 
-**Retired on 2026-08-09, and deliberately not replaced.** A fifth knob
-`AGT_ACS_SERVICE_DB_URL` and four account seams (`DCRE_CTV_ACCOUNTS_DB_URL`,
-`DCRE_MRV_ACCOUNTS_DB_URL`, `DCRE_PTV_ACCOUNTS_DB_URL`,
-`DCRE_MIT_ACCOUNTS_DB_URL`) pointed at a shared `dcre_acs` database, alongside an
-`ACS` stage, an `AGT_ACS_IMAGE` knob and an `AcsScheduler` minting a census on a
-timer. `shared/acs` had no authoritative source, no accountable owner, no ingestion
-of its own and no freshness contract, so it was a shared integration database wearing
-the costume of a bounded context. The account reference now travels as ONE immutable
-versioned artifact and each context materialises its own projection into its own
-database, so there is no cross-context account read to inject. Removing the stage
-rather than disabling it is the point: an unset image is launch-disabled SILENTLY by
-design (SCRUM-33), so a census with no service behind it would simply never run and
-nothing would say why. `NamespaceRoutingTest.noPodCarriesARetiredAccountSeam` and
-`StageRosterTest.neitherEnumCarriesTheRetiredAccountContext` are the tripwires.
+Per-role `SELECT` grants on the PUBLISHED VIEWS only, never the base tables, are required for
+these seams and are an infra task. AGT does not and must not apply them.
 
-## Testing
+### Launch-scoped env, carried on the durable intent row
+
+`MrgSuspendScheduler` attaches these to one specific launch rather than to `Stage.MRG`, so the
+MRG report windows on the same stage do not carry them. They travel as durable launch args
+prefixed `env:` and are split back out by `JobLauncher.splitEnvArgs`, so the intent row alone
+rebuilds the identical Job on a reconciled re-create.
+
+| Variable | Value | Why launch-scoped |
+|---|---|---|
+| `DCRE_MRG_JOB_NAME` | `mrgSuspendJob` | Selects the Batch job. Absent, MRG runs its `mrgJob` report default. |
+| `DCRE_COL_DB_URL` | `AGT_SERVICE_DB_URL` (`dcre_col`) | The consecutive-failed-collections signal is the only thing on this leg living in the collections DB, and a single-DB view cannot span it. Absent, every window dies with "Connection to localhost:26257 refused". |
+
+### Retired on 2026-08-09, deliberately not replaced
+
+A fifth knob `AGT_ACS_SERVICE_DB_URL` and four account seams
+(`DCRE_CTV_ACCOUNTS_DB_URL`, `DCRE_MRV_ACCOUNTS_DB_URL`, `DCRE_PTV_ACCOUNTS_DB_URL`,
+`DCRE_MIT_ACCOUNTS_DB_URL`) pointed at a shared `dcre_acs` database, alongside an `ACS` stage,
+an `AGT_ACS_IMAGE` knob and an `AcsScheduler` minting a census on a timer. All of it is gone.
+
+`shared/acs` had no authoritative source, no accountable owner, no ingestion of its own and no
+freshness contract, so it was a shared integration database wearing the costume of a bounded
+context. The account reference now travels as ONE immutable versioned artifact and each context
+materialises its own projection into its own database, so there is no cross-context account
+read to inject and `ctv` reads `dcre_col.account` over its primary datasource.
+
+Removing the stage rather than disabling it is the point: an unset image is launch-disabled
+silently, so a census with no service behind it would simply never run and nothing would say
+why. Tripwires: `NamespaceRoutingTest.noPodCarriesARetiredAccountSeam`,
+`StageRosterTest.noStageCarriesTheRetiredAccountContext`, and
+`StageRosterTest.noDatabaseFamilyCarriesTheRetiredAccountContext`.
+
+Verified 2026-08-09: every remaining occurrence of the string `ACS`/`acs` under `src/main`,
+`src/main/resources` and `k8s/` is a comment recording the retirement. No `Stage.ACS`, no
+`DbFamily.ACS`, no `AcsScheduler`, no `AGT_ACS_*` binding.
+
+---
+
+## Control loops
+
+Every loop is a single-responsibility `@ApplicationScoped` bean. **Every loop that WRITES
+gates on `lease.holdsLease()`**, so exactly one AGT instance acts even if several are running.
+The read-only observers do not gate, deliberately: they emit gauges and warnings and would be
+useless if only the leader reported. Verified 2026-08-09 by grepping `holdsLease` across
+`service/`; the ungated ones are `SlaMonitor`, `LatentDirAuditor` and `MetricsService`, and
+`MetricsService` calls it only to publish `agt_lease_held` as a gauge, never as a gate.
+
+| Bean | Cadence | Responsibility |
+|---|---|---|
+| `LeaseService` | 5s | Single-writer CAS lease renew/acquire. Gates nothing; it *is* the gate. |
+| `DirectoryWatcher` | 2s | Arrival discovery across the inbound channels |
+| `ArrivalService` | on demand | Claim, hash, dedupe, quarantine |
+| `DagEngine` | 2s | Pure DAG decision logic. Unit-testable via `computeLaunches()` / `terminalState()`. |
+| `JobLauncher` | on demand | Write-ahead Job creation |
+| `OutcomeWatcher` | 3s | Termination observation. Gated by `AGT_OBSERVE_ENABLED`. |
+| `Reconciler` | 5s | Post-restart and post-reap recovery, orphan and stale-heartbeat sweeps |
+| `OrphanRelauncher` | on demand | Bounded same-identity relaunch |
+| `CrwScheduler` | 10s tick | CRW process-date windows. Gates directly. |
+| `CrgScheduler` | 10s tick | CRG collections-report windows, COL clients only. Gates via `ReportWindows`. |
+| `PrgScheduler` | 10s tick | PRG payments-report windows, PAY clients only. Gates via `ReportWindows`. |
+| `MrgScheduler` | 10s tick | MRG mandates-report windows, `AGT_MAN_CLIENTS` only. Gates via `ReportWindows`. |
+| `MrgSuspendScheduler` | 10s tick | MRG suspension sweep. Gates directly. |
+| `HcsScheduler` | 10s tick | HCS holiday sync, one window per `AGT_HCS_INTERVAL_HOURS`. Gates directly. |
+| `ReportTrigger` | `AGT_REPORT_SCAN_SECONDS` | IMMEDIATE report trigger from the `*_report_due` views |
+| `SlaMonitor` | `AGT_SLA_SCAN_SECONDS` | Fintegrate SLA amber/red gauges from the `*_sla_pending` views. **Ungated observer.** A missing view logs a WARN for that family only and never kills the scheduler. |
+| `LatentDirAuditor` | 300s | Reports files sitting in directories AGT does not own. **Ungated observer.** |
+| `MetricsService` | 10s | Ledger-derived gauges. **Ungated observer.** |
+
+The 10s tick on the clock schedulers is not the window length. The tick computes the current
+window number from the epoch (`window = epochSeconds / intervalSeconds`), so every AGT
+incarnation derives the same run key and the clock-intent unique key dedupes. Level-triggered,
+not edge-triggered: a restart mid-window relaunches nothing.
+
+### Idempotency and restart semantics
+
+- `launch_intent` is write-ahead: the intent row is inserted before the Job is created, so a
+  crash between the two is safe.
+- Job names are deterministic and embed the full 128-bit arrival UUID
+  (`JobLauncher.jobName` builds `<flow-prefix><stage-lowercase>-<uuid-without-dashes>`, for
+  example `col-crr-4f3c...`), so a 409 Conflict on re-create means "already launched", not an
+  error. Clock Jobs use `clockJobName`, which substitutes a deterministic window run key for
+  the UUID. The flow prefix (`col-`, `pay-`, `man-`) replaced the old `dcre-` literal and is
+  shorter, so the 63-character Kubernetes name limit only got safer.
+- `stage_outcome` inserts are `UNIQUE(intent_id, attempt)`, so re-observation is a no-op.
+- The `Reconciler` is status-driven and never blind-recreates a `LAUNCHED` intent. It resolves
+  reaped-before-observed Jobs from the durable `<exchange-root>/outcomes/<jobName>` file seam
+  before falling back to a bounded relaunch.
+- Business outcomes are never relaunched. Clock intents self-heal at the next window boundary.
+
+### Metrics
+
+`agt_lease_held`, `agt_file_arrivals_total{status}`, `agt_launch_intents_total{status}`,
+`agt_stage_outcomes_total{outcome}`, on the `dcre-agt` Grafana dashboard.
+
+---
+
+## Deploy
+
+### Build the image
 
 ```bash
-./gradlew test
+./gradlew clean build                      # produces build/quarkus-app/
+docker build -f src/main/docker/Dockerfile.jvm.prod -t dcre-agt:<tag> .
 ```
 
-Runs against a real `cockroachdb/cockroach:v26.2.3` Testcontainer (ledger constraints, lease CAS/takeover, arrival dedup/quarantine, OrphanSweeper relaunch/exhaustion, infrastructure-vs-job failure classification) plus pure DAG-logic unit tests (`DagEngineTest`, `ClockJobNameTest`). Broader e2e and chaos (kill/resume) runs live in the sprint runbook in `dcre-infra`.
+`Dockerfile.jvm.prod` is the Alpine production image (`eclipse-temurin:25-jre-alpine`), used in
+preference to the Quarkus-generated `Dockerfile.jvm`, which is UBI9-based and kept only as the
+generated default. `src/main/docker/` also holds `Dockerfile.native`, `Dockerfile.native-micro`
+and `Dockerfile.legacy-jar`; none is in use.
 
-`ConfigFailureClassificationTest` covers the `TECH_CONFIG_FAILED` class: a Failed Job whose pod exited **78** (`EX_CONFIG`, platform-batch's reserved code for a failure before the runner phase) is an infrastructure startup failure, not a job outcome. It is still retried, but on `agt.infra-max-attempts` instead of the 3-attempt `agt.orphan-max-attempts` budget, so a cfg restart or a Vault re-seed cannot turn a defect-free arrival into a terminal `DAG_FAILED` in minutes. The ceiling stays bounded: exhaustion still mints `TECH_EXHAUSTED` and fails the DAG (`OrphanSweepTest`, `StaleHeartbeatSweepTest`).
+**Always `clean` before building an image.** `.dockerignore` allowlists `build/quarkus-app/*`
+wholesale, so a build without `clean` copies whatever stale jars are still sitting there.
+Verified 2026-08-09: `dcre-agt:2.0.1` contains three application jars, including
+`agt-1.0.0-SNAPSHOT.jar` and `dcre-agt-1.0.0-SNAPSHOT.jar` from earlier versions.
 
-## Local cluster deployment
+### Architecture
+
+The image must match the cluster's node architecture.
+
+- **Local kind on Apple Silicon**: the host is `arm64` and so is the kind node, so a plain
+  `docker build` is correct. Confirm with `uname -m`.
+- **A real linux/amd64 cluster**: build with `--platform linux/amd64` and **verify the pushed
+  manifest before rollout**. An arm64 image on amd64 nodes fails as `ErrImagePull` minutes
+  after the release already looks complete, because old pods keep serving and the rollout only
+  reports a timeout.
 
 ```bash
-./gradlew build -x test
-docker build -f src/main/docker/Dockerfile.jvm.prod -t dcre-agt:<tag> .
+docker build --platform linux/amd64 -f src/main/docker/Dockerfile.jvm.prod -t <img>:<tag> .
+docker push <img>:<tag>
+docker manifest inspect <img>:<tag> | python3 -c "import json,sys; \
+  [print(m['platform']['os'], m['platform']['architecture']) for m in json.load(sys.stdin).get('manifests',[])]"
+```
+
+Do not read the push's success off a pipeline that ends in `head` or `tail`: that reports the
+consumer's exit status, not the push's. Verify out of band with `docker manifest inspect`.
+
+### Roll it out
+
+```bash
 kind load docker-image dcre-agt:<tag> --name dcre-dev
 kubectl apply -f k8s/
+kubectl -n dcre rollout status deploy/dcre-agt
 ```
 
-`Dockerfile.jvm.prod` is the Alpine (`eclipse-temurin:25-jre-alpine`) production image (engineering standing rule: prefer Alpine over the Quarkus-generated `Dockerfile.jvm`, which is UBI9-based and kept only as the generated default). `k8s/10-agt-deployment.yml` runs AGT itself as a `Deployment` (`replicas: 1`, `strategy: Recreate`) with a readiness probe on `/q/health/ready`; AGT in turn mints each pipeline stage as a short-lived `Job` (never a `Deployment`) via `JobLauncher`, mounting the same `dcre-exchange` PVC and passing identifying params as program arguments.
+`k8s/10-agt-deployment.yml` is the only manifest in this repo. It runs AGT as a `Deployment`
+with `replicas: 1` and `strategy: Recreate`, a `readinessProbe` on `/q/health/ready`, a
+`startupProbe` on `/q/health/live` budgeting up to 5 minutes for a cold Liquibase migration on
+CockroachDB, and then a `livenessProbe` on the same path. While the startup probe is still
+failing Kubernetes runs neither of the other two, so a slow migration cannot be
+liveness-killed into a crashloop.
 
-Ledger-derived metrics on the `dcre-agt` Grafana dashboard: `agt_lease_held`, `agt_file_arrivals_total{status}`, `agt_launch_intents_total{status}`, `agt_stage_outcomes_total{outcome}`.
+The `ServiceAccount` `dcre-agt` and its RBAC are **not** in this repo. They live in
+`dcre-infra/k8s/base/01-rbac.yml`, which as of 2026-08-09 grants, per namespace:
+
+| Namespace | Resource | Verbs |
+|---|---|---|
+| `dcre`, `dcre-col`, `dcre-pay`, `dcre-man` | `batch` `jobs` | create, get, list, watch, delete |
+| `dcre`, `dcre-col`, `dcre-pay`, `dcre-man` | `pods` | get, list, watch |
+| `dcre` only | `configmaps`, `secrets` | get, list, watch |
+
+Four `Role` plus `RoleBinding` pairs, each binding back to the single `dcre-agt` ServiceAccount
+in `dcre`. There is no `ClusterRole`. Adding a fifth flow namespace means adding a fifth pair
+there, not just a knob here.
+
+The manifest sets its own copies of the image knobs and the database URLs. It carries the
+image tag `dcre-agt:m7` as committed, which is not the tag anyone deploys; the tag is chosen at
+`kubectl set image` or `kubectl apply` time. That is a wart, not a convention.
+
+---
+
+## Troubleshooting
+
+Start from the same principle every time: **check the RUNNING thing, not the repository.** A
+long-running Deployment froze its configuration when it started, and the repo has moved on.
+
+```bash
+kubectl -n dcre get deploy dcre-agt -o jsonpath='{.spec.template.spec.containers[0].image}'
+kubectl -n dcre get deploy dcre-agt -o json | python3 -c \
+  "import json,sys; [print(e['name'],'=',e.get('value')) for e in \
+   json.load(sys.stdin)['spec']['template']['spec']['containers'][0].get('env',[])]"
+kubectl -n dcre logs deploy/dcre-agt --tail=200
+```
+
+Verified 2026-08-09: the deployed `dcre-agt` had **27 env vars, 21 of them image knobs**, while
+`k8s/10-agt-deployment.yml` in this repo declares **37, of which 29 are image knobs**. The
+running instance had no `AGT_PAYMENTS_DB_URL`, no `AGT_PAY_SERVICE_DB_URL` and no
+`AGT_HCS_SERVICE_DB_URL`, and it had an `AGT_CTV_MANDATE_SOURCE` the manifest does not carry.
+Reading the manifest would have described a service that was not running.
+
+### An image tag does not identify an artifact
+
+The tag is typed by hand at `docker build -t`; the jar name comes from `version` in
+`build.gradle`. Nothing connects them.
+
+```bash
+docker run --rm --entrypoint sh dcre-agt:<tag> -c 'ls /deployments/app/'
+```
+
+Verified 2026-08-09: `dcre-agt:2.3.0`, the image the cluster was actually running, contains
+`agt-2.0.1.jar`. So does `dcre-agt:2.1.0`. Do not infer the code in an image from its tag.
+
+### A stage pod will not start, or writes the wrong database
+
+Read the pod's actual environment rather than the config you believe was applied:
+
+```bash
+kubectl -n dcre-pay get pods -l dcre/managed-by=agt
+kubectl -n dcre-pay get job <job> -o jsonpath='{.spec.template.spec.containers[0].env}' | python3 -m json.tool
+kubectl -n dcre-pay logs job/<job>
+```
+
+| Symptom | Likely cause |
+|---|---|
+| `Connection to localhost:26257 refused` in a stage pod | AGT did not set that pod's URL variable, so the pod fell back to its committed localhost default, which in a cluster is the pod itself. Check which variable the consumer reads: the name is a cross-repo contract. |
+| That symptom specifically in a **PRG or PRW** pod | Known, and it is not an AGT misconfiguration. Both still read `DCRE_PAY_DB_URL`, which nothing sets. See Known gaps, item 3. Confirm with `kubectl -n dcre-pay get job <job> -o jsonpath='{.spec.template.spec.containers[0].env}'`: AGT sets `DCRE_DB_URL` and never `DCRE_PAY_DB_URL`. |
+| `cde` or `ctv` refuses to start, naming a variable | The `JobLauncher.stageEnv` arm is missing, or the knob feeding it is unset. Both fail closed on purpose. |
+| HCS pod dies immediately on startup | `AGT_HCS_SERVICE_DB_URL` is unset or points at `dcre_col`. `shared/hcs` compares `current_database()` against `dcre_hcs` before any DDL and refuses. |
+| A payments schema appearing inside `dcre_col` | `AGT_PAY_SERVICE_DB_URL` was unset before the guard existed. `StageDatabases.requireAddresses` now refuses this at Job-build time. |
+| `IllegalStateException: the PAY family owns database 'dcre_pay' but its configured url addresses '...'` | The guard working. Fix the `AGT_*_SERVICE_DB_URL`, not the guard. |
+| `IllegalStateException: stage X is hosted in the Y namespace but its Job targets namespace '...'` | The namespace guard working. The stage and the namespace disagree about the family. |
+
+### A stage never runs, and nothing says why
+
+**An unset image is launch-disabled SILENTLY, by design (SCRUM-33).** There is no stub
+fallback and no warning. A clock scheduler with an empty image knob returns from its tick
+before minting a window, so the symptom is total absence: no Job, no intent row, no log line.
+
+```bash
+kubectl -n dcre get deploy dcre-agt -o json | python3 -c \
+  "import json,sys; env=json.load(sys.stdin)['spec']['template']['spec']['containers'][0].get('env',[]); \
+   ks=[e['name'] for e in env if e['name'].endswith('_IMAGE')]; \
+   print(len(ks),'image knobs set'); print('\n'.join(sorted(ks)))"
+```
+
+Compare that list against the 29 in the table above. A missing one is your answer. Note that
+this failure mode is the reason `ACS` was **removed** rather than left with an empty knob: a
+stage with no service behind it would simply never run and nothing would report it.
+
+### A report parent is due forever
+
+`report-stall stage=... scans=N` in the AGT log means the same (flow, client, parent) has been
+seen due for `AGT_REPORT_STALL_SCANS` consecutive scans and its report has not settled it.
+Nothing is retrying and nothing has failed. The usual cause is that the client token in the
+report-due view is not the token the generator's read path selects on. AGT never retries,
+widens or falls back here; the WARN exists purely to make silence visible.
+
+### AGT itself is wedged
+
+`/q/health/live` reports DOWN when the reconciler has not ticked within
+`AGT_SELF_LIVENESS_TTL_SECONDS`, and Kubernetes restarts the pod. The lease CAS then
+re-acquires the single-writer role on the new incarnation.
+
+```bash
+kubectl -n dcre exec deploy/dcre-agt -- \
+  sh -c 'wget -qO- http://localhost:8080/q/health/live'
+```
+
+Look at `lastTickAt` in the response. `"never"` on a pod that has been up for minutes means the
+scheduler never fired at all, which is a different problem from a wedged tick.
+
+### Readiness never passes in cluster
+
+Almost always a missing datasource URL. The current code opens three datasources (`agt_ops` as
+`<default>`, plus `collections` and `payments`) and the Quarkus readiness check covers every
+one of them by name. `AGT_COLLECTIONS_DB_URL` was absent from the manifest until SCRUM-107, and
+every in-cluster AGT fell back to the localhost default, so the pod ran, the readiness probe
+never passed, and the rollout timed out.
+
+```bash
+kubectl -n dcre exec deploy/dcre-agt -- sh -c 'wget -qO- http://localhost:8080/q/health/ready'
+```
+
+The response names each datasource, which tells you which one is down. This is also the fastest
+way to confirm which build is running: queried 2026-08-09, the deployed pod listed only
+`collections` and `<default>`, with no `payments`, because it predates the payments read seam.
+Three names means current code; two means an older image regardless of its tag.
+
+### Tests will not run
+
+`Test process encountered an unexpected problem` from Gradle usually means
+`OutOfMemoryError: Java heap space` in the test worker. `build.gradle` already sets
+`maxHeapSize = '4g'`; if you have reduced it, put it back. If Docker is not running, the
+CockroachDB Testcontainer cannot start and the suite fails at the first `@QuarkusTest`.
+
+---
+
+## Known gaps
+
+Documented because they are not true yet, rather than described as if they were.
+
+1. **`dcre_hcs` does not exist on the current dev cluster.** Verified 2026-08-09:
+   `SHOW DATABASES` on `crdb-0` returned `agt_ops`, `dcre_col`, `dcre_man`, `dcre_pay` and the
+   CockroachDB system databases, with no `dcre_hcs`. `dcre-infra/k8s/base/02-crdb.yml` does
+   create it and `verify-databases.sh` expects it, so the design is right and the running
+   cluster predates the 2026-08-08 ruling. The cluster needs re-provisioning before HCS or CDE
+   can work. Until then, applying `k8s/10-agt-deployment.yml` gives AGT an
+   `AGT_HCS_SERVICE_DB_URL` pointing at a database that is not there.
+
+2. **The images are not built with Paketo buildpacks.** The house rule is Paketo with
+   `BP_JVM_VERSION=25` rather than a hand-written prod JVM Dockerfile. This repo has no
+   container-image extension in `build.gradle` at all (verified: `grep -n 'container-image\|buildpack'
+   build.gradle` exits 1), and `bootBuildImage` is a Spring Boot Gradle plugin task that does not
+   exist in a Quarkus build. Adopting it means adding `quarkus-container-image-buildpack` and
+   retiring `Dockerfile.jvm.prod`. Not done. Until it is, the Dockerfile path documented above
+   is what actually works.
+
+3. **`DCRE_PAY_DB_URL` drift is still live in two payments services.** AGT injects
+   `DCRE_DB_URL` for every family and `NamespaceRoutingTest` asserts no pod ever carries
+   `DCRE_PAY_DB_URL`. Checked on 2026-08-09 against the sibling checkouts under
+   `be/java/spring/dcre/payments`, seven of the nine now read `DCRE_DB_URL` and **two still do
+   not**:
+
+   | File | Line | Reads |
+   |---|---|---|
+   | `payments/prg/src/main/resources/application.yml` | 16 | `${DCRE_PAY_DB_URL:jdbc:postgresql://localhost:26257/dcre_pay?sslmode=disable}` |
+   | `payments/prw/src/main/resources/application.yml` | 12 | `${DCRE_PAY_DB_URL:jdbc:postgresql://localhost:26257/dcre_pay?sslmode=disable}` |
+
+   Nothing in AGT or in `dcre-infra` sets `DCRE_PAY_DB_URL` (verified by grep across both,
+   with a positive control). In cluster both pods therefore fall back to their committed
+   localhost default, which is the pod itself. The correction is to change `DCRE_PAY_DB_URL`
+   to `DCRE_DB_URL` in those two files, matching their seven siblings. **Those files are not
+   in this repository and have not been touched from here.** PRG is the payments report
+   generator and PRW is a real DAG stage, so this is not dormant scope.
+
+4. **The stage-pod env var names remain a hand-maintained cross-repo mirror.** Item 3 is the
+   second time this exact seam has drifted. The durable fix is to generate both sides from one
+   schema. Not done, and recorded as a follow-up rather than mitigated.
+
+5. **No `.env.example`.** The clean-clone rule holds (the yml defaults work), but the house
+   convention also asks for a committed `.env.example` skeleton and there is none.
+
+6. **The committed manifest image tag is meaningless.** `k8s/10-agt-deployment.yml` says
+   `dcre-agt:m7`, which nobody deploys. The tag comes from the release process, not the file.
+
+7. **RBAC is not in this repo.** The `dcre-agt` ServiceAccount and the cross-namespace Job
+   permissions live in `dcre-infra`, so `kubectl apply -f k8s/` on a cluster that has not been
+   provisioned by `dcre-infra` produces a Deployment that cannot create anything.
+
+---
 
 ## Related repositories
 
-Collections: `dcre-crr` `dcre-ctv` `dcre-cde` `dcre-crw` `dcre-cir` `dcre-cix` `dcre-csx` `dcre-cpx` `dcre-crg`
-Payments: `dcre-prr` `dcre-ptv` `dcre-pai` `dcre-prw` `dcre-pir` `dcre-pix` `dcre-psx` `dcre-ppx` `dcre-prg`
-Mandates: `dcre-mrr` `dcre-mrv` `dcre-mas` `dcre-mit` `dcre-mir` `dcre-mrw` `dcre-mix` `dcre-msx` `dcre-mpx` `dcre-mrg`
+All DCRE repositories are **private** under https://github.com/sean-huni. Verified 2026-08-09
+with `gh api repos/sean-huni/<name> --jq '.private'`: all 38 exist and every one returned
+`true`. An unauthenticated `curl` of any of them returns 404, and that is privacy, not a broken
+link. The control for that check: https://github.com/sean-huni returns 200 and an invented
+repository name under the same account returns 404.
 
-The pre-cutover repositories (`dcre-ixr`, `dcre-sxr`, `dcre-pxr`, `dcre-ais`) are archived per R-48 and their images are no longer built.
+Because they are private, the plain names are given rather than links that would 404 for a
+reader who is not signed in.
 
-- https://github.com/sean-huni/dcre-hcs
-- https://github.com/sean-huni/dcre-platform-model
-- https://github.com/sean-huni/dcre-platform-files
-- https://github.com/sean-huni/dcre-platform-batch
-- https://github.com/sean-huni/dcre-platform-persistence
-- https://github.com/sean-huni/dcre-infra
-- https://github.com/sean-huni/dcre-fixture-toolkit
-- https://github.com/sean-huni/dcre-design-register
-- https://github.com/sean-huni/dcre-rpt
+| Group | Repositories |
+|---|---|
+| This service | `dcre-agt` |
+| Collections | `dcre-crr` `dcre-ctv` `dcre-cde` `dcre-crw` `dcre-cir` `dcre-cix` `dcre-csx` `dcre-cpx` `dcre-crg` |
+| Payments | `dcre-prr` `dcre-ptv` `dcre-pai` `dcre-prw` `dcre-pir` `dcre-pix` `dcre-psx` `dcre-ppx` `dcre-prg` |
+| Mandates | `dcre-mrr` `dcre-mrv` `dcre-mas` `dcre-mit` `dcre-mir` `dcre-mrw` `dcre-mix` `dcre-msx` `dcre-mpx` `dcre-mrg` |
+| Cross-family | `dcre-hcs` `dcre-rpt` |
+| Shared platform | `dcre-platform-model` `dcre-platform-files` `dcre-platform-batch` `dcre-platform-persistence` |
+| Infrastructure and docs | `dcre-infra` `dcre-fixture-toolkit` `dcre-design-register` |
+
+The pre-cutover repositories (`dcre-ixr`, `dcre-sxr`, `dcre-pxr`, `dcre-ais`) are archived per
+R-48 and their images are no longer built.
+
+### External references
+
+- 12FactorApp Alignment: https://12factor.net/
+- Database per Service: https://microservices.io/patterns/data/database-per-service.html
+- SDKMAN: https://sdkman.io/
+- kind: https://kind.sigs.k8s.io/
+
+Each of the four returned HTTP 200 on 2026-08-09 via
+`curl -s -o /dev/null -w "%{http_code}" -L <url>`.
+
+---
+
+## Verified facts
+
+Every number in this README, with the command that produced it. Re-run these rather than
+trusting the table; all were run on 2026-08-09.
+
+| Fact | Value | Command |
+|---|---|---|
+| Build result | `BUILD SUCCESSFUL in 4m 8s`, exit 0 | `./gradlew clean build` |
+| Test count | 241 tests, 35 classes, 0 failures/errors/skipped | aggregate `build/test-results/test/TEST-*.xml` |
+| Test source files | 36 (35 test classes + `CrdbTestResource`) | `find src/test/java -name '*.java' \| wc -l` |
+| Main source files | 44 | `find src/main/java -name '*.java' \| wc -l` |
+| Liquibase changelogs | 9 files (8 changesets + master) | `find src/main/resources/db/changelog -name '*.xml' \| wc -l` |
+| Gradle wrapper | 9.3.1 | `./gradlew --version` |
+| JDK | 25 (Temurin 25+36-LTS) | `java -version` |
+| Quarkus platform | 3.33.2.1 | `gradle.properties` |
+| Application version | 2.0.1 | `build.gradle` |
+| Stage constants | 29 | `domain/Stage.java` |
+| Image knobs | 29 in `application.yml`, 29 in the manifest | `grep -c '\-image: \${AGT_' src/main/resources/application.yml` |
+| Env vars read | 74 in `application.yml`, 75 including `AGT_OBSERVE_ENABLED` | regex over `${VAR:` in `application.yml` |
+| CockroachDB test image | `cockroachdb/cockroach:v26.2.3` | `src/test/java/za/co/fnb/dcre/agt/CrdbTestResource.java` |
+| Exchange root default | resolves to `env/repo/infra/dcre-infra/exchange` | `realpath ../../../../../infra/dcre-infra/exchange` |
+| Deployed image (dev) | `dcre-agt:2.3.0`, containing `agt-2.0.1.jar` | `kubectl get deploy`, `docker run --entrypoint sh` |
+| Databases on the dev cluster | 4 of 5; `dcre_hcs` absent | `cockroach sql --database=defaultdb -e "SHOW DATABASES;"` |
+| Manifest env vars | 37 total, 29 of them image knobs | regex over `- name: <UPPER>` in `k8s/10-agt-deployment.yml` |
+| Running deployment env vars | 27 total, 21 image knobs | `kubectl get deploy dcre-agt -o json` |
+| Payments services reading `DCRE_DB_URL` | 7 of 9; `prg` and `prw` still read `DCRE_PAY_DB_URL` | `grep -rn 'DCRE_DB_URL\|DCRE_PAY_DB_URL' payments/*/src/main/resources/application.yml` in `be/java/spring/dcre` |
+| Loops that gate on the lease | all writers; `SlaMonitor`, `LatentDirAuditor`, `MetricsService` do not | `grep -c holdsLease` per file in `service/` |
+| DCRE repositories | 38, all private | `gh api repos/sean-huni/<name> --jq '.private'` |
