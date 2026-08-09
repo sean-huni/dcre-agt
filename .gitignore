@@ -4,3 +4,19 @@ build/
 .DS_Store
 .idea/
 *.iml
+
+# Build and toolchain roots belong at the REPOSITORY ROOT and nowhere else. A
+# settings.gradle or gradlew under src/ makes IntelliJ import a second, nested
+# project, so the module is indexed twice. Four such files reached the index on
+# 2026-08-09 (see RepoLayoutTest, which fails the build if any exist on disk).
+# These patterns stop them being STAGED; the test stops them EXISTING. Both,
+# because ignoring a file does not stop an IDE reading it.
+src/**/gradlew
+src/**/gradlew.bat
+src/**/settings.gradle
+src/**/settings.gradle.kts
+src/**/build.gradle
+src/**/build.gradle.kts
+src/**/gradle.properties
+src/**/gradle/wrapper/
+src/**/.sdkmanrc

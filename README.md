@@ -285,11 +285,17 @@ into an image on its own produces something that will not start.
 ./gradlew test --tests 'za.co.fnb.dcre.agt.service.*'
 ```
 
-**Current suite: 241 tests in 35 test classes, 0 failures, 0 errors, 0 skipped.** Derived by
+**Current suite: 242 tests in 36 test classes, 0 failures, 0 errors, 0 skipped.** Derived by
 aggregating `build/test-results/test/TEST-*.xml` after the run above, not by reading a report
-summary. There are 36 `.java` files under `src/test/java`; `CrdbTestResource.java` is a
+summary. There are 37 `.java` files under `src/test/java`; `CrdbTestResource.java` is a
 `QuarkusTestResourceLifecycleManager` helper, not a test class, which is the difference between
-36 and 35.
+37 and 36.
+
+One of the 36 is `RepoLayoutTest`, which asserts no build, IDE or toolchain artifact exists
+below `src/`. It is a plain JUnit test with no Quarkus context and it guards a defect no other
+test can see: Gradle takes only `**/*.java` from `src/main/java`, so a stray `settings.gradle`
+or `gradlew` in a package directory is inert at build time while making IntelliJ import a
+second, nested project. See Known gaps, item 10.
 
 The suite mixes pure unit tests (`DagEngineTest`, `ClockJobNameTest`, `FlowNamespacesTest`,
 the routing guards) with `@QuarkusTest` classes across several `TestProfile`s, each booting a
@@ -1256,6 +1262,24 @@ Documented because they are not true yet, rather than described as if they were.
    dashboard has been created by hand in the running Grafana was not checked; either way nothing
    in any repository can recreate it.
 
+10. **IntelliJ has a Java package directory registered as a project, not the repo root, and it
+    keeps regenerating `.idea/` there.** On 2026-08-09 a complete second Gradle project was
+    found inside `src/main/java/za/co/fnb/dcre/agt/`: a `settings.gradle` that was the root one
+    with `package za.co.fnb.dcre.agt` prepended, plus `gradlew`, `gradlew.bat`,
+    `gradle/wrapper/`, `.sdkmanrc`, `.idea/`, `agt.iml` and a `.gradle/` cache proving Gradle
+    had been RUN there. Five of those files had reached the git index. All are now removed and
+    `RepoLayoutTest` fails the build if any return.
+
+    **The repository side is fixed; the IDE side needs a human.**
+    `~/Library/Application Support/JetBrains/IntelliJIdea2026.2/options/recentProjects.xml`
+    registers `.../dcre/agt/src/main/java/za/co/fnb/dcre/agt` as a project and does not register
+    the repository root at all, which is what produced the nested build root in the first place.
+    Proof it is live: the nested `.idea/` reappeared six minutes after deletion, mid-build,
+    written by IntelliJ (PID 57678). Close that project, remove it from Recent Projects, and
+    open `/Users/sean/env/repo/be/java/quarkus/dcre/agt` instead. Until then `RepoLayoutTest`
+    may go red on `.idea` alone, which is the guard working rather than a flaw. Do not hand-edit
+    `recentProjects.xml` while the IDE is running; it rewrites the file on exit.
+
 ---
 
 ## Related repositories
@@ -1319,8 +1343,8 @@ dateless claim about them cannot be aged by a reader.
 | Fact | Value | Command |
 |---|---|---|
 | Build result | `BUILD SUCCESSFUL in 3m 38s`, `gradle_exit=0` (warm cache) | `./gradlew clean build` |
-| Test count | 241 tests, 35 classes, 0 failures/errors/skipped | aggregate `build/test-results/test/TEST-*.xml` |
-| Test source files | 36 (35 test classes + `CrdbTestResource`) | `find src/test/java -name '*.java' \| wc -l` |
+| Test count | 242 tests, 36 classes, 0 failures/errors/skipped | aggregate `build/test-results/test/TEST-*.xml` |
+| Test source files | 37 (36 test classes + `CrdbTestResource`) | `find src/test/java -name '*.java' \| wc -l` |
 | Main source files | 44 | `find src/main/java -name '*.java' \| wc -l` |
 | Liquibase changelogs | 9 files (8 changesets + master) | `find src/main/resources/db/changelog -name '*.xml' \| wc -l` |
 | Gradle wrapper | 9.3.1 | `./gradlew --version` |
