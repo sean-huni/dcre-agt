@@ -13,8 +13,9 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import za.co.fnb.dcre.agt.config.AgtConfig;
-import za.co.fnb.dcre.agt.repo.CollectionsReadRepo;
-import za.co.fnb.dcre.agt.repo.CollectionsReadRepo.SlaPending;
+import za.co.fnb.dcre.agt.domain.Flow;
+import za.co.fnb.dcre.agt.repo.FamilyReadRepo;
+import za.co.fnb.dcre.agt.repo.FamilyReadRepo.SlaPending;
 import za.co.fnb.dcre.agt.service.SlaMonitor;
 
 import java.sql.Connection;
@@ -52,7 +53,7 @@ class SlaMonitorTest {
     SlaMonitor monitor;
 
     @Inject
-    CollectionsReadRepo collectionsRepo;
+    FamilyReadRepo families;
 
     @Inject
     AgtConfig config;
@@ -63,6 +64,10 @@ class SlaMonitorTest {
     @Inject
     @io.quarkus.agroal.DataSource("collections")
     AgroalDataSource collectionsDs;
+
+    @Inject
+    @io.quarkus.agroal.DataSource("payments")
+    AgroalDataSource paymentsDs;
 
     private CapturingHandler warns;
 
@@ -79,14 +84,17 @@ class SlaMonitorTest {
     void resetViewAndLogCapture() {
         meterReader = new SimpleMeterRegistry();
         ((CompositeMeterRegistry) registry).add(meterReader);
-        execCollections("CREATE TABLE IF NOT EXISTS prg_sla_pending_seed ("
-                + "client VARCHAR(16) NOT NULL, e2e VARCHAR(35) NOT NULL, "
-                + "outbound_msg_id VARCHAR(35) NOT NULL, visible_at TIMESTAMPTZ NOT NULL)");
-        execCollections("CREATE OR REPLACE VIEW prg_sla_pending AS "
-                + "SELECT client, e2e, outbound_msg_id, visible_at, "
-                + "EXTRACT(EPOCH FROM (now() - visible_at)) / 3600 AS age_hours "
-                + "FROM prg_sla_pending_seed");
-        execCollections("DELETE FROM prg_sla_pending_seed");
+        // Both families publish a view of this name in their OWN database.
+        for (final AgroalDataSource ds : List.of(collectionsDs, paymentsDs)) {
+            exec(ds, "CREATE TABLE IF NOT EXISTS prg_sla_pending_seed ("
+                    + "client VARCHAR(16) NOT NULL, e2e VARCHAR(35) NOT NULL, "
+                    + "outbound_msg_id VARCHAR(35) NOT NULL, visible_at TIMESTAMPTZ NOT NULL)");
+            exec(ds, "CREATE OR REPLACE VIEW prg_sla_pending AS "
+                    + "SELECT client, e2e, outbound_msg_id, visible_at, "
+                    + "EXTRACT(EPOCH FROM (now() - visible_at)) / 3600 AS age_hours "
+                    + "FROM prg_sla_pending_seed");
+            exec(ds, "DELETE FROM prg_sla_pending_seed");
+        }
         warns = new CapturingHandler();
         Logger.getLogger(SlaMonitor.class.getName()).addHandler(warns);
     }
@@ -117,9 +125,9 @@ class SlaMonitorTest {
 
         monitor.tick();
 
-        assertNull(meterReader.find("dcre_sla_pending_amber").tag("client", "FNBCC03").gauge(),
+        assertNull(meterReader.find("dcre_sla_pending_amber").tag("flow", "COL").tag("client", "FNBCC03").gauge(),
                 "no amber gauge for a client with only sub-20h rows");
-        assertNull(meterReader.find("dcre_sla_pending_red").tag("client", "FNBCC03").gauge(),
+        assertNull(meterReader.find("dcre_sla_pending_red").tag("flow", "COL").tag("client", "FNBCC03").gauge(),
                 "no red gauge for a client with only sub-20h rows");
         assertTrue(warns.lines.stream().noneMatch(w -> w.contains("E2EFRESH00000001")),
                 "no WARN under the amber threshold: " + warns.lines);
@@ -170,13 +178,49 @@ class SlaMonitorTest {
         seedPending("FNBCC01", "E2EORDER00000002", 25);
         seedPending("FNBCC01", "E2EORDER00000003", 5);
 
-        final List<SlaPending> rows = collectionsRepo.slaCounts(20);
+        final List<SlaPending> rows = families.slaCounts(Flow.COL, 20);
 
         assertEquals(2, rows.size(), "WHERE age_hours >= :amber filters the 5h row");
         assertEquals("E2EORDER00000002", rows.get(0).e2e(), "ORDER BY age_hours DESC");
         assertEquals("E2EORDER00000001", rows.get(1).e2e());
         assertEquals("FNBCC01", rows.get(0).client());
         assertTrue(rows.get(0).ageHours() >= 25.0, "age_hours derived from visible_at: " + rows.get(0));
+    }
+
+    @Test
+    void paymentsBreachesAreScannedFromThePaymentsDatabaseAndTaggedSeparately() {
+        // Same client, a breach in EACH database. Reading one datasource left the
+        // other family's breaches invisible, and merging them under one client
+        // label could not say which side was breaching, so the gauge carries a
+        // flow tag and each family republishes only its own.
+        seedPending("FNBRF01", "E2ECOL0000000001", 21);
+        seedPending(paymentsDs, "FNBRF01", "E2EPAY0000000001", 25);
+
+        monitor.tick();
+
+        assertEquals(1.0, gaugeValue("dcre_sla_pending_amber", "FNBRF01"),
+                "the collections amber breach");
+        assertEquals(1.0, meterReader.find("dcre_sla_pending_red")
+                        .tag("flow", "PAY").tag("client", "FNBRF01").gauge().value(),
+                "the payments red breach, discovered from dcre_pay");
+        assertTrue(warns.lines.stream().anyMatch(w -> w.contains("flow=PAY")
+                        && w.contains("e2e=E2EPAY0000000001") && w.contains("level=RED")),
+                "the WARN names the flow: " + warns.lines);
+    }
+
+    @Test
+    void oneFamilysRepublishNeverZeroesTheOthersGauge() {
+        // publish() zeroes every known holder before setting fresh counts. Scoped
+        // to (metric, flow): if it were scoped to the metric alone, whichever
+        // family scanned second would blank the first family's gauges every tick.
+        seedPending("FNBCC01", "E2EBOTH000000001", 21);
+        seedPending(paymentsDs, "FNBCC01", "E2EBOTH000000002", 21);
+
+        monitor.tick();
+
+        assertEquals(1.0, gaugeValue("dcre_sla_pending_amber", "FNBCC01"));
+        assertEquals(1.0, meterReader.find("dcre_sla_pending_amber")
+                .tag("flow", "PAY").tag("client", "FNBCC01").gauge().value());
     }
 
     @Test
@@ -188,20 +232,25 @@ class SlaMonitorTest {
     }
 
     private double gaugeValue(final String metric, final String client) {
-        final Gauge gauge = meterReader.find(metric).tag("client", client).gauge();
+        final Gauge gauge = meterReader.find(metric).tag("flow", "COL").tag("client", client).gauge();
         assertNotNull(gauge, metric + "{client=" + client + "} not registered");
         return gauge.value();
     }
 
     private void assertWarnLine(final String client, final String e2e, final String level) {
-        final Pattern line = Pattern.compile("sla stage=FINT client=" + client
+        final Pattern line = Pattern.compile("sla stage=FINT flow=COL client=" + client
                 + " e2e=" + e2e + " ageHours=\\d+(\\.\\d+)? level=" + level);
         assertTrue(warns.lines.stream().anyMatch(w -> line.matcher(w).matches()),
                 level + " WARN line for " + e2e + " missing in: " + warns.lines);
     }
 
     private void seedPending(final String client, final String e2e, final int hoursAgo) {
-        try (Connection c = collectionsDs.getConnection();
+        seedPending(collectionsDs, client, e2e, hoursAgo);
+    }
+
+    private void seedPending(final AgroalDataSource ds, final String client,
+                             final String e2e, final int hoursAgo) {
+        try (Connection c = ds.getConnection();
              PreparedStatement p = c.prepareStatement(
                      "INSERT INTO prg_sla_pending_seed (client, e2e, outbound_msg_id, visible_at) "
                              + "VALUES (?, ?, ?, now() - ? * INTERVAL '1 hour')")) {
@@ -216,7 +265,11 @@ class SlaMonitorTest {
     }
 
     private void execCollections(final String sql) {
-        try (Connection c = collectionsDs.getConnection();
+        exec(collectionsDs, sql);
+    }
+
+    private void exec(final AgroalDataSource ds, final String sql) {
+        try (Connection c = ds.getConnection();
              PreparedStatement p = c.prepareStatement(sql)) {
             p.executeUpdate();
         } catch (SQLException e) {

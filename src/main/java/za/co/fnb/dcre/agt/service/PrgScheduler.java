@@ -4,83 +4,48 @@ import io.quarkus.scheduler.Scheduled;
 import io.smallrye.common.annotation.RunOnVirtualThread;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
-import org.jboss.logging.Logger;
 import za.co.fnb.dcre.agt.config.AgtConfig;
+import za.co.fnb.dcre.agt.domain.Flow;
 import za.co.fnb.dcre.agt.domain.Stage;
-import za.co.fnb.dcre.agt.repo.ArrivalRepo;
-
-import java.io.IOException;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.time.Instant;
-import java.util.List;
 
 /**
- * R-28: launches the PRG executor per (client, window). The window counter
- * derives from the epoch so every AGT incarnation computes the same run key
- * (level-triggered; the clock-intent unique key dedupes). An on-demand
- * trigger file chaos/run-prg-&lt;client&gt; launches an immediate manual window.
+ * The PAYMENTS report generator on the clock, one window per (payments client,
+ * window). Owner: "PRG generates all the reports for all the clients at specified
+ * times (of when they prefer to receive their Payment Reports)."
+ *
+ * <p><b>This class changed meaning at the v1 cutover.</b> It used to launch the
+ * COLLECTIONS generator under the name PRG, for every client of every flow. The
+ * collections half now lives in {@link CrgScheduler} against {@code dcre_col}; this
+ * one serves PAY clients only and its Jobs write {@code dcre_pay}.
+ *
+ * <p>Scheduling note, and it is the reason the two have separate interval knobs:
+ * collections transaction lists are processed ON the collection day, payments
+ * transactions IMMEDIATELY. Nothing here waits for a collection day, and nothing
+ * here may acquire one by being made to share a knob or a loop with CRG. The
+ * report cadence is a client PREFERENCE about when they like to receive reports,
+ * which is not a processing gate.
  */
 @ApplicationScoped
 public class PrgScheduler {
-
-    private static final Logger LOG = Logger.getLogger(PrgScheduler.class);
 
     @Inject
     AgtConfig config;
 
     @Inject
-    LeaseService lease;
-
-    @Inject
-    ArrivalRepo arrivalRepo;
-
-    @Inject
-    JobLauncher launcher;
+    ReportWindows windows;
 
     @Inject
     FlowNamespaces flowNamespaces;
 
     @RunOnVirtualThread
-    @Scheduled(every = "10s", concurrentExecution = io.quarkus.scheduler.Scheduled.ConcurrentExecution.SKIP)
+    @Scheduled(every = "10s", concurrentExecution = Scheduled.ConcurrentExecution.SKIP)
     void tick() {
-        if (!lease.holdsLease() || !config.launchEnabled() || config.prgImage().isEmpty()) {
-            return;
-        }
-        long window = window(Instant.now().getEpochSecond(), config.prgIntervalSeconds());
-        for (String client : arrivalRepo.distinctClientTokens()) {
-            // SCRUM-70: the PSR window follows the client's flow (R-42 interim map).
-            launcher.launchClock(flowNamespaces.clientFlow(client), Stage.PRG,
-                    client + "-w" + window, List.of(
-                    "client=" + client,
-                    "window=w" + window));
-            considerManualTrigger(client, window);
-        }
+        windows.launchPerClient(Stage.PRG, config.prgIntervalSeconds(),
+                client -> flowNamespaces.clientFlow(client) == Flow.PAY);
     }
 
-    /** Same window arithmetic as CrwScheduler: identical keys across incarnations. */
-    public static long window(long epochSeconds, long intervalSeconds) {
-        return epochSeconds / intervalSeconds;
-    }
-
-    private void considerManualTrigger(String client, long window) {
-        Path trigger = Path.of(config.exchangeRoot(), "chaos", "run-prg-" + client);
-        try {
-            if (!Files.deleteIfExists(trigger)) {
-                return;
-            }
-        } catch (IOException e) {
-            LOG.warnf("manual PRG trigger for %s failed: %s", client, e.getMessage());
-            return;
-        }
-        // Idempotent within the window: repeated triggers reuse one run key.
-        // The window param carries a -manual suffix so the Batch job instance is
-        // distinct from the scheduled run of the same window (identifying params
-        // are the instance identity; resend alone is non-identifying).
-        launcher.launchClock(flowNamespaces.clientFlow(client), Stage.PRG,
-                client + "-manual-" + window, List.of(
-                "client=" + client,
-                "window=w" + window + "-manual",
-                "resend=true,java.lang.String,false"));
+    /** Kept as the shared window arithmetic every clock scheduler cites. */
+    public static long window(final long epochSeconds, final long intervalSeconds) {
+        return ReportWindows.window(epochSeconds, intervalSeconds);
     }
 }

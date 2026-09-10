@@ -7,6 +7,7 @@ import jakarta.inject.Inject;
 import org.jboss.logging.Logger;
 import za.co.fnb.dcre.agt.domain.ArrivalStatus;
 import za.co.fnb.dcre.agt.domain.FileArrival;
+import za.co.fnb.dcre.agt.domain.Flow;
 import za.co.fnb.dcre.agt.domain.Outcome;
 import za.co.fnb.dcre.agt.domain.Stage;
 import za.co.fnb.dcre.agt.repo.ArrivalRepo;
@@ -22,18 +23,22 @@ import java.util.Set;
 
 /**
  * Level-triggered DAG engine over the ledgers. Route shapes live in
- * {@link RouteDags} (R-36 data, not code): DC Collections
- * CRR -> CTV -> [CDE, CIR]; ENDO Payments CRR -> CTV -> AIS -> [CIR]
- * (SCRUM-69: CDE never runs on the pay flow); M10 Mandates (SCRUM-79)
- * MRR -> MRV -> MAS -> MIT -> [MIR, MRW]. A BUSINESS_FILE_FATAL or
- * BUSINESS_FILE_REJECTED predecessor routes to the route family's responder
- * only (CIR, or MIR on the man route: whole-file NACK path, R-19/R-41/SPEC-DAG
- * section 3); BUSINESS_PARTIAL fans out like ACCEPTED (R-41: PASS rows
- * continue). Response routes are token-picked and share ONE code path: the
- * filename token selects the single leg reader, IXR/SXR/PXR on fint-resp (M4)
- * and MIX/MSX/MPX on fint-resp-man (SCRUM-91, replacing the merged MAR reader
- * and its MSR chain).
- * Pure decision logic lives in computeLaunches() for unit testing.
+ * {@link RouteDags} (R-36 data, not code), transcribed from the six sheets:
+ * DC Collections CRR -> CTV -> [CDE, CIR]; ENDO Payments
+ * PRR -> PTV -> PAI -> [PRW, PIR]; Mandates MRR -> MRV -> MAS -> MIT -> [MIR, MRW].
+ * A BUSINESS_FILE_FATAL or BUSINESS_FILE_REJECTED predecessor routes to the route
+ * family's responder only (CIR, PIR or MIR: whole-file NACK path,
+ * R-19/R-41/SPEC-DAG section 3); BUSINESS_PARTIAL fans out like ACCEPTED (R-41:
+ * PASS rows continue). Response routes are token-picked and share ONE code path:
+ * the filename token selects the leg, and the FLOW selects the family's reader,
+ * CIX/CSX/CPX, PIX/PSX/PPX or MIX/MSX/MPX.
+ *
+ * <p>Every decision method takes the arrival's {@link Flow} as well as its route,
+ * because collections and payments share the {@code fint-resp} channel and the
+ * route alone therefore cannot say which family's readers own a reply. See
+ * {@link RouteDags#RESPONSES}.
+ *
+ * <p>Pure decision logic lives in computeLaunches() for unit testing.
  */
 @ApplicationScoped
 public class DagEngine {
@@ -56,33 +61,44 @@ public class DagEngine {
         return java.util.Optional.empty();
     }
 
-    /** Response-route filename token -> leg reader (route-aware): each route has
-     *  one reader per reply type, so the route picks the family and the token
-     *  picks the leg. Empty = unknown token (fail closed). */
-    public static java.util.Optional<Stage> fintRespStage(String route, String filename) {
-        boolean man = ArrivalService.ROUTE_FINT_RESP_MAN.equals(route);
-        return replyToken(filename).map(token -> man ? manEntryFor(token) : colEntryFor(token));
+    /**
+     * Response-route leg reader: the FLOW picks the family, the filename token picks
+     * the leg. Empty = unknown token (fail closed).
+     *
+     * <p>The flow is needed because collections and payments share the
+     * {@code fint-resp} channel (both families send pain.008). Selecting on the route
+     * alone sent every reply to the collections readers, so a payments reply was read
+     * into {@code dcre_col} while its Job sat in the {@code dcre-pay} namespace.
+     */
+    public static java.util.Optional<Stage> fintRespStage(final String route, final Flow flow,
+                                                          final String filename) {
+        final Set<Stage> legal = RouteDags.response(route, flow).terminal();
+        return replyToken(filename).map(token -> entryFor(flow, token))
+                .filter(legal::contains);
     }
 
-    /** SCRUM-91: fint-resp-man token-picks one leg reader per reply type, exactly as
-     *  fint-resp picks IXR/SXR/PXR. An unknown token is a misrouted file and fails
-     *  closed (never a guessed default). */
-    static Stage manEntryFor(final String token) {
-        return switch (token) {
-            case "ISR" -> Stage.MIX;
-            case "SBSR" -> Stage.MSX;
-            case "PBSR" -> Stage.MPX;
-            default -> throw new IllegalArgumentException("unknown mandate reply token: " + token);
-        };
-    }
-
-    /** M4 collections leg readers, the shape SCRUM-91 made the mandates route copy. */
-    static Stage colEntryFor(final String token) {
-        return switch (token) {
-            case "ISR" -> Stage.IXR;
-            case "SBSR" -> Stage.SXR;
-            case "PBSR" -> Stage.PXR;
-            default -> throw new IllegalArgumentException("unknown collections reply token: " + token);
+    /** One leg reader per (family, reply type). An unknown token is a misrouted file
+     *  and fails closed; there is never a guessed default. */
+    static Stage entryFor(final Flow flow, final String token) {
+        return switch (flow) {
+            case COL -> switch (token) {
+                case "ISR" -> Stage.CIX;
+                case "SBSR" -> Stage.CSX;
+                case "PBSR" -> Stage.CPX;
+                default -> throw new IllegalArgumentException("unknown collections reply token: " + token);
+            };
+            case PAY -> switch (token) {
+                case "ISR" -> Stage.PIX;
+                case "SBSR" -> Stage.PSX;
+                case "PBSR" -> Stage.PPX;
+                default -> throw new IllegalArgumentException("unknown payments reply token: " + token);
+            };
+            case MAN -> switch (token) {
+                case "ISR" -> Stage.MIX;
+                case "SBSR" -> Stage.MSX;
+                case "PBSR" -> Stage.MPX;
+                default -> throw new IllegalArgumentException("unknown mandate reply token: " + token);
+            };
         };
     }
 
@@ -120,9 +136,9 @@ public class DagEngine {
      * is loud but never terminal, and is precisely the per-item exception that
      * wedges a level-triggered loop. Observed spinning before this correction.
      */
-    static java.util.Optional<Stage> initialStage(String route, String filename) {
+    public static java.util.Optional<Stage> initialStage(final String route, final Flow flow, final String filename) {
         if (isRespRoute(route)) {
-            return fintRespStage(route, filename);
+            return fintRespStage(route, flow, filename);
         }
         final RouteDags.RouteDag dag = RouteDags.REQUESTS.get(route);
         return dag == null ? java.util.Optional.empty() : dag.entry();
@@ -146,6 +162,9 @@ public class DagEngine {
     @Inject
     CollectionsReadRepo collectionsRead;
 
+    @Inject
+    FlowNamespaces flowNamespaces;
+
     @RunOnVirtualThread
     @Scheduled(every = "2s", concurrentExecution = io.quarkus.scheduler.Scheduled.ConcurrentExecution.SKIP)
     void tick() {
@@ -158,7 +177,8 @@ public class DagEngine {
                     LOG.warnf("arrival %s CLAIMED without claimed_path: not launching (F21)", arrival.id());
                     continue;
                 }
-                java.util.Optional<Stage> first = initialStage(arrival.routeId(), arrival.physicalFilename());
+                java.util.Optional<Stage> first = initialStage(arrival.routeId(),
+                        flowNamespaces.flowFor(arrival), arrival.physicalFilename());
                 if (first.isEmpty()) {
                     // Unknown fint-resp token never launches (fail closed, F13).
                     arrivalRepo.transitionArrival(arrival.id(), ArrivalStatus.CLAIMED, ArrivalStatus.QUARANTINED);
@@ -188,7 +208,9 @@ public class DagEngine {
                 if (!lease.holdsLease()) {
                     return; // re-check before side effects (F7)
                 }
-                for (Stage next : computeLaunches(arrival.routeId(), arrival.physicalFilename(), outcomes, intended)) {
+                final Flow flow = flowNamespaces.flowFor(arrival);
+                for (Stage next : computeLaunches(arrival.routeId(), flow,
+                        arrival.physicalFilename(), outcomes, intended)) {
                     launcher.launch(arrival.id(), next);
                 }
                 // SCRUM-107: a SUPPLIER, so the cross-database read happens only if every
@@ -196,7 +218,7 @@ public class DagEngine {
                 // charged one connection + round trip per DAG_RUNNING arrival per 2s
                 // tick for the arrival's whole life, and this change deliberately keeps
                 // warehoused arrivals in DAG_RUNNING for days, so it grew its own N.
-                terminalState(arrival.routeId(), outcomes,
+                terminalState(arrival.routeId(), flow, outcomes,
                         () -> collectionsRead.emissionOwedFor(arrival.id()))
                         .ifPresent(
                         s -> arrivalRepo.transitionArrival(arrival.id(), ArrivalStatus.DAG_RUNNING, s));
@@ -239,13 +261,13 @@ public class DagEngine {
         return dag;
     }
 
-    public static Set<Stage> computeLaunches(String route, String filename,
-                                             Map<Stage, Outcome> outcomes, Set<Stage> intended) {
+    public static Set<Stage> computeLaunches(final String route, final Flow flow, final String filename,
+                                             final Map<Stage, Outcome> outcomes, final Set<Stage> intended) {
         if (!isRespRoute(route)) {
             return computeLaunches(requestDag(route), outcomes, intended);
         }
         Set<Stage> launches = EnumSet.noneOf(Stage.class);
-        fintRespStage(route, filename)
+        fintRespStage(route, flow, filename)
                 .filter(stage -> !intended.contains(stage) && !outcomes.containsKey(stage))
                 .ifPresent(launches::add);
         return launches;
@@ -285,10 +307,11 @@ public class DagEngine {
 
     /** Terminal verdict by route: response routes use respTerminalState, request
      *  routes their R-36 DAG shape. */
-    public static java.util.Optional<ArrivalStatus> terminalState(String route, Map<Stage, Outcome> outcomes,
-                                                                  BooleanSupplier emissionOwed) {
+    public static java.util.Optional<ArrivalStatus> terminalState(final String route, final Flow flow,
+                                                                  final Map<Stage, Outcome> outcomes,
+                                                                  final BooleanSupplier emissionOwed) {
         if (isRespRoute(route)) {
-            return respTerminalState(RouteDags.RESPONSES.get(route), outcomes);
+            return respTerminalState(RouteDags.response(route, flow), outcomes);
         }
         return terminalState(requestDag(route), outcomes, emissionOwed);
     }
@@ -296,7 +319,7 @@ public class DagEngine {
     /**
      * Response-route terminal: the ONE token-picked leg reader for this arrival
      * reporting BUSINESS_ACCEPTED completes the DAG. The dag's terminal set lists
-     * the legal entries (IXR/SXR/PXR, or MIX/MSX/MPX since SCRUM-91), of which
+     * the legal entries of THIS family (CIX/CSX/CPX, PIX/PSX/PPX or MIX/MSX/MPX), of which
      * exactly one ever runs, so this is an any-of test and never the all-of test
      * a request fork gets: requiring all three would leave every response arrival
      * permanently DAG_RUNNING. Anything short of acceptance (fatal, partial, tech

@@ -43,58 +43,8 @@ public interface AgtConfig {
     @WithDefault("true")
     boolean observeEnabled();
 
-    /** Service images per stage (SCRUM-33: no stub fallback; a missing image
-     *  fails the launch fast). */
-    java.util.Optional<String> crrImage();
-
-    java.util.Optional<String> ctvImage();
-
-    java.util.Optional<String> cirImage();
-
-    java.util.Optional<String> cdeImage();
-
-    java.util.Optional<String> crwImage();
-
-    /** M4 fint-resp reader images (single-stage response DAGs). */
-    java.util.Optional<String> ixrImage();
-
-    java.util.Optional<String> sxrImage();
-
-    java.util.Optional<String> pxrImage();
-
-    /** M4 PRG clock-window executor image (R-28). */
-    java.util.Optional<String> prgImage();
-
-    /** M5 AIS endorsements stage image (ENDO route, R-36). */
-    java.util.Optional<String> aisImage();
-
-    /** M6 HCS holiday-calendar-sync clock executor image (R-38). */
-    java.util.Optional<String> hcsImage();
-
-    /** M10 mandates stage images (SCRUM-79). Absent/empty = launch-disabled:
-     *  the MRG scheduler skips its windows and a DAG launch fails fast
-     *  (SCRUM-33 semantics, no stub fallback). */
-    java.util.Optional<String> mrrImage();
-
-    java.util.Optional<String> mrvImage();
-
-    java.util.Optional<String> masImage();
-
-    java.util.Optional<String> mitImage();
-
-    java.util.Optional<String> mirImage();
-
-    java.util.Optional<String> mrwImage();
-
-    /** SCRUM-91 response-leg images: one reader per pain.012 leg (ISR/SBSR/PBSR),
-     *  replacing the merged mar-image and the msr-image projection writer. */
-    java.util.Optional<String> mixImage();
-
-    java.util.Optional<String> msxImage();
-
-    java.util.Optional<String> mpxImage();
-
-    java.util.Optional<String> mrgImage();
+    /** Stage images moved to {@link AgtImages} with the v1 topology (29 knobs, same
+     *  {@code agt} prefix, so {@code AGT_<STAGE>_IMAGE} bindings are unchanged). */
 
     /** INTERIM (R-42 analog for M10): client tokens that are mandate-capable;
      *  MRG windows launch only for these, until the R-14 client reference
@@ -106,7 +56,16 @@ public interface AgtConfig {
     @WithDefault("60")
     long crwIntervalSeconds();
 
-    /** PRG clock-window length (R-28); dev default 60s. */
+    /** CRG COLLECTIONS-report clock-window length (R-28); dev default 60s.
+     *  This is the knob the pre-cutover {@code prg-interval-seconds} actually
+     *  controlled, under the name the diagrams give that generator. */
+    @WithDefault("60")
+    long crgIntervalSeconds();
+
+    /** PRG PAYMENTS-report clock-window length; dev default 60s. Its own knob, not
+     *  a shared one: payments transactions are processed IMMEDIATELY while
+     *  collections wait for the collection day, so the two report cadences have no
+     *  reason to move together and must be tunable apart. */
     @WithDefault("60")
     long prgIntervalSeconds();
 
@@ -132,22 +91,50 @@ public interface AgtConfig {
     @WithDefault("jdbc:postgresql://crdb.dcre.svc.cluster.local:26257/dcre_col?sslmode=disable")
     String serviceDbUrl();
 
+    /** JDBC url the PAYMENTS stage Jobs use for dcre_pay (v1 topology). Same FQDN
+     *  treatment as the man url and for the same reason: stage pods run in the flow
+     *  namespaces where the short service name {@code crdb} does not resolve.
+     *
+     *  <p>Before this knob existed there was no {@code dcre_pay} URL anywhere in
+     *  AGT, so every payments stage received the collections one and would have
+     *  built the payments schema inside {@code dcre_col} without erroring. See
+     *  {@link za.co.fnb.dcre.agt.service.StageDatabases}. */
+    @WithDefault("jdbc:postgresql://crdb.dcre.svc.cluster.local:26257/dcre_pay?sslmode=disable")
+    String payServiceDbUrl();
+
     /** JDBC url the M10 mandates stage Jobs use for dcre_man (B2, SCRUM-79
      *  review): the man services own their schema in dcre_man; handing them
      *  the dcre_col URL would silently build it there. */
     @WithDefault("jdbc:postgresql://crdb.dcre.svc.cluster.local:26257/dcre_man?sslmode=disable")
     String manServiceDbUrl();
 
-    /** Which mandate store CTV's DC-flow gate reads (SCRUM-91, Task 11 Step 8).
-     *  Handed to every CTV stage pod as DCRE_CTV_MANDATE_SOURCE, so the gate is
-     *  switchable from AGT instead of being frozen at ctv's yml default: nothing
-     *  else injects it, so an in-cluster CTV always ran `legacy`, which reads
-     *  `FROM mandate` in dcre_col, a table only env-reset.sh --seed creates.
-     *  Values are ctv's MandateSource enum (legacy|projection), parsed there and
-     *  never interpreted here: AGT only carries the token, so a new mode needs no
-     *  AGT change. The default is `legacy`, matching ctv's own application.yml
-     *  default, so wiring the seam changes nothing until it is set. */
-    @WithDefault("legacy")
+    /** JDBC url the HCS holiday-sync Job uses for dcre_hcs (owner ruling 2026-08-08).
+     *
+     *  <p>HCS used to receive {@link #serviceDbUrl()}, because the enum that said
+     *  which NAMESPACE a stage runs in was also the enum that said which DATABASE it
+     *  writes, and HCS runs in the collections namespace. The owner ruled holiday data
+     *  in dcre_col a "Violation of the 12FactorApp" (https://12factor.net/) and moved
+     *  the calendar to its own context. shared/hcs now carries a FamilyGuard comparing
+     *  current_database() against dcre_hcs BEFORE any DDL, so with the old routing
+     *  every HCS pod AGT launched died on startup rather than quietly re-contaminating
+     *  the collections database. This knob is the fix. */
+    @WithDefault("jdbc:postgresql://crdb.dcre.svc.cluster.local:26257/dcre_hcs?sslmode=disable")
+    String hcsServiceDbUrl();
+
+    /** Which mandate store CTV's DC-flow gate reads (SCRUM-107).
+     *  Handed to every CTV stage pod as DCRE_CTV_MANDATE_SOURCE. Values are ctv's
+     *  MandateSource enum, parsed there and never interpreted here: AGT only carries
+     *  the token.
+     *
+     *  <p>The default is `projection`, and it must stay in step with BOTH ctv's
+     *  application.yml default and agt's own application.yml. This annotation held
+     *  `legacy` for one commit after the yml flipped, which is a two-homes-for-one-fact
+     *  hazard rather than a cosmetic mismatch: ctv now FAILS CLOSED on `legacy`
+     *  (MandateSource.from throws at bean creation), so whichever home wins, handing
+     *  `legacy` to a stage pod stops every CTV pod from starting. `legacy` is not a
+     *  fallback any more; the dcre_col.mandate table it selected has been dropped.
+     *  AgtCtvMandateSourceDefaultTest pins the two homes together. */
+    @WithDefault("projection")
     String ctvMandateSource();
 
     /** JDBC url every launched stage Job gets so the platform-batch heartbeat
@@ -188,6 +175,20 @@ public interface AgtConfig {
      *  drives the email-to-Fintegrate ops runbook. */
     @WithDefault("24")
     int slaRedHours();
+
+    /** Bounded-attempt guard on the IMMEDIATE report trigger: how many consecutive
+     *  scans may see the SAME (flow, client, parent) still due before AGT says so.
+     *
+     *  <p>A report parent that the generator cannot satisfy stays in its
+     *  {@code *_report_due} view forever. Nothing throws, nothing is ledgered, and
+     *  the deterministic window key makes every later scan an idempotent no-op, so
+     *  the failure mode is total silence: AGT re-observes the parent indefinitely
+     *  and the client never receives a terminal status. This threshold turns that
+     *  into a WARN naming the stage, client, window and flow. It does NOT retry,
+     *  widen anything or fall back: a silent loop is made VISIBLE, never quieter.
+     *  env AGT_REPORT_STALL_SCANS. */
+    @WithDefault("20")
+    int reportStallScans();
 
     /** OrphanSweeper: bounded same-identity relaunch attempts for died arrival Jobs. */
     @WithDefault("3")

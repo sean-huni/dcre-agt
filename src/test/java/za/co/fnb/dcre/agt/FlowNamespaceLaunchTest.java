@@ -40,7 +40,9 @@ class FlowNamespaceLaunchTest {
     public static class LaunchProfile implements QuarkusTestProfile {
         @Override
         public Map<String, String> getConfigOverrides() {
-            return Map.of("agt.crr-image", "dcre-crr:test", "agt.crw-image", "dcre-crw:test");
+            return Map.of("agt.crr-image", "dcre-crr:test", "agt.crw-image", "dcre-crw:test",
+                    "agt.prr-image", "dcre-prr:test",
+                    "agt.cix-image", "dcre-cix:test", "agt.ppx-image", "dcre-ppx:test");
         }
     }
 
@@ -64,22 +66,26 @@ class FlowNamespaceLaunchTest {
     }
 
     @Test
-    void endoArrivalLaunchesWithPayPrefixIntoThePayNamespace() {
+    void endoArrivalLaunchesThePaymentsReaderWithPayPrefixIntoThePayNamespace() {
+        // v1 topology: the payments request route enters at PRR, its own reader.
+        // Before the split it entered at CRR, so the collections service ingested a
+        // payments file while sitting in the pay namespace.
         UUID arrivalId = insertArrival("onhost-req-endo", "FNBCC01", "FLN2");
-        launcher.launch(arrivalId, Stage.CRR);
-        assertIntent(arrivalId, "pay-crr-", "dcre-pay");
+        launcher.launch(arrivalId, Stage.PRR);
+        assertIntent(arrivalId, "pay-prr-", "dcre-pay");
     }
 
     @Test
     void fintRespReaderFollowsTheClientsFlow() {
         // Interim R-42 map: FNBRF01 is the pay client; FNBCC01 stays collections.
+        // Same channel, different family of leg readers.
         UUID payArrival = insertArrival("fint-resp", "FNBRF01", "FLN3");
-        launcher.launch(payArrival, Stage.PXR);
-        assertIntent(payArrival, "pay-pxr-", "dcre-pay");
+        launcher.launch(payArrival, Stage.PPX);
+        assertIntent(payArrival, "pay-ppx-", "dcre-pay");
 
         UUID colArrival = insertArrival("fint-resp", "FNBCC01", "FLN4");
-        launcher.launch(colArrival, Stage.IXR);
-        assertIntent(colArrival, "col-ixr-", "dcre-col");
+        launcher.launch(colArrival, Stage.CIX);
+        assertIntent(colArrival, "col-cix-", "dcre-col");
     }
 
     @Test
@@ -111,18 +117,24 @@ class FlowNamespaceLaunchTest {
     }
 
     @Test
-    void retiredResponseStagesAreNeverLaunchable() {
-        // A-75: Stage still parses MAR/MSR for historic stage_outcome rows, and
-        // SCRUM-107 adds MIS the same way after the rename to MIT, but AGT must
-        // never build a Job for one; the write-ahead intent still lands, so the
-        // attempt is visible rather than silent.
-        UUID arrivalId = insertArrival("fint-resp-man", "FNBRF01", "FLN7");
-        for (Stage retired : java.util.List.of(Stage.MAR, Stage.MSR, Stage.MIS, Stage.MAF)) {
-            IllegalStateException e = org.junit.jupiter.api.Assertions.assertThrows(
-                    IllegalStateException.class, () -> launcher.launch(arrivalId, retired),
-                    "retired stage " + retired + " must never launch");
-            assertTrue(e.getMessage().contains("retired"), "got: " + e.getMessage());
-        }
+    void aStageFromAnotherFamilyIsNeverBuiltIntoThisArrivalsNamespace() {
+        // The v1 guard, exercised end to end: a payments arrival resolves the pay
+        // namespace, so building a COLLECTIONS stage's Job there must be refused.
+        // Before the split this combination was not merely possible, it was the
+        // shipped behaviour: the ENDO lane ran CRR/CTV/CIR in dcre-pay while writing
+        // dcre_col, and nothing compared the namespace to the stage.
+        UUID payArrival = insertArrival("onhost-req-endo", "FNBRF01", "FLN7");
+        IllegalStateException e = org.junit.jupiter.api.Assertions.assertThrows(
+                IllegalStateException.class, () -> launcher.launch(payArrival, Stage.CRR),
+                "a collections stage must not be built into the pay namespace");
+        assertTrue(e.getMessage().contains("COL") && e.getMessage().contains("dcre-pay"),
+                "the message must name both sides of the disagreement; got: " + e.getMessage());
+
+        UUID colArrival = insertArrival("onhost-req", "FNBCC01", "FLN8");
+        assertTrue(org.junit.jupiter.api.Assertions.assertThrows(
+                        IllegalStateException.class, () -> launcher.launch(colArrival, Stage.PRR),
+                        "and the converse")
+                .getMessage().contains("dcre-col"));
     }
 
     @Test

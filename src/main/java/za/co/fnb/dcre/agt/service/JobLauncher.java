@@ -40,6 +40,28 @@ public class JobLauncher {
      *  windows are never overridden (SCRUM-91, replacing DCRE_MSR_JOB_NAME). */
     public static final String MRG_JOB_ENV = "DCRE_MRG_JOB_NAME";
 
+    /**
+     * The env var every stage pod reads its PRIMARY datasource url from, whatever
+     * family it belongs to. ONE name, one value per family, resolved by
+     * {@link StageDatabases}.
+     *
+     * <p><b>A hand-maintained cross-repo wire contract, and it has already drifted
+     * once.</b> Eight of the nine payments services read {@code ${DCRE_PAY_DB_URL:...}}
+     * while AGT injected {@code DCRE_DB_URL}, and nothing anywhere set the name they
+     * read. Both sides were green: five tests pinned the payments side of the name and
+     * nothing tested AGT's, so the only symptom was a pod falling back to its committed
+     * localhost default, which in a cluster is the pod itself. The ruling is to unify
+     * on this name, one variable routed per family.
+     *
+     * <p>The constant, and the test that pins its VALUE to the literal, is the most
+     * this repo can assert on its own: the consumers are in a different git repository
+     * and are not on AGT's classpath, so no test here can read what they declare. The
+     * durable fix is to GENERATE both sides from one schema, which is out of scope
+     * today and recorded as a follow-up. Until then the honest statement is that this
+     * literal is a claim about another repo, asserted where it is made.
+     */
+    public static final String DB_URL_ENV = "DCRE_DB_URL";
+
     /** Env var carrying the dcre_col JDBC url to a pod whose SECOND, read-only
      *  datasource reads the collections DB. Launch-scoped, NOT stage-keyed like
      *  DCRE_DB_URL: only the MRG suspension sweep crosses into dcre_col (the
@@ -53,22 +75,31 @@ public class JobLauncher {
      *  datasource, which reads the man_ctv_view projection for the mandate gate
      *  (SCRUM-78). STAGE-keyed, not launch-scoped like COL_DB_URL_ENV: CTV is a
      *  DAG stage with no per-launch env seam, and every CTV pod runs the gate,
-     *  so the url belongs to the stage exactly as DCRE_DB_URL does. CTV stays
-     *  OUT of MAN_STAGES: its PRIMARY datasource is still dcre_col. Absent, the
+     *  so the url belongs to the stage exactly as DCRE_DB_URL does. CTV stays a
+     *  COLLECTIONS stage in StageDatabases: its PRIMARY datasource is dcre_col and
+     *  this is a second, read-only seam. Absent, the
      *  pod falls back to ctv's localhost dev default and the projection gate
      *  cannot reach dcre_man at all (found 2026-07-26). */
     public static final String CTV_MANDATES_DB_URL_ENV = "DCRE_CTV_MANDATES_DB_URL";
 
-    /** Env var selecting WHICH mandate store CTV's DC-flow gate reads
-     *  (legacy|projection, ctv MandateSource). STAGE-keyed for the same reason as
-     *  CTV_MANDATES_DB_URL_ENV: every CTV pod runs the gate and there is no
-     *  per-launch env seam. Absent, the pod is frozen on ctv's yml default
-     *  `legacy`, which reads `FROM mandate` in dcre_col - a table only
-     *  env-reset.sh --seed creates - so the projection gate was unreachable
-     *  in-cluster no matter what dcre_man held (SCRUM-91 Task 11 Step 8).
-     *  The token is carried verbatim from agt.ctv-mandate-source and never
-     *  interpreted here; ctv owns the vocabulary. */
+    /** Env var selecting WHICH mandate store CTV's DC-flow gate reads (ctv
+     *  MandateSource). STAGE-keyed for the same reason as CTV_MANDATES_DB_URL_ENV:
+     *  every CTV pod runs the gate and there is no per-launch env seam.
+     *
+     *  <p>SCRUM-107: the vocabulary is now `projection` only. Absent, the pod takes
+     *  ctv's yml default, which is also `projection`, so the seam is inert in the
+     *  safe direction. Setting the retired `legacy` value does NOT fall back: ctv
+     *  throws at bean creation, so the pod never starts, and the dcre_col.mandate
+     *  table that value used to read has been dropped. The token is carried verbatim
+     *  from agt.ctv-mandate-source and never interpreted here; ctv owns the
+     *  vocabulary. */
     public static final String CTV_MANDATE_SOURCE_ENV = "DCRE_CTV_MANDATE_SOURCE";
+
+    /** Env var carrying the dcre_hcs url to CDE's SECOND, read-only holidays datasource.
+     *  public_holiday left dcre_col for the hcs context (owner ruling 2026-08-08), so
+     *  the calendar CDE fail-closes without is now across a boundary. cde refuses to
+     *  start in-cluster without it, naming this variable. */
+    public static final String CDE_HOLIDAYS_DB_URL_ENV = "DCRE_CDE_HOLIDAYS_DB_URL";
 
     /** Reserved durable-arg prefix carrying a pod env var rather than a Spring
      *  Batch program arg (SCRUM-78). Encoding sweep env into the durable launch
@@ -78,34 +109,43 @@ public class JobLauncher {
      *  receives stay clean (client, window). No real Batch arg starts with this token. */
     static final String ENV_ARG_PREFIX = "env:";
 
-    /** Boundary stages that read the claimed payload file (CRR; M4 fint-resp
-     *  readers; M10 MRR instruction-book reader; SCRUM-91 the three pain.012 leg
-     *  readers that replaced the merged MAR one). */
+    /** Boundary stages that read the claimed payload file: each family's flat-file
+     *  reader (CRR, PRR, MRR) and each family's three pain.002/pain.012 leg readers. */
     static final java.util.Set<Stage> BOUNDARY_READERS = java.util.EnumSet.of(
-            Stage.CRR, Stage.IXR, Stage.SXR, Stage.PXR, Stage.MRR,
-            Stage.MIX, Stage.MSX, Stage.MPX);
+            Stage.CRR, Stage.CIX, Stage.CSX, Stage.CPX,
+            Stage.PRR, Stage.PIX, Stage.PSX, Stage.PPX,
+            Stage.MRR, Stage.MIX, Stage.MSX, Stage.MPX);
 
-    /** Stages AGT may launch. MAR, MSR (A-75), MIS (renamed MIT) and MAF (renamed
-     *  MAS), both SCRUM-107,
-     *  are retained-deprecated: Stage still parses them for historic
-     *  agt_ops.stage_outcome rows, but they are in no DAG, have no image config
-     *  and no serviceArgs branch, so a launch attempt is a bug rather than a
-     *  fallback (serviceImage throws). */
+    /**
+     * Stages AGT may launch: the whole v1 roster, listed EXPLICITLY.
+     *
+     * <p>It used to be {@code EnumSet.complementOf(EnumSet.of(<the retired ones>))},
+     * which fails OPEN: every stage added afterwards was launchable by default and
+     * nothing anywhere said so, so a renamed stage silently became launchable again
+     * (infra report item 3). Compare {@link StageImages}, an exhaustive switch, which
+     * fails CLOSED because adding a constant breaks the build until somebody decides
+     * what it does.
+     *
+     * <p>Every stage is launchable today, so this set is behaviourally redundant, and
+     * it is written out anyway: {@code StageRosterTest} asserts it equals
+     * {@code EnumSet.allOf(Stage.class)}, so the next stage added to the enum fails
+     * that assertion until it is listed here deliberately. A complement would have
+     * absorbed it silently. Enforced at launch by {@link #requireLaunchable}.
+     */
     static final java.util.Set<Stage> LAUNCHABLE = java.util.Collections.unmodifiableSet(
-            java.util.EnumSet.complementOf(java.util.EnumSet.of(Stage.MAR, Stage.MSR, Stage.MIS, Stage.MAF)));
+            java.util.EnumSet.of(
+                    Stage.CRR, Stage.CTV, Stage.CDE, Stage.CRW, Stage.CIR,
+                    Stage.CIX, Stage.CSX, Stage.CPX, Stage.CRG,
+                    Stage.PRR, Stage.PTV, Stage.PAI, Stage.PRW, Stage.PIR,
+                    Stage.PIX, Stage.PSX, Stage.PPX, Stage.PRG,
+                    Stage.MRR, Stage.MRV, Stage.MAS, Stage.MIT, Stage.MIR, Stage.MRW,
+                    Stage.MIX, Stage.MSX, Stage.MPX, Stage.MRG,
+                    Stage.HCS));
 
     /** Whole-file responder stages: carry the A-45 arrival identity params and
-     *  the rejecting validator's outcome.hint (CIR; M10 man responder MIR). */
+     *  the rejecting validator's outcome.hint. One per family: CIR, PIR, MIR. */
     static final java.util.Set<Stage> RESPONDERS =
-            java.util.EnumSet.of(Stage.CIR, Stage.MIR);
-
-    /** M10 mandates stages persist in dcre_man (B2, SCRUM-79 review): the
-     *  DCRE_DB_URL env follows the stage's flow family. Stage-keyed so a
-     *  reconciled re-create (which has only the intent row) resolves the same
-     *  URL; COL/PAY stages keep dcre_col unchanged. */
-    static final java.util.Set<Stage> MAN_STAGES = java.util.EnumSet.of(
-            Stage.MRR, Stage.MRV, Stage.MAS, Stage.MIT, Stage.MIR,
-            Stage.MRW, Stage.MIX, Stage.MSX, Stage.MPX, Stage.MRG);
+            java.util.EnumSet.of(Stage.CIR, Stage.PIR, Stage.MIR);
 
     @Inject
     IntentRepo intentRepo;
@@ -125,6 +165,26 @@ public class JobLauncher {
     @Inject
     KubernetesClient k8s;
 
+    @Inject
+    StageImages stageImages;
+
+    @Inject
+    StageDatabases stageDatabases;
+
+    @Inject
+    StageNamespaces stageNamespaces;
+
+    /** Fail-closed launch gate: a stage outside {@link #LAUNCHABLE} is a bug, never
+     *  a fallback. Checked before the write-ahead intent, so a rejected launch leaves
+     *  no row behind to reconcile. */
+    private static Stage requireLaunchable(final Stage stage) {
+        if (!LAUNCHABLE.contains(stage)) {
+            throw new IllegalStateException("stage " + stage + " is not launchable:"
+                    + " add it to JobLauncher.LAUNCHABLE deliberately or stop launching it");
+        }
+        return stage;
+    }
+
     /** Full 128-bit arrival identity in the name (Fugu F2). SCRUM-70: the
      *  resolved flow prefix (col-/pay-/man-, 4 chars) replaces the dcre-
      *  literal: 40 chars, DNS-1123 safe, still well under the 63-char limit. */
@@ -135,6 +195,7 @@ public class JobLauncher {
     /** Launch stage for arrival; no-op when an intent already exists (non-overlap).
      *  Single arrival fetch (m3): flow resolution and the Job spec share it. */
     public void launch(UUID arrivalId, Stage stage) {
+        requireLaunchable(stage);
         FileArrival arrival = arrivalOf(arrivalId, stage.name());
         Flow flow = flowNamespaces.flowFor(arrival);
         String name = jobName(flow, stage, arrivalId);
@@ -143,7 +204,7 @@ public class JobLauncher {
         if (intent.isEmpty()) {
             return; // already intended/launched by us or a predecessor incarnation
         }
-        createFromSpec(intent.get(), serviceJob(name, namespace, stage, arrival, serviceImage(stage)));
+        createFromSpec(intent.get(), serviceJob(name, namespace, stage, arrival, stageImages.required(stage)));
     }
 
     /** Create (or re-create after crash) the Job for an existing intent. The
@@ -154,9 +215,10 @@ public class JobLauncher {
      *  a report intent carries BOTH an arrival_id and durable report args, and
      *  must recreate as the report Job, never as an arrival stage Job. */
     public void createJob(UUID intentId, UUID arrivalId, Stage stage, String name, String namespace) {
+        requireLaunchable(stage);
         java.util.Optional<String> durable = intentRepo.intentLaunchArgs(intentId).filter(a -> !a.isBlank());
         if (durable.isPresent()) {
-            createFromSpec(intentId, clockJob(name, namespace, stage, serviceImage(stage),
+            createFromSpec(intentId, clockJob(name, namespace, stage, stageImages.required(stage),
                     java.util.List.of(durable.get().split("\\n"))));
             return;
         }
@@ -164,7 +226,8 @@ public class JobLauncher {
             throw new IllegalStateException(
                     "intent " + intentId + " has neither durable launch args nor an arrival");
         }
-        createFromSpec(intentId, serviceJob(name, namespace, stage, arrivalOf(arrivalId, name), serviceImage(stage)));
+        createFromSpec(intentId, serviceJob(name, namespace, stage,
+                arrivalOf(arrivalId, name), stageImages.required(stage)));
     }
 
     private FileArrival arrivalOf(UUID arrivalId, String context) {
@@ -195,42 +258,16 @@ public class JobLauncher {
         intentRepo.markIntentLaunched(intentId, uid);
     }
 
-    /** DB URL for a stage's Job env: man stages get dcre_man, all else dcre_col (B2). */
+    /**
+     * DB URL for a stage's Job env, per FAMILY: dcre_col, dcre_pay or dcre_man.
+     *
+     * <p>Resolved by {@link StageDatabases}, an exhaustive switch with no default
+     * arm. The previous form here was a two-way ternary with a collections default,
+     * so adding the payments family without touching it would have handed every
+     * payments stage the collections database and never errored.
+     */
     private String dbUrlFor(Stage stage) {
-        return MAN_STAGES.contains(stage) ? config.manServiceDbUrl() : config.serviceDbUrl();
-    }
-
-    /** Image for a stage; every stage is a real service since M5 (SCRUM-33:
-     *  stub deleted), so a missing image is a misconfiguration, never a fallback. */
-    private String serviceImage(Stage stage) {
-        java.util.Optional<String> image = switch (stage) {
-            case CRR -> config.crrImage();
-            case CTV -> config.ctvImage();
-            case CIR -> config.cirImage();
-            case CDE -> config.cdeImage();
-            case CRW -> config.crwImage();
-            case IXR -> config.ixrImage();
-            case SXR -> config.sxrImage();
-            case PXR -> config.pxrImage();
-            case PRG -> config.prgImage();
-            case AIS -> config.aisImage();
-            case HCS -> config.hcsImage();
-            case MRR -> config.mrrImage();
-            case MRV -> config.mrvImage();
-            case MAS -> config.masImage();
-            case MIT -> config.mitImage();
-            case MIR -> config.mirImage();
-            case MRW -> config.mrwImage();
-            case MIX -> config.mixImage();
-            case MSX -> config.msxImage();
-            case MPX -> config.mpxImage();
-            case MRG -> config.mrgImage();
-            case MAR, MSR, MIS, MAF -> throw new IllegalStateException("stage " + stage
-                    + " is retired (SCRUM-91 for MAR/MSR, SCRUM-107 for MIS/MAF): parseable for"
-                    + " historic outcome rows, never launched");
-        };
-        return image.orElseThrow(() -> new IllegalStateException(
-                "no image configured for stage " + stage + ": set AGT_" + stage.name() + "_IMAGE"));
+        return stageDatabases.urlFor(stage);
     }
 
     /**
@@ -250,7 +287,7 @@ public class JobLauncher {
         return flow.jobPrefix() + svc + "-" + key;
     }
 
-    /** Clock-triggered launch (R-37 CRW; R-28 PRG in M4): identity (stage, runKey). */
+    /** Clock-triggered launch (R-37 CRW; the CRG and PRG report windows): identity (stage, runKey). */
     public void launchClock(Flow flow, Stage stage, String runKey, java.util.List<String> args) {
         launchClock(flow, stage, runKey, args, java.util.Map.of());
     }
@@ -272,7 +309,7 @@ public class JobLauncher {
         if (intent.isEmpty()) {
             return;
         }
-        createFromSpec(intent.get(), clockJob(name, namespace, stage, serviceImage(stage), durable));
+        createFromSpec(intent.get(), clockJob(name, namespace, stage, stageImages.required(stage), durable));
     }
 
     /** Prepend env vars as reserved durable args ahead of the program args. */
@@ -308,7 +345,7 @@ public class JobLauncher {
         if (intent.isEmpty()) {
             return; // this report is already intended (idempotent report-due scan)
         }
-        createFromSpec(intent.get(), clockJob(name, namespace, stage, serviceImage(stage), args));
+        createFromSpec(intent.get(), clockJob(name, namespace, stage, stageImages.required(stage), args));
     }
 
     /** Partition durable clock args: ENV_ARG_PREFIX entries become pod env vars,
@@ -328,6 +365,10 @@ public class JobLauncher {
     }
 
     private Job clockJob(String name, String namespace, Stage stage, String image, java.util.List<String> args) {
+        // Same fail-closed family cross-check as serviceJob: a CRG window minted
+        // into dcre-pay, or a PRG window into dcre-col, is the report-generator
+        // half of the inversion this rename created and must not be creatable.
+        stageNamespaces.requireCorrectNamespace(stage, flowNamespaces.flowForNamespace(namespace), namespace);
         java.util.List<io.fabric8.kubernetes.api.model.EnvVar> extraEnv = new java.util.ArrayList<>();
         java.util.List<String> programArgs = new java.util.ArrayList<>();
         splitEnvArgs(args, extraEnv, programArgs);
@@ -353,7 +394,7 @@ public class JobLauncher {
                                 .withImagePullPolicy("IfNotPresent")
                                 .withArgs(programArgs.toArray(String[]::new))
                                 .addNewEnv().withName("JOB_NAME").withValue(name).endEnv()
-                                .addNewEnv().withName("DCRE_DB_URL").withValue(dbUrlFor(stage)).endEnv()
+                                .addNewEnv().withName(DB_URL_ENV).withValue(dbUrlFor(stage)).endEnv()
                                 .addNewEnv().withName("DCRE_EXCHANGE_ROOT").withValue("/exchange").endEnv()
                                 .addNewEnv().withName("DCRE_AGTOPS_DB_URL").withValue(config.agtopsDbUrl()).endEnv()
                                 .addNewEnv().withName("DCRE_AGTOPS_DB_USER").withValue(config.agtopsDbUser()).endEnv()
@@ -387,22 +428,20 @@ public class JobLauncher {
      * (same durability property clock intents get from persisted launch args).
      */
     public static java.util.List<String> serviceArgs(Stage stage, FileArrival arrival,
-                                                    Map<Stage, Outcome> outcomes, Flow flow) {
+                                                    Map<Stage, Outcome> outcomes) {
         java.util.List<String> args = new java.util.ArrayList<>(java.util.List.of(
                 "arrival.id=" + arrival.id()));
         if (BOUNDARY_READERS.contains(stage)) {
             args.add("input.file=" + arrival.claimedPath() + ",java.lang.String,false");
             args.add("original.name=" + arrival.physicalFilename() + ",java.lang.String,false");
         }
-        if (stage == Stage.CRR && flow == Flow.PAY) {
-            // SCRUM-69: CRR stamps tx_header.flow from this non-identifying arg
-            // (absent = COL). SCRUM-107: keyed on the RESOLVED flow, not on a
-            // route-string equality test whose implicit else was collections; a
-            // second PAY request route would otherwise have stamped COL on every
-            // row of a payments file. The flow comes from the intent's durable
-            // namespace, so a reconciled re-create rebuilds it identically.
-            args.add("flow=PAY,java.lang.String,false");
-        }
+        // v1 topology: the `flow=PAY` arg is GONE. It existed because ONE reader
+        // (CRR) served both families and had to be told which one it was reading
+        // for, writing tx_header.flow into a shared dcre_col. Collections and
+        // payments now have their own readers (CRR, PRR), their own schemas and
+        // their own databases, so the family is a property of the SERVICE rather
+        // than a parameter handed to it, and PRR takes no `flow` job parameter at
+        // all. Re-adding one would reintroduce the two-homes hazard the split removed.
         if (RESPONDERS.contains(stage)) {
             args.add("route.id=" + responderIdentity(arrival.routeId(), "route.id", arrival) + ",java.lang.String,false");
             args.add("client.token=" + responderIdentity(arrival.clientToken(), "client.token", arrival) + ",java.lang.String,false");
@@ -429,9 +468,9 @@ public class JobLauncher {
     }
 
     /**
-     * The verdict that routed this arrival to CIR: the rejecting validator
-     * stage's BUSINESS_FILE_REJECTED/BUSINESS_FILE_FATAL, whichever stage it
-     * came from (on ENDO that can be AIS; never hardcode CTV). Boundary readers
+     * The verdict that routed this arrival to its family's responder: the rejecting
+     * validator stage's BUSINESS_FILE_REJECTED/BUSINESS_FILE_FATAL, whichever stage
+     * it came from (on payments that can be PTV or PAI; never hardcode one). Boundary readers
      * are excluded: their fatals mean no spine/verdicts exist and CIR NACKs
      * from fatal.reason instead. Empty on the ACK path (ACCEPTED/PARTIAL only).
      */
@@ -452,33 +491,55 @@ public class JobLauncher {
     }
 
     /**
-     * Stage-keyed extra pod env for a DAG stage Job; only CTV has any. It always
-     * carries the two halves of the mandate gate: the dcre_man url of CTV's
-     * SECOND, read-only projection datasource (CTV_MANDATES_DB_URL_ENV), reusing
-     * the same manServiceDbUrl knob every man stage pod gets rather than a second
-     * URL knob to keep in step, and WHICH store the gate reads
-     * (CTV_MANDATE_SOURCE_ENV) from agt.ctv-mandate-source. Pointing CTV at
-     * dcre_man was never enough on its own: without the source token the pod
-     * stayed on ctv's `legacy` default and never opened that datasource at all.
-     * On ENDO it also switches the DC flow off: ENDO reuses the DC CTV image
-     * (M5, R-36) and only the extra env differs; DC arrivals keep the yml default
-     * (flow-dc true). ENDO still gets both mandate vars: they are inert there
-     * (R-20 skips the gate), and a stage-keyed seam that stayed uniform is one
-     * less way for a reconciled re-create to rebuild a different pod.
+     * Stage-keyed extra pod env: the SECOND read-only datasource a stage opens onto
+     * another bounded context, plus the CTV gate's source token.
+     *
+     * <p>Each of these fails CLOSED at the consumer when unset in-cluster: cde and ctv
+     * both detect {@code KUBERNETES_SERVICE_HOST} and refuse to start rather than
+     * silently using their committed localhost dev default, naming the exact variable
+     * in the message. So a stage missing from this switch is a crash-looping pod, not a
+     * wrong answer. That is the good failure mode and it is why the arms below are
+     * worth more than they look: AGT is the only thing that sets them.
+     *
+     * <p>CTV carries two: the dcre_man url of its projection datasource
+     * (CTV_MANDATES_DB_URL_ENV), reusing the same manServiceDbUrl knob every man stage
+     * pod gets rather than a second knob to keep in step; and WHICH store the gate reads
+     * (CTV_MANDATE_SOURCE_ENV) from agt.ctv-mandate-source, because pointing CTV at
+     * dcre_man was never enough on its own (without the token the pod stayed on ctv's
+     * old default and never opened that datasource at all).
+     *
+     * <p><b>There is no account seam here, and its absence is the decision.</b> Four
+     * account-tier urls pointing at {@code dcre_acs} were injected on 2026-08-08, one
+     * live (CTV) and three ahead of any consumer (MRV, PTV, MIT). {@code shared/acs} and
+     * {@code dcre_acs} were retired on 2026-08-09: account reference rows travel as one
+     * immutable versioned artifact and each context materialises its OWN projection into
+     * its OWN database, so ctv reads {@code dcre_col.account} over its PRIMARY datasource
+     * and needs no second seam for it. An env var no process reads is not free when the
+     * database it names does not exist: it documents a cross-context read that must not
+     * happen, and a pod that finds it can only use it to reach a database nothing creates.
+     *
+     * <p><b>The default arm is safe here, unlike in StageDatabases.</b> "This stage
+     * opens no second datasource" is the correct answer for 27 of the 29 stages, and a
+     * stage that DOES need one and is forgotten fails closed at the consumer with the
+     * variable named. Contrast the routing switches, where a default arm gave a
+     * well-formed WRONG answer that nothing could observe. Same shape, opposite risk,
+     * so the shapes differ deliberately.
+     *
+     * <p>v1 topology: the {@code DCRE_FLOW_DC=false} arm is GONE. It existed because
+     * ENDO reused the DC CTV image and had to switch the DC flow off inside a shared
+     * service. Payments validation is PTV now, a different service that never runs
+     * the DC flow, and whose VerdictChain made the former {@code dcre.flow-dc=false}
+     * behaviour unconditional. CTV is collections-only, so the arm was unreachable.
      */
-    private java.util.List<EnvVar> stageEnv(Stage stage, FileArrival arrival, Flow flow) {
-        if (stage != Stage.CTV) {
-            return java.util.List.of();
-        }
-        java.util.List<EnvVar> env = new java.util.ArrayList<>(3);
-        env.add(new EnvVar(CTV_MANDATES_DB_URL_ENV, config.manServiceDbUrl(), null));
-        env.add(new EnvVar(CTV_MANDATE_SOURCE_ENV, config.ctvMandateSource(), null));
-        // SCRUM-107: resolved flow, not a route-string test with an implicit
-        // collections else (see FlowNamespaces.flowForNamespace).
-        if (flow == Flow.PAY) {
-            env.add(new EnvVar("DCRE_FLOW_DC", "false", null));
-        }
-        return env;
+    private java.util.List<EnvVar> stageEnv(Stage stage) {
+        return switch (stage) {
+            case CTV -> java.util.List.of(
+                    new EnvVar(CTV_MANDATES_DB_URL_ENV, config.manServiceDbUrl(), null),
+                    new EnvVar(CTV_MANDATE_SOURCE_ENV, config.ctvMandateSource(), null));
+            case CDE -> java.util.List.of(
+                    new EnvVar(CDE_HOLIDAYS_DB_URL_ENV, config.hcsServiceDbUrl(), null));
+            default -> java.util.List.of();
+        };
     }
 
     /** M2 real-service Job: Spring Batch app; program args become JobParameters. */
@@ -486,9 +547,12 @@ public class JobLauncher {
         Map<Stage, Outcome> outcomes = RESPONDERS.contains(stage)
                 ? outcomeRepo.outcomesForArrival(arrival.id())
                 : Map.of();
-        final Flow flow = flowNamespaces.flowForNamespace(namespace);
-        java.util.List<String> args = serviceArgs(stage, arrival, outcomes, flow);
-        java.util.List<EnvVar> extraEnv = stageEnv(stage, arrival, flow);
+        // Fail closed if the namespace and the stage disagree about the family. The
+        // namespace comes from the durable intent row, so this also catches a
+        // reconciled re-create that would rebuild a pod into the wrong family.
+        stageNamespaces.requireCorrectNamespace(stage, flowNamespaces.flowForNamespace(namespace), namespace);
+        java.util.List<String> args = serviceArgs(stage, arrival, outcomes);
+        java.util.List<EnvVar> extraEnv = stageEnv(stage);
         return new JobBuilder()
                 .withNewMetadata()
                     .withName(name)
@@ -515,7 +579,7 @@ public class JobLauncher {
                                 .withImagePullPolicy("IfNotPresent")
                                 .withArgs(args.toArray(String[]::new))
                                 .addNewEnv().withName("JOB_NAME").withValue(name).endEnv()
-                                .addNewEnv().withName("DCRE_DB_URL").withValue(dbUrlFor(stage)).endEnv()
+                                .addNewEnv().withName(DB_URL_ENV).withValue(dbUrlFor(stage)).endEnv()
                                 .addNewEnv().withName("DCRE_EXCHANGE_ROOT").withValue("/exchange").endEnv()
                                 .addNewEnv().withName("DCRE_AGTOPS_DB_URL").withValue(config.agtopsDbUrl()).endEnv()
                                 .addNewEnv().withName("DCRE_AGTOPS_DB_USER").withValue(config.agtopsDbUser()).endEnv()

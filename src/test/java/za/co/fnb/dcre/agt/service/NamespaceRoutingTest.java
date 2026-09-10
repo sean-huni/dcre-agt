@@ -16,6 +16,7 @@ import org.junit.jupiter.api.Test;
 import za.co.fnb.dcre.agt.CrdbTestResource;
 import za.co.fnb.dcre.agt.config.AgtConfig;
 import za.co.fnb.dcre.agt.domain.ArrivalStatus;
+import za.co.fnb.dcre.agt.domain.DbFamily;
 import za.co.fnb.dcre.agt.domain.LaunchIntent;
 import za.co.fnb.dcre.agt.domain.Outcome;
 import za.co.fnb.dcre.agt.domain.Stage;
@@ -61,10 +62,20 @@ class NamespaceRoutingTest {
     public static class RoutingProfile implements QuarkusTestProfile {
         @Override
         public Map<String, String> getConfigOverrides() {
-            return Map.of("agt.launch-enabled", "true", "agt.crr-image", "dcre-crr:test",
-                    "agt.mrr-image", "dcre-mrr:test",
-                    "agt.ctv-image", "dcre-ctv:test",
-                    "agt.pay-clients", " fnbrf01 ");
+            // A LinkedHashMap, not Map.of: that factory caps at 10 pairs and this
+            // roster passed it. A silent cap would drop image knobs, and a stage with
+            // no image is launch-disabled, so the affected tests would find NO Job and
+            // an assertion phrased as "does not carry the wrong url" would pass on the
+            // absence.
+            final Map<String, String> overrides = new java.util.LinkedHashMap<>();
+            overrides.put("agt.launch-enabled", "true");
+            overrides.put("agt.pay-clients", " fnbrf01 ");
+            for (final String stage : java.util.List.of(
+                    "crr", "ctv", "cde", "crg", "prr", "ptv", "prg",
+                    "mrr", "mrv", "mit", "hcs")) {
+                overrides.put("agt." + stage + "-image", "dcre-" + stage + ":test");
+            }
+            return overrides;
         }
     }
 
@@ -81,7 +92,13 @@ class NamespaceRoutingTest {
     OrphanRelauncher relauncher;
 
     @Inject
+    CrgScheduler crgScheduler;
+
+    @Inject
     PrgScheduler prgScheduler;
+
+    @Inject
+    StageDatabases stageDatabases;
 
     @Inject
     MrgScheduler mrgScheduler;
@@ -118,7 +135,7 @@ class NamespaceRoutingTest {
     void reconcilerUnionsManagedJobsAcrossControlAndFlowNamespaces() {
         createJob("dcre", "dcre-legacy-w1", false);
         createJob("dcre-col", "col-crr-" + suffix(), false);
-        createJob("dcre-pay", "pay-pxr-" + suffix(), false);
+        createJob("dcre-pay", "pay-ppx-" + suffix(), false);
         createJob("dcre-man", "man-mrr-" + suffix(), false);
 
         Map<String, Job> live = reconciler.liveManagedJobs();
@@ -131,9 +148,9 @@ class NamespaceRoutingTest {
 
     @Test
     void outcomeWatcherObservesInTheIntentNamespace() throws IOException {
-        String name = "pay-crr-" + suffix();
+        String name = "pay-prr-" + suffix();
         UUID arrivalId = insertArrival("onhost-req-endo", "FNBRF01");
-        UUID intentId = intentRepo.insertIntent(arrivalId, Stage.CRR, name, "dcre-pay").orElseThrow();
+        UUID intentId = intentRepo.insertIntent(arrivalId, Stage.PRR, name, "dcre-pay").orElseThrow();
         // The CRUD mock server assigns its own uid: mark launched with the REAL one.
         Job created = createJob("dcre-pay", name, true);
         intentRepo.markIntentLaunched(intentId, created.getMetadata().getUid());
@@ -141,15 +158,15 @@ class NamespaceRoutingTest {
 
         watcher.observe(intentOf(arrivalId, intentId));
 
-        assertEquals(Outcome.BUSINESS_ACCEPTED, outcomeRepo.outcomesForArrival(arrivalId).get(Stage.CRR),
+        assertEquals(Outcome.BUSINESS_ACCEPTED, outcomeRepo.outcomesForArrival(arrivalId).get(Stage.PRR),
                 "observation reads the Job from the intent's namespace");
     }
 
     @Test
     void outcomeWatcherNeverFallsBackToTheControlNamespace() throws IOException {
-        String name = "pay-crr-" + suffix();
+        String name = "pay-prr-" + suffix();
         UUID arrivalId = insertArrival("onhost-req-endo", "FNBRF01");
-        UUID intentId = intentRepo.insertIntent(arrivalId, Stage.CRR, name, "dcre-pay").orElseThrow();
+        UUID intentId = intentRepo.insertIntent(arrivalId, Stage.PRR, name, "dcre-pay").orElseThrow();
         // The Job exists ONLY in the control namespace, uid-matched to the
         // intent so ONLY the namespace can disqualify it. The seam file is
         // present, so a control-namespace lookup WOULD record an outcome.
@@ -184,18 +201,330 @@ class NamespaceRoutingTest {
     }
 
     @Test
-    void prgClockWindowsRouteByClientFlow() {
+    void eachFamilysReportGeneratorRunsInItsOwnNamespaceForItsOwnClients() {
+        // v1 topology: ONE loop used to launch a single generator for every client
+        // on whatever namespace that client's flow resolved to. There are two
+        // generators now, each serving only its own family's clients: CRG in
+        // dcre-col for collections clients, PRG in dcre-pay for pay clients.
         insertArrival("onhost-req", "FNBRF01");
         insertArrival("onhost-req", "FNBCC01");
         exec("UPDATE agt_lease SET expires_at = now() - INTERVAL '1 second'");
         assertTrue(lease.tryAcquire(config.holderId()), "test precondition: lease held");
 
+        crgScheduler.tick();
         prgScheduler.tick();
 
         assertEquals("dcre-pay", namespaceOfIntentLike("pay-prg-fnbrf01-w%"),
                 "R-42 pay client: PRG window in the pay namespace with the pay- prefix");
-        assertEquals("dcre-col", namespaceOfIntentLike("col-prg-fnbcc01-w%"),
-                "collections client: PRG window stays col-");
+        assertEquals("dcre-col", namespaceOfIntentLike("col-crg-fnbcc01-w%"),
+                "collections client: the COLLECTIONS generator is CRG, in dcre-col");
+        assertEquals(0, countIntentsLike("col-prg-%"),
+                "PRG is the payments generator: it must never mint a col- window");
+        assertEquals(0, countIntentsLike("pay-crg-%"),
+                "CRG is the collections generator: it must never mint a pay- window");
+    }
+
+    /**
+     * THE PAYMENTS ROUTING ASSERTION. Red-proofed by reverting
+     * {@code StageDatabases.urlFor} to its two-way form (man vs everything else)
+     * and watching this fail; the fixture below is why the pre-existing man/col
+     * assertions could not.
+     *
+     * <p>{@code manStageJobCarriesTheManDbUrlAndCollectionsKeepsCol} stays GREEN
+     * through the entire payments defect, because its fixture contains two families
+     * where the code has three. A dimension with only some of its values cannot
+     * exercise what that dimension drives.
+     */
+    @Test
+    void paymentsStageJobsCarryTheDcrePayUrlAndNotTheCollectionsOne() {
+        UUID payArrival = insertArrival("onhost-req-endo", "FNBRF01");
+        launcher.launch(payArrival, Stage.PRR);
+        Job payJob = k8s.batch().v1().jobs().inNamespace("dcre-pay")
+                .withName(JobLauncher.jobName(za.co.fnb.dcre.agt.domain.Flow.PAY, Stage.PRR, payArrival)).get();
+        assertNotNull(payJob, "PRR job created in dcre-pay");
+        assertTrue(dbUrlOf(payJob).contains("/dcre_pay"),
+                "a payments stage pod must address dcre_pay. With the two-way dbUrlFor it"
+                        + " receives /dcre_col instead and nothing errors, because the write is"
+                        + " perfectly valid against the wrong database. Got " + dbUrlOf(payJob));
+        assertFalse(dbUrlOf(payJob).contains("/dcre_col"),
+                "and it must not carry the collections url at all, got " + dbUrlOf(payJob));
+    }
+
+    /** The payments clock generator too: PRG windows write dcre_pay. */
+    @Test
+    void thePaymentsReportGeneratorClockJobCarriesTheDcrePayUrl() {
+        String runKey = "payclock-" + suffix();
+        launcher.launchClock(za.co.fnb.dcre.agt.domain.Flow.PAY, Stage.PRG, runKey,
+                java.util.List.of("client=FNBRF01", "window=" + runKey));
+        Job clockJob = k8s.batch().v1().jobs().inNamespace("dcre-pay")
+                .withName(JobLauncher.clockJobName(za.co.fnb.dcre.agt.domain.Flow.PAY, Stage.PRG, runKey)).get();
+        assertNotNull(clockJob, "PRG clock job created in dcre-pay");
+        assertTrue(dbUrlOf(clockJob).contains("/dcre_pay"),
+                "the payments report generator writes dcre_pay, got " + dbUrlOf(clockJob));
+    }
+
+    /**
+     * ALL FOUR service databases, asserted over {@link DbFamily} rather than over the
+     * stages that happen to exist.
+     *
+     * <p>It used to iterate stages and assert "three distinct databases". That shape
+     * is blind to a family with no stage yet and, worse, it expressed the expected count
+     * as a number the reader could bump without deciding anything. The expectation is now
+     * a literal map of family to database: a family ADDED to the enum fails the size
+     * assertion until it is named here, and a family MISROUTED fails its own row. A
+     * fixture whose rows all share a value cannot exercise what that value drives, which
+     * is exactly how the previous three-family version stayed green while HCS was routed
+     * to the collections database.
+     */
+    @Test
+    void everyServiceDatabaseIsRoutedToItsOwnFamilyAndAllFourAreDistinct() {
+        final java.util.Map<DbFamily, String> expected = new java.util.EnumMap<>(DbFamily.class);
+        expected.put(DbFamily.COL, "/dcre_col");
+        expected.put(DbFamily.PAY, "/dcre_pay");
+        expected.put(DbFamily.MAN, "/dcre_man");
+        expected.put(DbFamily.HCS, "/dcre_hcs");
+        assertEquals(DbFamily.values().length, expected.size(),
+                "a family added to DbFamily must be named here deliberately, with the database"
+                        + " it owns; absent from this map it would be routed by nothing and"
+                        + " asserted by nothing");
+
+        final java.util.Set<String> urls = new java.util.HashSet<>();
+        expected.forEach((family, database) -> {
+            final String url = stageDatabases.urlFor(family);
+            assertNotNull(url, "no url for family " + family);
+            assertTrue(url.contains(database),
+                    family + " must address " + database + ", got " + url);
+            urls.add(url);
+        });
+        assertEquals(DbFamily.values().length, urls.size(),
+                "one database per family, none shared, got " + urls);
+
+        // And every STAGE agrees with its family's url, so a stage cannot be routed
+        // somewhere its family is not.
+        for (final Stage stage : Stage.values()) {
+            assertEquals(stageDatabases.urlFor(stageDatabases.dbFamily(stage)),
+                    stageDatabases.urlFor(stage),
+                    "stage " + stage + " disagrees with its family's database");
+        }
+    }
+
+    /**
+     * THE HCS ROUTING ASSERTION. Red-proofed by putting HCS back with collections in
+     * {@code StageDatabases.dbFamily} and watching this fail.
+     *
+     * <p>{@code StageDatabases.family} enumerated HCS with the collections stages, so
+     * AGT handed every HCS pod the {@code dcre_col} url. That was defensible while the
+     * calendar lived there; the owner ruled it out on 2026-08-08 as a "Violation of the
+     * 12FactorApp" (https://12factor.net/) and {@code shared/hcs} now carries a
+     * {@code FamilyGuard} on {@code current_database()} that refuses to migrate against
+     * anything but {@code dcre_hcs}. So the old routing is not a silent contamination
+     * any more, it is a total outage of the stage: every HCS pod dies at startup.
+     *
+     * <p>Asserted on the launched Job's env, not just on {@code urlFor}, because the
+     * env is what the pod actually reads.
+     */
+    @Test
+    void theHolidaySyncPodWritesItsOwnDatabaseAndNeverTheCollectionsOne() {
+        final String runKey = "hcsclock-" + suffix();
+        // HCS is HOSTED in dcre-col and OWNS dcre_hcs: the namespace and the database
+        // disagree on purpose, and this is the stage that proves the two questions were
+        // separated rather than merely renamed.
+        launcher.launchClock(za.co.fnb.dcre.agt.domain.Flow.COL, Stage.HCS, runKey,
+                java.util.List.of("window=" + runKey));
+        Job hcsJob = k8s.batch().v1().jobs().inNamespace("dcre-col")
+                .withName(JobLauncher.clockJobName(za.co.fnb.dcre.agt.domain.Flow.COL, Stage.HCS, runKey)).get();
+        assertNotNull(hcsJob, "HCS clock job created in dcre-col, where it is hosted");
+        assertTrue(dbUrlOf(hcsJob).contains("/dcre_hcs"),
+                "the holiday calendar's single writer must address dcre_hcs. With the old"
+                        + " routing it receives /dcre_col and shared/hcs's FamilyGuard kills the"
+                        + " pod before any DDL. Got " + dbUrlOf(hcsJob));
+        assertFalse(dbUrlOf(hcsJob).contains("/dcre_col"),
+                "and it must not carry the collections url at all, got " + dbUrlOf(hcsJob));
+    }
+
+    /**
+     * The two cross-context read seams, asserted on the Job specs.
+     *
+     * <p>Both fail CLOSED at the consumer: cde and ctv detect KUBERNETES_SERVICE_HOST
+     * and refuse to start rather than use their localhost dev default, naming the exact
+     * variable. AGT is the only thing that sets them, so a missing arm in
+     * {@code stageEnv} is a crash-looping pod at cutover, which is precisely the failure
+     * this test exists to prevent.
+     *
+     * <p>The two rows point at DIFFERENT databases on purpose. There were five rows
+     * until 2026-08-09, four of them account seams addressing {@code dcre_acs}; those
+     * went with {@code shared/acs}. A fixture whose rows all share a value cannot
+     * exercise what that value drives, so the surviving pair keeping {@code dcre_hcs}
+     * and {@code dcre_man} apart is what stops a single wrong url passing both rows.
+     */
+    @Test
+    void everyCrossContextReadSeamIsInjectedOnItsOwnStage() {
+        record Seam(Stage stage, String route, String client, String namespace,
+                    String env, String database) { }
+        final java.util.List<Seam> seams = java.util.List.of(
+                new Seam(Stage.CDE, "onhost-req", "FNBCC01", "dcre-col",
+                        JobLauncher.CDE_HOLIDAYS_DB_URL_ENV, "/dcre_hcs"),
+                new Seam(Stage.CTV, "onhost-req", "FNBCC01", "dcre-col",
+                        JobLauncher.CTV_MANDATES_DB_URL_ENV, "/dcre_man"));
+
+        for (final Seam seam : seams) {
+            final UUID arrivalId = insertArrival(seam.route(), seam.client());
+            launcher.launch(arrivalId, seam.stage());
+            final Job job = k8s.batch().v1().jobs().inNamespace(seam.namespace())
+                    .withName(JobLauncher.jobName(
+                            za.co.fnb.dcre.agt.domain.Flow.valueOf(
+                                    seam.namespace().substring("dcre-".length()).toUpperCase(java.util.Locale.ROOT)),
+                            seam.stage(), arrivalId)).get();
+            assertNotNull(job, seam.stage() + " job created in " + seam.namespace());
+            final String url = envOf(job, seam.env());
+            assertTrue(url.contains(seam.database()),
+                    seam.stage() + " must receive " + seam.env() + " addressing "
+                            + seam.database() + ", or the pod refuses to start in-cluster."
+                            + " Got " + url);
+        }
+    }
+
+    /** A stage with no cross-context read carries none of the seams: they are
+     *  stage-keyed, never blanket-added to every launched pod. */
+    @Test
+    void aStageWithNoCrossContextReadCarriesNoneOfTheSeams() {
+        final java.util.Set<String> names = envNamesOfLaunched(Stage.CRR, "onhost-req", "FNBCC01", "dcre-col");
+        for (final String seam : java.util.List.of(
+                JobLauncher.CDE_HOLIDAYS_DB_URL_ENV, JobLauncher.CTV_MANDATES_DB_URL_ENV,
+                JobLauncher.CTV_MANDATE_SOURCE_ENV)) {
+            assertFalse(names.contains(seam), "CRR opens no second datasource; " + seam
+                    + " must not be on its pod. Got " + names);
+        }
+        // Control: the walk really reads this pod's env, so the absences above are facts
+        // about the Job spec rather than about an empty env list.
+        assertTrue(names.contains(JobLauncher.DB_URL_ENV),
+                "control: every stage pod carries its primary datasource url. Got " + names);
+    }
+
+    /**
+     * THE RETIRED ACCOUNT SEAMS, asserted on the stages that used to carry them.
+     *
+     * <p>{@code shared/acs} and {@code dcre_acs} were retired on 2026-08-09: the account
+     * reference travels as one immutable versioned artifact each context materialises
+     * into its OWN database, and infra no longer creates {@code dcre_acs}. Four
+     * account-tier variables were injected on 2026-08-08, one live and three ahead of any
+     * consumer, and every one of them now names a database that does not exist.
+     *
+     * <p>This is a tripwire on the runtime shape rather than on source text: an
+     * {@code ACCOUNTS_DB_URL} variable reappearing on a pod means somebody restored the
+     * cross-context read, and the pod would carry a url nothing can connect to. Asserted
+     * on all four stages, because a fix applied where you happened to look is a
+     * coincidence rather than a control.
+     */
+    @Test
+    void noPodCarriesARetiredAccountSeam() {
+        record Retired(Stage stage, String route, String client, String namespace) { }
+        final java.util.List<Retired> stages = java.util.List.of(
+                new Retired(Stage.CTV, "onhost-req", "FNBCC01", "dcre-col"),
+                new Retired(Stage.MRV, "onhost-req-man", "FNBCC01", "dcre-man"),
+                new Retired(Stage.PTV, "onhost-req-endo", "FNBRF01", "dcre-pay"),
+                new Retired(Stage.MIT, "onhost-req-man", "FNBCC01", "dcre-man"));
+
+        for (final Retired retired : stages) {
+            final java.util.Set<String> names = envNamesOfLaunched(
+                    retired.stage(), retired.route(), retired.client(), retired.namespace());
+            assertTrue(names.contains(JobLauncher.DB_URL_ENV),
+                    "control: " + retired.stage() + " carries its primary url. Got " + names);
+            for (final String name : names) {
+                assertFalse(name.endsWith("_ACCOUNTS_DB_URL"),
+                        retired.stage() + " carries " + name + ", which addresses the retired"
+                                + " dcre_acs; the account reference is materialised locally now");
+            }
+        }
+    }
+
+    /** Env var NAMES on the Job a DAG launch of this stage builds. */
+    private java.util.Set<String> envNamesOfLaunched(final Stage stage, final String route,
+                                                     final String client, final String namespace) {
+        final UUID arrivalId = insertArrival(route, client);
+        launcher.launch(arrivalId, stage);
+        final Job job = k8s.batch().v1().jobs().inNamespace(namespace)
+                .withName(JobLauncher.jobName(za.co.fnb.dcre.agt.domain.Flow.valueOf(
+                        namespace.substring("dcre-".length()).toUpperCase(java.util.Locale.ROOT)),
+                        stage, arrivalId)).get();
+        assertNotNull(job, stage + " job created in " + namespace);
+        return job.getSpec().getTemplate().getSpec().getContainers().get(0).getEnv().stream()
+                .map(io.fabric8.kubernetes.api.model.EnvVar::getName)
+                .collect(java.util.stream.Collectors.toSet());
+    }
+
+    /**
+     * The wire-name contract, on the Job specs AGT actually builds.
+     *
+     * <p>The defect this exists for: eight of the nine payments services read
+     * {@code ${DCRE_PAY_DB_URL:...}}, nothing anywhere set it, and AGT injected
+     * {@code DCRE_DB_URL}. In a pod those eight fell back to their committed localhost
+     * default, which is the pod itself. Both sides were green, because five tests
+     * pinned the payments side of the NAME and nothing tested AGT's, even though AGT is
+     * the side documenting that its recipients listen on this one.
+     *
+     * <p>What this can and cannot see: it asserts that AGT publishes ONE name for every
+     * family, on BOTH builder paths, and that no family-specific primary-url name has
+     * crept in. It cannot see a rename in the consumer repo, which is not on this
+     * classpath. Generating both sides from one schema is the durable fix and is
+     * recorded as a follow-up; the literal is the honest interim.
+     */
+    @Test
+    void everyFamilysPodReadsItsDatabaseFromTheSameEnvName() {
+        // DCRE_COL_DB_URL is deliberately absent from this list: it is a REAL,
+        // launch-scoped SECOND datasource for the MRG suspension sweep. These four are
+        // the family-specific PRIMARY names that must never exist, one of which is the
+        // name eight payments services were reading from nobody. DCRE_ACS_DB_URL stays
+        // on the list as a RETIRED-name token: dcre_acs went on 2026-08-09 and a pod
+        // carrying that variable would be addressing a database infra no longer creates.
+        final java.util.List<String> banned = java.util.List.of(
+                "DCRE_PAY_DB_URL", "DCRE_MAN_DB_URL", "DCRE_HCS_DB_URL", "DCRE_ACS_DB_URL");
+
+        final UUID colArrival = insertArrival("onhost-req", "FNBCC01");
+        launcher.launch(colArrival, Stage.CRR);
+        final Job colJob = k8s.batch().v1().jobs().inNamespace("dcre-col")
+                .withName(JobLauncher.jobName(za.co.fnb.dcre.agt.domain.Flow.COL, Stage.CRR, colArrival)).get();
+
+        final UUID payArrival = insertArrival("onhost-req-endo", "FNBRF01");
+        launcher.launch(payArrival, Stage.PRR);
+        final Job payJob = k8s.batch().v1().jobs().inNamespace("dcre-pay")
+                .withName(JobLauncher.jobName(za.co.fnb.dcre.agt.domain.Flow.PAY, Stage.PRR, payArrival)).get();
+
+        final UUID manArrival = insertArrival("onhost-req-man", "FNBCC01");
+        launcher.launch(manArrival, Stage.MRR);
+        final Job manJob = k8s.batch().v1().jobs().inNamespace("dcre-man")
+                .withName(JobLauncher.jobName(za.co.fnb.dcre.agt.domain.Flow.MAN, Stage.MRR, manArrival)).get();
+
+        final String clockKey = "wirename-" + suffix();
+        launcher.launchClock(za.co.fnb.dcre.agt.domain.Flow.PAY, Stage.PRG, clockKey,
+                java.util.List.of("client=FNBRF01", "window=" + clockKey));
+        final Job clockJob = k8s.batch().v1().jobs().inNamespace("dcre-pay")
+                .withName(JobLauncher.clockJobName(za.co.fnb.dcre.agt.domain.Flow.PAY, Stage.PRG, clockKey)).get();
+
+        final java.util.Map<Job, String> byJob = new java.util.LinkedHashMap<>();
+        byJob.put(colJob, "/dcre_col");
+        byJob.put(payJob, "/dcre_pay");
+        byJob.put(manJob, "/dcre_man");
+        byJob.put(clockJob, "/dcre_pay");
+
+        byJob.forEach((job, database) -> {
+            assertNotNull(job, "job not created for " + database);
+            final java.util.Set<String> names = job.getSpec().getTemplate().getSpec()
+                    .getContainers().get(0).getEnv().stream()
+                    .map(io.fabric8.kubernetes.api.model.EnvVar::getName)
+                    .collect(java.util.stream.Collectors.toSet());
+            assertTrue(names.contains(JobLauncher.DB_URL_ENV),
+                    job.getMetadata().getName() + " must carry " + JobLauncher.DB_URL_ENV
+                            + ", got " + names);
+            for (final String name : banned) {
+                assertFalse(names.contains(name), job.getMetadata().getName()
+                        + " must not carry the family-specific name " + name
+                        + ": one variable, routed per family, is the ruling. Got " + names);
+            }
+            assertTrue(envOf(job, JobLauncher.DB_URL_ENV).contains(database),
+                    job.getMetadata().getName() + " must address " + database
+                            + ", got " + envOf(job, JobLauncher.DB_URL_ENV));
+        });
     }
 
     @Test
@@ -263,13 +592,11 @@ class NamespaceRoutingTest {
 
     @Test
     void ctvStageJobCarriesTheConfiguredMandateSource() {
-        // SCRUM-91 Task 11 Step 8: CTV picks its mandate store from
-        // ${DCRE_CTV_MANDATE_SOURCE} (ctv MandateGate, legacy|projection). Nothing
-        // injected it, so an in-cluster CTV was frozen on ctv's yml default
-        // `legacy`, which reads `FROM mandate` in dcre_col - a table only
-        // env-reset.sh --seed creates and which is absent. The acceptance step
-        // (ACCP mandate PASSes, SUSPENDED one FAIL_MANDATE_NOT_ACTIVE) was
-        // therefore not drivable in-cluster at all.
+        // SCRUM-107: CTV picks its mandate store from ${DCRE_CTV_MANDATE_SOURCE}
+        // (ctv MandateGate). The vocabulary is now `projection` only: the
+        // dcre_col.mandate table the retired `legacy` value read has been dropped,
+        // and ctv FAILS CLOSED on that value, so handing it to a stage pod stops the
+        // pod from starting rather than degrading to a different gate.
         // Stage-keyed for the same reason as the mandates url: CTV is a DAG stage
         // with no per-launch env seam, and EVERY CTV pod runs the gate.
         // The env NAME is asserted as a literal on purpose: it is the cross-repo
@@ -284,9 +611,11 @@ class NamespaceRoutingTest {
         assertEquals(config.ctvMandateSource(), envOf(ctvJob, "DCRE_CTV_MANDATE_SOURCE"),
                 "the CTV pod runs the mandate store AGT is configured for, not ctv's frozen yml default");
         // The shipped default must be ctv's own effective behaviour, so wiring the
-        // seam changes nothing for anyone who never sets the knob.
-        assertEquals("legacy", config.ctvMandateSource(),
-                "default mirrors ctv application.yml (dcre.ctv.mandate-source:legacy)");
+        // seam changes nothing for anyone who never sets the knob. This is the THIRD
+        // home of the same fact (yml, @WithDefault, and the resolved value asserted
+        // here); AgtCtvMandateSourceDefaultTest pins the first two to each other.
+        assertEquals("projection", config.ctvMandateSource(),
+                "default mirrors ctv application.yml (dcre.ctv.mandate-source:projection)");
     }
 
     @Test
@@ -325,10 +654,10 @@ class NamespaceRoutingTest {
 
         // clock Job path (JobLauncher.clockJob)
         String runKey = "agtops-" + suffix();
-        launcher.launchClock(za.co.fnb.dcre.agt.domain.Flow.COL, Stage.PRG, runKey,
+        launcher.launchClock(za.co.fnb.dcre.agt.domain.Flow.COL, Stage.CRG, runKey,
                 java.util.List.of("client=FNBCC01", "window=" + runKey));
         Job clockJob = k8s.batch().v1().jobs().inNamespace("dcre-col")
-                .withName(JobLauncher.clockJobName(za.co.fnb.dcre.agt.domain.Flow.COL, Stage.PRG, runKey)).get();
+                .withName(JobLauncher.clockJobName(za.co.fnb.dcre.agt.domain.Flow.COL, Stage.CRG, runKey)).get();
         assertNotNull(clockJob, "PRG clock job created in dcre-col");
         assertEquals(agtOps, envOf(clockJob, "DCRE_AGTOPS_DB_URL"),
                 "clock job carries the agt_ops FQDN url, got " + envOf(clockJob, "DCRE_AGTOPS_DB_URL"));
@@ -360,10 +689,10 @@ class NamespaceRoutingTest {
 
         // clock Job path (JobLauncher.clockJob)
         String runKey = "backoff-" + suffix();
-        launcher.launchClock(za.co.fnb.dcre.agt.domain.Flow.COL, Stage.PRG, runKey,
+        launcher.launchClock(za.co.fnb.dcre.agt.domain.Flow.COL, Stage.CRG, runKey,
                 java.util.List.of("client=FNBCC01", "window=" + runKey));
         Job clockJob = k8s.batch().v1().jobs().inNamespace("dcre-col")
-                .withName(JobLauncher.clockJobName(za.co.fnb.dcre.agt.domain.Flow.COL, Stage.PRG, runKey)).get();
+                .withName(JobLauncher.clockJobName(za.co.fnb.dcre.agt.domain.Flow.COL, Stage.CRG, runKey)).get();
         assertNotNull(clockJob, "PRG clock job created in dcre-col");
         assertEquals(0, clockJob.getSpec().getBackoffLimit(),
                 "clockJob: one Job, one pod (exit code attributable)");

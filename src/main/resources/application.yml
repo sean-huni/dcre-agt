@@ -7,13 +7,23 @@ quarkus:
     username: ${AGT_DB_USER:root}
     password: ${AGT_DB_PASSWORD:}
     # SCRUM-55: read-only window into the collections DB (prg_report_due,
-    # prg_sla_pending). PRG owns the schema; AGT never writes here.
+    # prg_sla_pending, crw_emission_owed). CRG/CRW own the schema; AGT never writes here.
     "collections":
       db-kind: postgresql
       jdbc:
         url: ${AGT_COLLECTIONS_DB_URL:jdbc:postgresql://localhost:26257/dcre_col?sslmode=disable}
       username: ${AGT_COLLECTIONS_DB_USER:root}
       password: ${AGT_COLLECTIONS_DB_PASSWORD:}
+    # v1 topology: the PAYMENTS twin. dcre_pay publishes views with the SAME NAMES
+    # (prg_report_due, prg_sla_pending), owned by PRG. Without this datasource the
+    # payments IMMEDIATE report path is not misrouted, it simply never fires, and
+    # nothing errors. It is a missing READ SEAM, not a rename.
+    "payments":
+      db-kind: postgresql
+      jdbc:
+        url: ${AGT_PAYMENTS_DB_URL:jdbc:postgresql://localhost:26257/dcre_pay?sslmode=disable}
+      username: ${AGT_PAYMENTS_DB_USER:root}
+      password: ${AGT_PAYMENTS_DB_PASSWORD:}
   liquibase:
     migrate-at-start: true
     change-log: db/changelog/db.changelog-master.xml
@@ -65,34 +75,60 @@ agt:
   pay-clients: ${AGT_PAY_CLIENTS:FNBRF01}
   holder-id: ${HOSTNAME:local-agt}
   launch-enabled: ${AGT_LAUNCH_ENABLED:true}
+  # The 29 stage images: 28 stage services across three families plus the
+  # cross-family HCS, exactly the roster of infra/dcre-infra/scripts/switch-version.sh,
+  # which sets AGT_<STAGE>_IMAGE=dcre-<stage>:<version> for each. A knob AGT does not
+  # recognise makes that export silently inert, so the two lists are one contract.
+  # Empty default = launch-disabled (SCRUM-33: no stub fallback), which is what every
+  # one of them holds now: the v1 cutover retired the pre-cutover image names
+  # (dcre-ixr, dcre-sxr, dcre-pxr, dcre-ais, and the COLLECTIONS dcre-prg), so a
+  # non-empty default here would name an image that is no longer built and wedge the
+  # stage on ImagePullBackOff. Clean-clone rule: a fresh clone boots with no .env.
+  #
+  # collections
   crr-image: ${AGT_CRR_IMAGE:}
   ctv-image: ${AGT_CTV_IMAGE:}
-  cir-image: ${AGT_CIR_IMAGE:}
   cde-image: ${AGT_CDE_IMAGE:}
   crw-image: ${AGT_CRW_IMAGE:}
-  ixr-image: ${AGT_IXR_IMAGE:dcre-ixr:m4}
-  sxr-image: ${AGT_SXR_IMAGE:dcre-sxr:m4}
-  pxr-image: ${AGT_PXR_IMAGE:dcre-pxr:m4}
-  prg-image: ${AGT_PRG_IMAGE:dcre-prg:m4}
-  ais-image: ${AGT_AIS_IMAGE:dcre-ais:m5}
-  hcs-image: ${AGT_HCS_IMAGE:dcre-hcs:m6}
-  # M10 mandates stage images (SCRUM-79): empty default = launch-disabled until
-  # the 2.3 release line ships the dcre-m* images.
+  cir-image: ${AGT_CIR_IMAGE:}
+  cix-image: ${AGT_CIX_IMAGE:}
+  csx-image: ${AGT_CSX_IMAGE:}
+  cpx-image: ${AGT_CPX_IMAGE:}
+  # CRG is the COLLECTIONS report generator. Before 2026-08-08 this job ran under
+  # the name PRG; the token below now names the PAYMENTS one.
+  crg-image: ${AGT_CRG_IMAGE:}
+  # payments
+  prr-image: ${AGT_PRR_IMAGE:}
+  ptv-image: ${AGT_PTV_IMAGE:}
+  pai-image: ${AGT_PAI_IMAGE:}
+  prw-image: ${AGT_PRW_IMAGE:}
+  pir-image: ${AGT_PIR_IMAGE:}
+  pix-image: ${AGT_PIX_IMAGE:}
+  psx-image: ${AGT_PSX_IMAGE:}
+  ppx-image: ${AGT_PPX_IMAGE:}
+  # PRG is the PAYMENTS report generator. This knob CHANGED MEANING at the cutover.
+  prg-image: ${AGT_PRG_IMAGE:}
+  # mandates
   mrr-image: ${AGT_MRR_IMAGE:}
   mrv-image: ${AGT_MRV_IMAGE:}
   mas-image: ${AGT_MAS_IMAGE:}
   mit-image: ${AGT_MIT_IMAGE:}
   mir-image: ${AGT_MIR_IMAGE:}
   mrw-image: ${AGT_MRW_IMAGE:}
-  # SCRUM-91: one reader image per pain.012 leg, replacing mar-image/msr-image.
   mix-image: ${AGT_MIX_IMAGE:}
   msx-image: ${AGT_MSX_IMAGE:}
   mpx-image: ${AGT_MPX_IMAGE:}
   mrg-image: ${AGT_MRG_IMAGE:}
+  # cross-family
+  hcs-image: ${AGT_HCS_IMAGE:}
   # INTERIM (R-42 analog for M10): comma-separated mandate-capable client
   # tokens, until the R-14 client reference table lands.
   man-clients: ${AGT_MAN_CLIENTS:FNBCC01,FNBCC02,FNBRF01}
   crw-interval-seconds: ${AGT_CRW_INTERVAL_SECONDS:60}
+  # Separate knobs on purpose: collections transaction lists are processed ON the
+  # collection day and payments transactions IMMEDIATELY, so the two report cadences
+  # have no reason to move together.
+  crg-interval-seconds: ${AGT_CRG_INTERVAL_SECONDS:60}
   prg-interval-seconds: ${AGT_PRG_INTERVAL_SECONDS:60}
   hcs-interval-hours: ${AGT_HCS_INTERVAL_HOURS:6}
   mrg-interval-seconds: ${AGT_MRG_INTERVAL_SECONDS:60}
@@ -102,13 +138,31 @@ agt:
   # pods in the FLOW namespaces (dcre-col/pay/man); `crdb` only resolves inside
   # the control namespace where the Service lives.
   service-db-url: ${AGT_SERVICE_DB_URL:jdbc:postgresql://crdb.dcre.svc.cluster.local:26257/dcre_col?sslmode=disable}
+  # v1 topology: PAYMENTS stage Jobs persist in dcre_pay. Without this knob every
+  # payments stage received the collections URL and would have built the payments
+  # schema inside dcre_col without erroring, because the write is perfectly valid
+  # against the wrong database. StageDatabases resolves it with no default arm.
+  pay-service-db-url: ${AGT_PAY_SERVICE_DB_URL:jdbc:postgresql://crdb.dcre.svc.cluster.local:26257/dcre_pay?sslmode=disable}
   # B2 (SCRUM-79 review): M10 mandates stage Jobs persist in dcre_man; the DB
   # URL follows the stage's flow family (JobLauncher), never a shared default.
   man-service-db-url: ${AGT_MAN_SERVICE_DB_URL:jdbc:postgresql://crdb.dcre.svc.cluster.local:26257/dcre_man?sslmode=disable}
-  # SCRUM-91 Task 11 Step 8: the mandate store CTV's DC-flow gate reads, handed
-  # to every CTV stage pod as DCRE_CTV_MANDATE_SOURCE. Default `legacy` mirrors
-  # ctv's own application.yml default, so the seam is inert until it is set.
-  ctv-mandate-source: ${AGT_CTV_MANDATE_SOURCE:legacy}
+  # Owner ruling 2026-08-08: holiday data in dcre_col is a 12FactorApp violation
+  # (https://12factor.net/), so the calendar has its own context and database. HCS
+  # used to receive service-db-url because the enum naming a stage's NAMESPACE was
+  # also the enum naming its DATABASE, and HCS runs in dcre-col. shared/hcs now
+  # refuses to start unless current_database() is dcre_hcs, so without this knob
+  # every HCS pod dies on startup.
+  hcs-service-db-url: ${AGT_HCS_SERVICE_DB_URL:jdbc:postgresql://crdb.dcre.svc.cluster.local:26257/dcre_hcs?sslmode=disable}
+  # HCS is the ONLY cross-family reference context. An acs-service-db-url knob sat
+  # here for one day: shared/acs and dcre_acs were retired on 2026-08-09 because the
+  # database had no authoritative source, no owner, no ingestion and no freshness
+  # contract. Account reference rows travel as one immutable versioned artifact and
+  # each context materialises its own projection, so no knob points at dcre_acs.
+  # SCRUM-107: the mandate store CTV's DC-flow gate reads, handed to every CTV
+  # stage pod as DCRE_CTV_MANDATE_SOURCE. Default `projection` mirrors ctv's own
+  # application.yml default: dcre_man man_ctv_view is the authority, and the
+  # dcre_col.mandate table the former `legacy` value read has been dropped.
+  ctv-mandate-source: ${AGT_CTV_MANDATE_SOURCE:projection}
   # M12/SCRUM-88 (R-47): the agt_ops URL handed to every launched stage pod so
   # the platform-batch heartbeat writer (T2) can reach agt_ops. FQDN for the
   # same reason as man-service-db-url; identical for all flows. user = root
@@ -137,6 +191,11 @@ agt:
   # SCRUM-55 Task 13: Fintegrate SLA thresholds in hours (amber warn, red breach).
   sla-amber-hours: ${AGT_SLA_AMBER_HOURS:20}
   sla-red-hours: ${AGT_SLA_RED_HOURS:24}
+  # Bounded-attempt guard on the IMMEDIATE report trigger: consecutive scans that may
+  # see the same (flow, client, parent) still due before AGT WARNs. It makes a silent
+  # loop visible; it never retries, widens or falls back. At the default 15s scan
+  # cadence, 20 scans is ~5 minutes.
+  report-stall-scans: ${AGT_REPORT_STALL_SCANS:20}
 
 # SCRUM-55 report knobs live under dcre.agt (outside the strict agt
 # ConfigMapping prefix; consumed directly by scheduler expressions).

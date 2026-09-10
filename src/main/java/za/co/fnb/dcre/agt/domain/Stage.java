@@ -1,27 +1,61 @@
 package za.co.fnb.dcre.agt.domain;
 
-/** Pipeline stages of the Collections DAG (M2 replaces CRR/CTV/CIR;
- *  M4 adds the fint-resp readers IXR/SXR/PXR and the clock-driven PRG;
- *  M5 adds AIS on the ENDO route; M6 adds the clock-driven HCS holiday sync;
- *  M10/SCRUM-79 adds the Mandates family: MRR->MRV->MAS->MIT->{MIR,MRW} on
- *  onhost-req-man and the clock-driven MRG; SCRUM-91 replaces the merged
- *  MAR->MSR response chain with the three token-picked leg readers MIX/MSX/MPX,
- *  mirroring IXR/SXR/PXR).
+/**
+ * The VERSION 1 stage roster: 28 stage services across three families plus the one
+ * cross-family shared context, HCS. THE DIAGRAMS ARE THE SPECIFICATION
+ * (design-register/docs/diagrams, R-49) for the three FAMILIES; this enum is a
+ * transcription of them plus the cross-family services, which appear on no sheet by
+ * design and are declared in {@code verify-topology.sh}'s {@code ALLOWED_shared}.
  *
- *  <p>MAR, MSR, MIS and MAF are RETAINED-DEPRECATED (A-75): agt_ops.stage_outcome.stage is
- *  VARCHAR(16) parsed back with Stage.valueOf, so deleting them makes every
- *  historic row unparseable and breaks the reconciler on any environment with
- *  pre-cutover history. They appear in no RouteDag, no launchable set and no
- *  serviceArgs branch. Removal requires a documented history purge. */
+ * <pre>
+ * collections  CRR CTV CDE CRW CIR   CIX CSX CPX   CRG
+ * payments     PRR PTV PAI PRW PIR   PIX PSX PPX   PRG
+ * mandates     MRR MRV MAS MIT MIR MRW   MIX MSX MPX   MRG
+ * cross-family HCS
+ * </pre>
+ *
+ * <p><b>PRG IS THE PAYMENTS REPORT GENERATOR.</b> Before the 2026-08-08 cutover the
+ * same token named the COLLECTIONS one, which is now CRG. The token did not move,
+ * it changed MEANING, so a find-and-replace over this file produces a build that
+ * compiles and is semantically inverted. Every use of PRG must be read in context.
+ *
+ * <p>No deprecated constants. The pre-cutover names (IXR SXR PXR AIS, and MAR MSR
+ * MIS MAF before them) were retained only because
+ * {@code agt_ops.stage_outcome.stage} is {@code VARCHAR(16)} parsed back with
+ * {@link #valueOf}, so deleting them made historic rows unparseable (A-75). The
+ * owner directive of 2026-08-08 dropped every DCRE database and cut over directly
+ * to a clean version 1, so there are no historic rows and the constraint that
+ * justified retention no longer exists. A v1 enum holds exactly these 29 and
+ * nothing else.
+ */
 public enum Stage {
-    CRR, CTV, CDE, CRW, CIR, IXR, SXR, PXR, PRG, AIS, HCS,
+
+    /** Collections (DC): the sheet's REQ chain, the three fint-resp leg readers, the report generator. */
+    CRR, CTV, CDE, CRW, CIR, CIX, CSX, CPX, CRG,
+
+    /** Payments (ENDO): PRR -> PTV -> PAI -> {PRW, PIR}, the three leg readers, and PRG. */
+    PRR, PTV, PAI, PRW, PIR, PIX, PSX, PPX, PRG,
+
+    /** Mandates: MRR -> MRV -> MAS -> MIT -> {MIR, MRW}, the three leg readers, and MRG. */
     MRR, MRV, MAS, MIT, MIR, MRW, MIX, MSX, MPX, MRG,
-    /** @deprecated SCRUM-91: split into MIX/MSX/MPX. Kept only for Stage.valueOf on historic rows. */
-    @Deprecated MAR,
-    /** @deprecated SCRUM-91: the mandate projection it wrote is replaced by derived views. */
-    @Deprecated MSR,
-    /** @deprecated SCRUM-107: renamed to MIT. Kept only for Stage.valueOf on historic rows. */
-    @Deprecated MIS,
-    /** @deprecated SCRUM-107: renamed to MAS. Kept only for Stage.valueOf on historic rows. */
-    @Deprecated MAF
+
+    /**
+     * Cross-family holiday-calendar sync (R-38): on no sheet, single writer of
+     * {@code public_holiday}.
+     *
+     * <p><b>Absence from the sheets is not drift.</b> The six sheets specify the three
+     * FAMILIES; HCS and RPT are cross-family services by design and appear on neither.
+     * {@code verify-topology.sh} declares both in {@code ALLOWED_shared} and exits 0.
+     * Read the sheets for what a family contains, never for whether a cross-family
+     * service should exist.
+     *
+     * <p>HCS is the ONLY cross-family stage. An {@code ACS} constant sat beside it for
+     * one day: {@code shared/acs} and {@code dcre_acs} were retired on 2026-08-09 in
+     * favour of one immutable versioned artifact that each context materialises locally,
+     * so there is no ACS image, no ACS service and nothing for a census to write. The
+     * enum is the roster; a constant with no service behind it mints launch intents for
+     * a stage that can never run, and an unset image is launch-disabled SILENTLY by
+     * design (SCRUM-33), so nothing would have said why.
+     */
+    HCS
 }

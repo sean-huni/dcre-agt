@@ -1,6 +1,7 @@
 package za.co.fnb.dcre.agt.service;
 
 import org.junit.jupiter.api.Test;
+import za.co.fnb.dcre.agt.domain.Flow;
 import za.co.fnb.dcre.agt.domain.Outcome;
 import za.co.fnb.dcre.agt.domain.Stage;
 
@@ -73,7 +74,7 @@ class RouteRegistryConsistencyTest {
     @Test
     void anUnknownRouteFailsClosedInsteadOfRunningCollections() {
         final IllegalArgumentException e = assertThrows(IllegalArgumentException.class,
-                () -> DagEngine.computeLaunches("totally-unknown-route", "FNBRF01_MSG.txt",
+                () -> DagEngine.computeLaunches("totally-unknown-route", Flow.COL, "FNBRF01_MSG.txt",
                         Map.of(), EnumSet.noneOf(Stage.class)),
                 "an unknown route must fail closed, not default to the collections DAG");
         assertTrue(e.getMessage().contains("totally-unknown-route"),
@@ -84,9 +85,45 @@ class RouteRegistryConsistencyTest {
     @Test
     void anUnknownRouteAlsoFailsClosedOnTheTerminalVerdictPath() {
         assertThrows(IllegalArgumentException.class,
-                () -> DagEngine.terminalState("totally-unknown-route",
+                () -> DagEngine.terminalState("totally-unknown-route", Flow.COL,
                         Map.of(Stage.CRR, Outcome.BUSINESS_ACCEPTED), () -> false),
                 "terminalState must not judge an unknown route by the collections shape");
+    }
+
+    /**
+     * The v1 addition: a response route with no shape for THIS flow must fail closed
+     * too, rather than serving another family's leg readers.
+     *
+     * <p>{@code fint-resp} carries both collections and payments replies, so the
+     * (route, flow) pair is the key. A pair with no entry used to be impossible to
+     * express; now it is, and getting it wrong would mean payments replies read by
+     * the collections readers into the collections database, which is precisely the
+     * defect the family split exists to remove.
+     */
+    @Test
+    void aResponseRouteWithNoShapeForThatFlowFailsClosed() {
+        final IllegalArgumentException e = assertThrows(IllegalArgumentException.class,
+                () -> DagEngine.fintRespStage(ArrivalService.ROUTE_FINT_RESP, Flow.MAN,
+                        "FNBCC01_ISR.txt"),
+                "fint-resp carries no mandates replies: that pair must fail, not fall back");
+        assertTrue(e.getMessage().contains("MAN"), "the message must name the flow; got: " + e.getMessage());
+        assertThrows(IllegalArgumentException.class,
+                () -> DagEngine.fintRespStage(ArrivalService.ROUTE_FINT_RESP_MAN, Flow.PAY,
+                        "FNBCC01_ISR.txt"),
+                "and the converse: fint-resp-man carries no payments replies");
+    }
+
+    /** Every response route resolves a full leg set for each flow it declares. */
+    @Test
+    void everyDeclaredResponsePairResolvesAllThreeLegs() {
+        RouteDags.RESPONSES.forEach((route, byFlow) -> byFlow.forEach((flow, dag) -> {
+            assertEquals(3, dag.terminal().size(),
+                    route + "/" + flow + " must declare one reader per reply type (ISR, SBSR, PBSR)");
+            for (final String token : new String[] {"ISR", "SBSR", "PBSR"}) {
+                assertTrue(DagEngine.fintRespStage(route, flow, "FNBCC01_" + token + "_x.xml").isPresent(),
+                        route + "/" + flow + " has no reader for " + token);
+            }
+        }));
     }
 
     /**
@@ -101,7 +138,7 @@ class RouteRegistryConsistencyTest {
      */
     @Test
     void anUnknownRouteHasNoInitialStageInsteadOfDefaultingToCrr() {
-        assertTrue(DagEngine.initialStage("totally-unknown-route", "FNBRF01_MSG.txt").isEmpty(),
+        assertTrue(DagEngine.initialStage("totally-unknown-route", Flow.COL, "FNBRF01_MSG.txt").isEmpty(),
                 "initialStage must not start an unknown route at CRR");
     }
 
@@ -114,7 +151,7 @@ class RouteRegistryConsistencyTest {
      */
     @Test
     void anUnknownRouteIsQuarantinableRatherThanRetriedForever() {
-        assertDoesNotThrow(() -> DagEngine.initialStage("totally-unknown-route", "FNBRF01_MSG.txt"),
+        assertDoesNotThrow(() -> DagEngine.initialStage("totally-unknown-route", Flow.COL, "FNBRF01_MSG.txt"),
                 "initialStage must not throw: the caller's quarantine path needs an empty Optional");
     }
 
@@ -146,22 +183,53 @@ class RouteRegistryConsistencyTest {
             if (!RouteDags.REQUESTS.containsKey(route)) {
                 continue; // response routes are token-picked from the filename
             }
-            assertTrue(DagEngine.initialStage(route, "FNBRF01_MSG.txt").isPresent(),
+            final Flow flow = FlowNamespaces.flowForRoute(route, "FNBRF01", Set.of("FNBRF01"));
+            assertTrue(DagEngine.initialStage(route, flow, "FNBRF01_MSG.txt").isPresent(),
                     "request route '" + route + "' must resolve a first stage");
         }
     }
 
-    /** A known route is unaffected: the guard must not change live behaviour. */
+    /** Each family's request route advances on its OWN stages. */
     @Test
-    void knownRoutesStillResolveExactlyAsBefore() {
+    void knownRoutesResolveToTheirOwnFamilysStages() {
         assertEquals(EnumSet.of(Stage.CTV),
-                DagEngine.computeLaunches("onhost-req", "FNBCC01_F.txt",
+                DagEngine.computeLaunches("onhost-req", Flow.COL, "FNBCC01_F.txt",
                         Map.of(Stage.CRR, Outcome.BUSINESS_ACCEPTED), EnumSet.noneOf(Stage.class)));
         assertEquals(EnumSet.of(Stage.MRV),
-                DagEngine.computeLaunches("onhost-req-man", "FNBRF01_F.txt",
+                DagEngine.computeLaunches("onhost-req-man", Flow.MAN, "FNBRF01_F.txt",
                         Map.of(Stage.MRR, Outcome.BUSINESS_ACCEPTED), EnumSet.noneOf(Stage.class)));
-        assertEquals(EnumSet.of(Stage.AIS),
-                DagEngine.computeLaunches("onhost-req-endo", "FNBRF01_F.txt",
-                        Map.of(Stage.CTV, Outcome.BUSINESS_ACCEPTED), EnumSet.noneOf(Stage.class)));
+        assertEquals(EnumSet.of(Stage.PAI),
+                DagEngine.computeLaunches("onhost-req-endo", Flow.PAY, "FNBRF01_F.txt",
+                        Map.of(Stage.PTV, Outcome.BUSINESS_ACCEPTED), EnumSet.noneOf(Stage.class)));
+    }
+
+    /**
+     * No stage may appear in more than one family's request DAG.
+     *
+     * <p>The pre-v1 shape had CRR, CTV and CIR in BOTH the collections and payments
+     * request DAGs, which is how one lane came to execute the other family's
+     * services against the other family's database. A shared stage is the structural
+     * signature of that defect, so it is asserted against rather than described.
+     */
+    @Test
+    void noStageIsSharedBetweenTwoRequestFamilies() {
+        final java.util.Map<Stage, String> owner = new java.util.EnumMap<>(Stage.class);
+        RouteDags.REQUESTS.forEach((route, dag) -> {
+            final Set<Stage> all = EnumSet.noneOf(Stage.class);
+            dag.entry().ifPresent(all::add);
+            dag.edges().forEach((from, to) -> {
+                all.add(from);
+                all.addAll(to);
+            });
+            all.addAll(dag.terminal());
+            dag.responder().ifPresent(all::add);
+            all.forEach(stage -> {
+                final String previous = owner.put(stage, route);
+                assertTrue(previous == null || previous.equals(route),
+                        "stage " + stage + " appears in both '" + previous + "' and '" + route
+                                + "': a shared stage means one family's service writes another"
+                                + " family's database");
+            });
+        });
     }
 }

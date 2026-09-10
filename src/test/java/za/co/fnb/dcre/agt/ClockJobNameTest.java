@@ -25,7 +25,7 @@ class ClockJobNameTest {
     @Test
     void ordinaryRunKeysAreUntouched() {
         assertEquals("col-crw-2026-07-12-w42", JobLauncher.clockJobName(Flow.COL, Stage.CRW, "2026-07-12-w42"));
-        assertEquals("col-prg-fnbcc01-w5", JobLauncher.clockJobName(Flow.COL, Stage.PRG, "FNBCC01-w5"),
+        assertEquals("col-crg-fnbcc01-w5", JobLauncher.clockJobName(Flow.COL, Stage.CRG, "FNBCC01-w5"),
                 "lowercase before sanitize still holds");
     }
 
@@ -44,7 +44,7 @@ class ClockJobNameTest {
 
     @Test
     void stageTokenInsideTheKeyIsNotStripped() {
-        assertEquals("col-prg-client-prg-w1", JobLauncher.clockJobName(Flow.COL, Stage.PRG, "client-prg-w1"),
+        assertEquals("col-crg-client-prg-w1", JobLauncher.clockJobName(Flow.COL, Stage.CRG, "client-prg-w1"),
                 "only a LEADING stage token is redundant");
     }
 }
