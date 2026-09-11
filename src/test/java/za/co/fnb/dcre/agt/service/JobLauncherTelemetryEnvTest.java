@@ -38,7 +38,13 @@ class JobLauncherTelemetryEnvTest {
 
     private static final List<String> TELEMETRY_KEYS = List.of(
             "DCRE_TELEMETRY_ENABLED", "DCRE_TELEMETRY_STAGE",
-            "MANAGEMENT_OTLP_METRICS_EXPORT_URL", "MANAGEMENT_OTLP_METRICS_EXPORT_STEP");
+            "MANAGEMENT_OTLP_METRICS_EXPORT_URL", "MANAGEMENT_OTLP_METRICS_EXPORT_STEP",
+            // The logs and traces endpoints belong in THIS list and not in a test of their own.
+            // Both are Boot's own @ConditionalOnProperty switches, so a stage missing either one
+            // exports that signal nowhere, which is the same class of silence the metrics URL is
+            // swept for over every Stage constant below.
+            "MANAGEMENT_OPENTELEMETRY_LOGGING_EXPORT_OTLP_ENDPOINT",
+            "MANAGEMENT_OPENTELEMETRY_TRACING_EXPORT_OTLP_ENDPOINT");
 
     @Test
     void everyStageGetsTheTelemetryBlockIncludingOnesWithNoOtherExtras() {
@@ -111,6 +117,23 @@ class JobLauncherTelemetryEnvTest {
         final Map<String, String> env = envFor(Stage.CRR);
         assertEquals(JobLauncherTestAccess.STUB_OTLP_METRICS_URL, env.get("MANAGEMENT_OTLP_METRICS_EXPORT_URL"));
         assertEquals(JobLauncherTestAccess.STUB_METRICS_STEP, env.get("MANAGEMENT_OTLP_METRICS_EXPORT_STEP"));
+    }
+
+    /**
+     * The logs and traces endpoints are config too, and for a sharper reason than the metrics one:
+     * each is Boot's own {@code @ConditionalOnProperty} switch, so a hardcoded localhost in a
+     * cluster does not merely send the signal to the wrong place, it sends it to the stage pod
+     * itself and the record is lost with no error anywhere. The stub answers values that differ from
+     * {@link za.co.fnb.dcre.agt.config.AgtConfig}'s own defaults on purpose, so asserting them
+     * cannot pass for an implementation that inlined the default.
+     */
+    @Test
+    void theLogsAndTracesEndpointsAreCarriedFromConfigRatherThanHardcoded() {
+        final Map<String, String> env = envFor(Stage.CRR);
+        assertEquals(JobLauncherTestAccess.STUB_OTLP_LOGS_URL,
+                env.get("MANAGEMENT_OPENTELEMETRY_LOGGING_EXPORT_OTLP_ENDPOINT"));
+        assertEquals(JobLauncherTestAccess.STUB_OTLP_TRACES_URL,
+                env.get("MANAGEMENT_OPENTELEMETRY_TRACING_EXPORT_OTLP_ENDPOINT"));
     }
 
     private static Map<String, String> envFor(final Stage stage) {

@@ -834,8 +834,10 @@ empty. See [Getting a stage image](#4-getting-a-stage-image) for how to fill the
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://localhost:4317` | OTLP endpoint for **AGT's own** traces, metrics and logs. Quarkus, gRPC. Nothing to do with the two below, which are what AGT hands its stage pods. |
 | `AGT_OTLP_METRICS_URL` | `http://localhost:4318/v1/metrics` | The OTLP/HTTP metrics receiver every stage pod gets as `MANAGEMENT_OTLP_METRICS_EXPORT_URL`. Full SIGNAL path, not a base URL. In-cluster wants `http://lgtm.dcre.svc.cluster.local:4318/v1/metrics`; unset today, so every stage pod exports to its own loopback. |
 | `AGT_METRICS_EXPORT_STEP` | `5s` | The push interval every stage pod gets as `MANAGEMENT_OTLP_METRICS_EXPORT_STEP`. Carried verbatim; Boot owns the vocabulary. |
+| `AGT_OTLP_LOGS_URL` | `http://localhost:4318/v1/logs` | The OTLP/HTTP **logs** receiver every stage pod gets as `MANAGEMENT_OPENTELEMETRY_LOGGING_EXPORT_OTLP_ENDPOINT`. In-cluster wants `http://lgtm.dcre.svc.cluster.local:4318/v1/logs`; unset today, so every stage pod would ship logs to its own loopback. |
+| `AGT_OTLP_TRACES_URL` | `http://localhost:4318/v1/traces` | The OTLP/HTTP **traces** receiver every stage pod gets as `MANAGEMENT_OPENTELEMETRY_TRACING_EXPORT_OTLP_ENDPOINT`. Same story, `.../v1/traces` in-cluster. |
 
-Neither of the last two has a line in `application.yml`; both bind from the `@WithDefault` on
+None of the last four has a line in `application.yml`; all bind from the `@WithDefault` on
 `AgtConfig`, the same way `AGT_OBSERVE_ENABLED` does. They are also outside the 29-knob image
 count above, which covers stage images only.
 
@@ -880,8 +882,11 @@ come from `JobLauncher.stageEnv`, which both builders now seed from.
 | `DCRE_TELEMETRY_STAGE` | the LOWERCASE stage name (`crg`, `ptv`) | `Stage.name().toLowerCase()`. The library builds `service.name` from it and refuses anything outside `dcre-[a-z]+` **at startup**, so a bad token stops the pod rather than losing its metrics. |
 | `MANAGEMENT_OTLP_METRICS_EXPORT_URL` | `http://localhost:4318/v1/metrics` | `AGT_OTLP_METRICS_URL`. **Spring Boot's own property name**, not one of ours, and the full SIGNAL path, not a base URL. |
 | `MANAGEMENT_OTLP_METRICS_EXPORT_STEP` | `5s` | `AGT_METRICS_EXPORT_STEP`. Boot's `management.otlp.metrics.export.step`. |
+| `MANAGEMENT_OPENTELEMETRY_LOGGING_EXPORT_OTLP_ENDPOINT` | `http://localhost:4318/v1/logs` | `AGT_OTLP_LOGS_URL`. Boot's `management.opentelemetry.logging.export.otlp.endpoint`, which is a `@ConditionalOnProperty` **switch** and not just an address: absent, Boot builds no log exporter at all and records reach the pod's logger provider and stop. |
+| `MANAGEMENT_OPENTELEMETRY_TRACING_EXPORT_OTLP_ENDPOINT` | `http://localhost:4318/v1/traces` | `AGT_OTLP_TRACES_URL`. Boot's `management.opentelemetry.tracing.export.otlp.endpoint`, the same switch shape. Absent, a stage pod still parents its spans to the arrival and every one of them is recorded and dropped. |
+| `TRACEPARENT` | `00-<traceid>-<spanid>-01`, or **ABSENT** | Derived from the ambient `Span.current()` inside `telemetryEnv`. `DagEngine` opens an `arrival` span per arrival per tick, so every stage of one arrival shares a trace id. A launch under no span, which is every clock window, contributes NO variable rather than an empty one: a malformed traceparent makes the child start a fresh trace while looking configured. |
 
-**The last two names are Boot's, and inventing a shorter pair is a silent failure.** An
+**These names are Boot's, and inventing a shorter one is a silent failure.** An
 `OTLP_ENDPOINT` binds the property `otlp.endpoint`, which nothing in the fleet reads; Boot does
 not complain about a property nobody asked for, so the pod starts, looks correctly wired, and
 exports to Boot's own localhost default. That is the same symptom the variable was added to cure,
@@ -889,9 +894,10 @@ and it was caught in review on 2026-09-11 before it shipped. Snapshot with a dat
 everything here about another repository: the consumers read these through Boot's relaxed binding,
 which this repo cannot test.
 
-**Nothing sets the URL for a real deployment yet, so in-cluster every stage pod currently exports
-to itself.** `k8s/10-agt-deployment.yml` does not set `AGT_OTLP_METRICS_URL`, so the default
-applies and `localhost` inside a pod is that pod. The in-cluster value is
+**Nothing sets any of the three URLs for a real deployment yet, so in-cluster every stage pod
+currently exports to itself.** `k8s/10-agt-deployment.yml` sets none of `AGT_OTLP_METRICS_URL`,
+`AGT_OTLP_LOGS_URL` or `AGT_OTLP_TRACES_URL`, so the defaults apply and `localhost` inside a pod is
+that pod. The in-cluster value is
 `http://lgtm.dcre.svc.cluster.local:4318/v1/metrics`: fully qualified, because the `lgtm` Service
 lives in namespace `dcre` while stage Jobs run in `dcre-col`, `dcre-pay` and `dcre-man`, exactly as
 the datasource URLs above are fully qualified and for exactly that reason. 4318 is OTLP/HTTP, which

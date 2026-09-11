@@ -158,6 +158,25 @@ public class JobLauncher {
     private static final String METRICS_STEP_ENV = "MANAGEMENT_OTLP_METRICS_EXPORT_STEP";
 
     /**
+     * The LOGS and TRACES endpoints, which are Boot's own {@code @ConditionalOnProperty} SWITCHES
+     * and not merely addresses. Both names are the relaxed-binding form of a
+     * {@code @ConfigurationProperties} prefix read from the bytecode of the jars the stage services
+     * actually carry, never invented here: an invented name binds a property nothing consults, Boot
+     * raises nothing, and the pod exports that signal nowhere while looking correctly wired. The
+     * library's {@code OtlpEndpointVariableTest} proves each spelling opens its gate and that the
+     * deprecated {@code management.otlp.logging.endpoint} does not.
+     *
+     * <p>Without these two the whole log and trace half of this fleet's telemetry is inert: records
+     * reach the pod's logger provider and stop, and spans are recorded and dropped. The metrics
+     * variables above have no such dependency, which is why metrics worked while these did not.
+     */
+    private static final String OTLP_LOGS_ENDPOINT_ENV =
+            "MANAGEMENT_OPENTELEMETRY_LOGGING_EXPORT_OTLP_ENDPOINT";
+
+    private static final String OTLP_TRACES_ENDPOINT_ENV =
+            "MANAGEMENT_OPENTELEMETRY_TRACING_EXPORT_OTLP_ENDPOINT";
+
+    /**
      * The W3C {@code traceparent}, carried to the pod as an ENVIRONMENT VARIABLE of that name
      * because that is the spelling the OpenTelemetry SDK autoconfiguration reads for a parent
      * context. It is the one member of the telemetry block that is CONDITIONAL: see
@@ -602,11 +621,13 @@ public class JobLauncher {
      * up talking to themselves through their committed datasource defaults.
      */
     private java.util.List<EnvVar> telemetryEnv(final Stage stage) {
-        final java.util.List<EnvVar> env = new java.util.ArrayList<>(5);
+        final java.util.List<EnvVar> env = new java.util.ArrayList<>(7);
         env.add(new EnvVar(TELEMETRY_ENABLED_ENV, "true", null));
         env.add(new EnvVar(TELEMETRY_STAGE_ENV, stage.name().toLowerCase(java.util.Locale.ROOT), null));
         env.add(new EnvVar(OTLP_METRICS_URL_ENV, config.otlpMetricsUrl(), null));
         env.add(new EnvVar(METRICS_STEP_ENV, config.metricsExportStep(), null));
+        env.add(new EnvVar(OTLP_LOGS_ENDPOINT_ENV, config.otlpLogsUrl(), null));
+        env.add(new EnvVar(OTLP_TRACES_ENDPOINT_ENV, config.otlpTracesUrl(), null));
         final String tp = currentTraceparent();
         if (tp != null) {
             env.add(new EnvVar(TRACEPARENT_ENV, tp, null));

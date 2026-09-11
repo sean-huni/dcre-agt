@@ -45,9 +45,13 @@ final class JobLauncherTestAccess {
     static final String STUB_MAN_DB_URL = "jdbc:postgresql://stub:26257/dcre_man?sslmode=disable";
     static final String STUB_HCS_DB_URL = "jdbc:postgresql://stub:26257/dcre_hcs?sslmode=disable";
     static final String STUB_CTV_MANDATE_SOURCE = "projection";
+    static final String STUB_OTLP_LOGS_URL = "http://collector.stub.test:4318/v1/logs";
+    static final String STUB_OTLP_TRACES_URL = "http://collector.stub.test:4318/v1/traces";
 
     private static final Map<String, String> STUBBED = Map.of(
             "otlpMetricsUrl", STUB_OTLP_METRICS_URL,
+            "otlpLogsUrl", STUB_OTLP_LOGS_URL,
+            "otlpTracesUrl", STUB_OTLP_TRACES_URL,
             "metricsExportStep", STUB_METRICS_STEP,
             "manServiceDbUrl", STUB_MAN_DB_URL,
             "hcsServiceDbUrl", STUB_HCS_DB_URL,

@@ -170,6 +170,41 @@ public interface AgtConfig {
     @WithDefault("http://localhost:4318/v1/metrics")
     String otlpMetricsUrl();
 
+    /** OTLP LOGS receiver URL handed to EVERY launched stage pod as
+     *  MANAGEMENT_OPENTELEMETRY_LOGGING_EXPORT_OTLP_ENDPOINT, the relaxed-binding form of Boot's
+     *  own management.opentelemetry.logging.export.otlp.endpoint.
+     *
+     *  <p><b>That property is not merely where the URL is read, it is the SWITCH.</b> Derived from
+     *  the bytecode of spring-boot-opentelemetry-4.1.0.jar on 2026-09-11:
+     *  OtlpLoggingProperties is @ConfigurationProperties("management.opentelemetry.logging.export.otlp"),
+     *  the connection-details bean carries @ConditionalOnProperty on that key plus .endpoint, and
+     *  the exporter configuration is @ConditionalOnBean of those connection details. With the
+     *  variable absent there is no exporter at all, so log records reach the pod's logger provider
+     *  and stop. The library's OtlpEndpointVariableTest asserts the gate opens on exactly this
+     *  spelling, and that the deprecated management.otlp.logging.endpoint does NOT.
+     *
+     *  <p>Full SIGNAL path, matching the metrics knob's shape, so overriding it cannot accidentally
+     *  change the shape as well as the host. Transport defaults to http, hence 4318. Config and not
+     *  a literal in the launcher for the same reason as every url above: in a cluster localhost is
+     *  the stage pod itself. In-cluster this wants the FULLY QUALIFIED collector,
+     *  http://lgtm.dcre.svc.cluster.local:4318/v1/logs. Overridden through AGT_OTLP_LOGS_URL.
+     *  Nothing sets it yet, and no collector exists to point it at. */
+    @WithDefault("http://localhost:4318/v1/logs")
+    String otlpLogsUrl();
+
+    /** OTLP TRACES receiver URL handed to EVERY launched stage pod as
+     *  MANAGEMENT_OPENTELEMETRY_TRACING_EXPORT_OTLP_ENDPOINT, Boot's
+     *  management.opentelemetry.tracing.export.otlp.endpoint under relaxed binding. Same switch
+     *  shape, read from spring-boot-micrometer-tracing-opentelemetry-4.1.0.jar: OtlpTracingProperties
+     *  is @ConfigurationProperties("management.opentelemetry.tracing.export.otlp") and its
+     *  connection-details bean is @ConditionalOnProperty on that key plus .endpoint.
+     *
+     *  <p>Without it a stage pod still receives a correct TRACEPARENT and still parents its spans to
+     *  the arrival, and every one of those spans is recorded and dropped. The trace-context work is
+     *  therefore only half a feature until this is set. Overridden through AGT_OTLP_TRACES_URL. */
+    @WithDefault("http://localhost:4318/v1/traces")
+    String otlpTracesUrl();
+
     /** Micrometer push interval handed to every stage pod as
      *  MANAGEMENT_OTLP_METRICS_EXPORT_STEP, Boot's management.otlp.metrics.export.step.
      *  A duration token carried verbatim and never parsed here; Boot owns the vocabulary,
