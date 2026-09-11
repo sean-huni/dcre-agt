@@ -1,5 +1,8 @@
 package za.co.fnb.dcre.agt.service;
 
+import io.opentelemetry.api.trace.Span;
+import io.opentelemetry.api.trace.Tracer;
+import io.opentelemetry.context.Scope;
 import io.quarkus.scheduler.Scheduled;
 import io.smallrye.common.annotation.RunOnVirtualThread;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -169,6 +172,13 @@ public class DagEngine {
     EventCounters counters;
 
     /**
+     * The arrival span's tracer. Quarkus publishes this bean from its OpenTelemetry extension, so
+     * there is nothing to build here and nothing to shut down.
+     */
+    @Inject
+    Tracer tracer;
+
+    /**
      * Every arrival transition goes through here so the counter cannot miss a
      * site, and it increments ONLY when the CAS actually moved the row. A
      * transitionArrival that matched nothing returns false and throws nothing,
@@ -192,7 +202,8 @@ public class DagEngine {
             return;
         }
         for (FileArrival arrival : arrivalRepo.arrivalsByStatus(ArrivalStatus.CLAIMED)) {
-            try {
+            final Span span = arrivalSpan(arrival);
+            try (Scope ignored = span.makeCurrent()) {
                 if (arrival.claimedPath() == null) {
                     LOG.warnf("arrival %s CLAIMED without claimed_path: not launching (F21)", arrival.id());
                     continue;
@@ -217,10 +228,13 @@ public class DagEngine {
                 transition(arrival.id(), ArrivalStatus.CLAIMED, ArrivalStatus.QUARANTINED);
             } catch (Exception e) {
                 LOG.warnf("start DAG for %s failed: %s", arrival.id(), e.getMessage());
+            } finally {
+                span.end();
             }
         }
         for (FileArrival arrival : arrivalRepo.arrivalsByStatus(ArrivalStatus.DAG_RUNNING)) {
-            try {
+            final Span span = arrivalSpan(arrival);
+            try (Scope ignored = span.makeCurrent()) {
                 Map<Stage, Outcome> outcomes = outcomeRepo.outcomesForArrival(arrival.id());
                 Set<Stage> intended = EnumSet.noneOf(Stage.class);
                 intentRepo.intentsForArrival(arrival.id()).forEach(i -> intended.add(i.stage()));
@@ -253,8 +267,31 @@ public class DagEngine {
                 transition(arrival.id(), ArrivalStatus.DAG_RUNNING, ArrivalStatus.QUARANTINED);
             } catch (Exception e) {
                 LOG.warnf("advance DAG for %s failed: %s", arrival.id(), e.getMessage()); // one poisoned arrival never wedges the loop (F10)
+            } finally {
+                span.end();
             }
         }
+    }
+
+    /**
+     * One span per arrival per tick, so every stage pod this arrival launches inherits the SAME
+     * trace id and the Traces board shows one DAG rather than one single-span trace per pod.
+     * {@link JobLauncher} reads it off the ambient context; nothing is threaded through a signature.
+     *
+     * <p>The span is opened around the WHOLE per-arrival body rather than around the launch call,
+     * because the launch is not the only thing worth attributing to the arrival: the ledger reads,
+     * the terminal-state decision and the quarantine transitions all belong to it, and a span that
+     * covered only the launch would leave the decision that caused it outside the trace.
+     *
+     * <p>The {@code Scope} closes before the catch clauses run, so an arrival that is quarantined is
+     * logged outside its own span. That is deliberate: those handlers are the loop's isolation, not
+     * the arrival's work, and the {@code finally} still ends the span exactly once on every path
+     * including the early {@code return} when the lease is lost.
+     */
+    private Span arrivalSpan(final FileArrival arrival) {
+        return tracer.spanBuilder("arrival")
+                .setAttribute("dcre.arrival.id", arrival.id().toString())
+                .startSpan();
     }
 
     /** Route dispatch: request routes resolve their DAG from the R-36 registry;

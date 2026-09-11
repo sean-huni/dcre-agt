@@ -157,6 +157,14 @@ public class JobLauncher {
     private static final String OTLP_METRICS_URL_ENV = "MANAGEMENT_OTLP_METRICS_EXPORT_URL";
     private static final String METRICS_STEP_ENV = "MANAGEMENT_OTLP_METRICS_EXPORT_STEP";
 
+    /**
+     * The W3C {@code traceparent}, carried to the pod as an ENVIRONMENT VARIABLE of that name
+     * because that is the spelling the OpenTelemetry SDK autoconfiguration reads for a parent
+     * context. It is the one member of the telemetry block that is CONDITIONAL: see
+     * {@link #currentTraceparent()} and the contract on {@link #stageEnv(Stage)}.
+     */
+    private static final String TRACEPARENT_ENV = "TRACEPARENT";
+
     /** Reserved durable-arg prefix carrying a pod env var rather than a Spring
      *  Batch program arg (SCRUM-78). Encoding sweep env into the durable launch
      *  args means the intent row alone rebuilds the same Job on a reconciled
@@ -594,12 +602,46 @@ public class JobLauncher {
      * up talking to themselves through their committed datasource defaults.
      */
     private java.util.List<EnvVar> telemetryEnv(final Stage stage) {
-        final java.util.List<EnvVar> env = new java.util.ArrayList<>(4);
+        final java.util.List<EnvVar> env = new java.util.ArrayList<>(5);
         env.add(new EnvVar(TELEMETRY_ENABLED_ENV, "true", null));
         env.add(new EnvVar(TELEMETRY_STAGE_ENV, stage.name().toLowerCase(java.util.Locale.ROOT), null));
         env.add(new EnvVar(OTLP_METRICS_URL_ENV, config.otlpMetricsUrl(), null));
         env.add(new EnvVar(METRICS_STEP_ENV, config.metricsExportStep(), null));
+        final String tp = currentTraceparent();
+        if (tp != null) {
+            env.add(new EnvVar(TRACEPARENT_ENV, tp, null));
+        }
         return env;
+    }
+
+    /**
+     * W3C trace context taken from the AMBIENT span, so a DAG is ONE trace rather than one trace per
+     * pod. Without it each stage starts a fresh trace and the Traces board shows hundreds of
+     * unrelated single-span traces, which looks like working tracing and answers no question anyone
+     * has.
+     *
+     * <p>Read from {@code Span.current()} rather than threaded through a parameter, because the
+     * context is already ambient by construction: {@code DagEngine} opens an {@code arrival} span
+     * and every launch that arrival causes happens inside it, on the same thread, however many
+     * frames down. Threading it would add a parameter to the public launch surface and to both Job
+     * builders, and would then need a null for exactly the case this method already answers with
+     * null.
+     *
+     * <p><b>Returns null when the context is invalid, and that is a real shape rather than a
+     * defensive one.</b> The clock builders launch report windows, the MRG suspension sweep and the
+     * HCS holiday sync, none of which any arrival triggered, so none of them runs under a span. The
+     * caller must SKIP the variable then: a malformed or empty {@code TRACEPARENT} makes the child
+     * start a fresh trace anyway while looking configured, which is the same silence with more
+     * evidence of effort.
+     */
+    private static String currentTraceparent() {
+        final io.opentelemetry.api.trace.SpanContext ctx =
+                io.opentelemetry.api.trace.Span.current().getSpanContext();
+        if (!ctx.isValid()) {
+            return null;
+        }
+        return "00-" + ctx.getTraceId() + "-" + ctx.getSpanId() + "-"
+               + (ctx.isSampled() ? "01" : "00");
     }
 
     /**

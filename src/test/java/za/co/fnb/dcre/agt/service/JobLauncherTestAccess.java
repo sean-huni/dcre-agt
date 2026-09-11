@@ -1,11 +1,18 @@
 package za.co.fnb.dcre.agt.service;
 
 import io.fabric8.kubernetes.api.model.EnvVar;
+import io.opentelemetry.api.trace.Span;
+import io.opentelemetry.api.trace.SpanContext;
+import io.opentelemetry.api.trace.TraceFlags;
+import io.opentelemetry.api.trace.TraceState;
+import io.opentelemetry.context.Context;
+import io.opentelemetry.context.Scope;
 import za.co.fnb.dcre.agt.config.AgtConfig;
 import za.co.fnb.dcre.agt.domain.Stage;
 
 import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Proxy;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -49,9 +56,54 @@ final class JobLauncherTestAccess {
     private JobLauncherTestAccess() {
     }
 
+    /**
+     * The W3C example ids, used as a FIXED arrival span context so the traceparent handed to a pod
+     * can be compared against a value the test knows independently. A randomly minted context would
+     * still prove two stages agree, and would not distinguish "derived from the arrival" from "minted
+     * once per process", which is the interesting half.
+     */
+    static final String ARRIVAL_TRACE_ID = "4bf92f3577b34da6a3ce929d0e0e4736";
+
+    static final String ARRIVAL_SPAN_ID = "00f067aa0ba902b7";
+
     /** The pod environment {@link JobLauncher} would build for this stage. */
     static List<EnvVar> stageEnv(final Stage stage) {
         return launcher().stageEnv(stage);
+    }
+
+    /** The same environment as a map, for assertions keyed on the variable name. */
+    static Map<String, String> stageEnvAsMap(final Stage stage) {
+        return asMap(stageEnv(stage));
+    }
+
+    /**
+     * The pod environment built INSIDE one active span standing for the arrival, which is how
+     * {@code DagEngine} processes one: it opens an {@code arrival} span and every stage the DAG
+     * launches for that file happens under it.
+     *
+     * <p>{@code Span.wrap} needs no SDK, no exporter and no Quarkus context: it makes a remote-shaped
+     * span context current, which is exactly what the launcher reads. Every call activates the SAME
+     * context deliberately, because two launches of one arrival really do share it.
+     */
+    static Map<String, String> stageEnvWithinSpan(final Stage stage) {
+        final SpanContext arrival = SpanContext.create(ARRIVAL_TRACE_ID, ARRIVAL_SPAN_ID,
+                TraceFlags.getSampled(), TraceState.getDefault());
+        try (Scope ignored = Context.current().with(Span.wrap(arrival)).makeCurrent()) {
+            return stageEnvAsMap(stage);
+        }
+    }
+
+    private static Map<String, String> asMap(final List<EnvVar> vars) {
+        final Map<String, String> byName = new LinkedHashMap<>();
+        for (final EnvVar var : vars) {
+            // A duplicate name is a real defect: the pod takes one of the two and nothing says
+            // which, so this fails loudly rather than letting the last one win quietly.
+            if (byName.containsKey(var.getName())) {
+                throw new IllegalStateException("duplicate pod env var " + var.getName());
+            }
+            byName.put(var.getName(), var.getValue());
+        }
+        return byName;
     }
 
     private static JobLauncher launcher() {
