@@ -151,18 +151,30 @@ public interface AgtConfig {
     @WithDefault("root")
     String agtopsDbUser();
 
-    /** OTLP collector endpoint handed to EVERY launched stage pod as OTLP_ENDPOINT.
-     *  Config, never a literal in the launcher: the default is the dev collector on the
-     *  pod's own loopback, and in a cluster a hardcoded localhost:4318 would address the
-     *  stage pod itself, which is the same failure shape as the localhost datasource
-     *  defaults above. Overridden per environment through AGT_OTLP_ENDPOINT. */
-    @WithDefault("http://localhost:4318")
-    String otlpEndpoint();
+    /** OTLP metrics receiver URL handed to EVERY launched stage pod as
+     *  MANAGEMENT_OTLP_METRICS_EXPORT_URL, which is Spring Boot's OWN property
+     *  management.otlp.metrics.export.url under relaxed binding. Not a name of ours: an
+     *  invented one binds a property nothing reads, Boot does not complain, and the pod
+     *  exports to its own loopback while looking correctly wired.
+     *
+     *  <p>The value is the full SIGNAL path, not a base URL: Boot's default is
+     *  http://localhost:4318/v1/metrics and this default matches its shape so that
+     *  overriding it cannot accidentally change the shape as well as the host.
+     *
+     *  <p>Config, never a literal in the launcher, for the same reason as the datasource
+     *  urls above: in a cluster localhost is the stage pod itself. In-cluster this wants
+     *  the FULLY QUALIFIED collector, http://lgtm.dcre.svc.cluster.local:4318/v1/metrics,
+     *  because the lgtm Service lives in namespace dcre while stage Jobs run in dcre-col,
+     *  dcre-pay and dcre-man, where the short name does not resolve. Overridden through
+     *  AGT_OTLP_METRICS_URL. Nothing sets it yet; see the README. */
+    @WithDefault("http://localhost:4318/v1/metrics")
+    String otlpMetricsUrl();
 
-    /** Micrometer push interval handed to every stage pod as METRICS_EXPORT_STEP.
-     *  A duration token carried verbatim and never parsed here; the shared telemetry
-     *  library owns the vocabulary, exactly as ctv owns the mandate-source one.
-     *  Overridden through AGT_METRICS_EXPORT_STEP. */
+    /** Micrometer push interval handed to every stage pod as
+     *  MANAGEMENT_OTLP_METRICS_EXPORT_STEP, Boot's management.otlp.metrics.export.step.
+     *  A duration token carried verbatim and never parsed here; Boot owns the vocabulary,
+     *  exactly as ctv owns the mandate-source one. Overridden through
+     *  AGT_METRICS_EXPORT_STEP. */
     @WithDefault("5s")
     String metricsExportStep();
 

@@ -110,6 +110,22 @@ public class JobLauncher {
      * these four are assembled in exactly one place. A name nothing else needs is not
      * published.
      *
+     * <p><b>The last two are SPRING BOOT's own property names, not names of ours, and that
+     * is the whole point.</b> The stage pods are Boot applications whose OTLP metrics
+     * exporter binds {@code management.otlp.metrics.export.url} and {@code .step}; relaxed
+     * binding turns those into exactly these two variables. An invented pair such as
+     * {@code OTLP_ENDPOINT} binds to the properties {@code otlp.endpoint} and
+     * {@code metrics.export.step}, which nothing in the fleet reads, and Boot does not
+     * complain about a property no one asked for. The pod starts, looks correctly wired,
+     * and exports to Boot's own localhost default: the exact symptom this block exists to
+     * cure. Verified 2026-09-11 against the Task 1 spike's {@code application.yml} and the
+     * library's own {@code management.otlp.metrics.export} prefix.
+     *
+     * <p>{@code ..._URL} takes the full SIGNAL path, {@code http://host:4318/v1/metrics},
+     * not a base URL. It is an OTLP/HTTP metrics receiver address, which is why 4318 is
+     * right here while AGT's OWN exporter uses 4317: those are two different runtimes
+     * speaking two different transports, not a disagreement.
+     *
      * <p>{@code DCRE_TELEMETRY_STAGE} carries the LOWERCASE enum name, which the library
      * turns into {@code service.name} and validates against {@code dcre-[a-z]+}. That
      * check FAILS CLOSED at startup, so a token with a hyphen or an uppercase letter does
@@ -124,11 +140,22 @@ public class JobLauncher {
      * see, so it is recorded here as a dated observation, not as a fact this repo keeps
      * true; what this repo can and does assert is the lowercase-enum rule, over every
      * constant, in {@code JobLauncherTelemetryEnvTest}.
+     *
+     * <p><b>The stage token is set EXPLICITLY even though the library can derive the same
+     * token from the service's own application package leaf.</b> The two agree today
+     * (fleet survey, 2026-09-11: 29 of 29 tokens match their service's package leaf, zero
+     * mismatches). They are nonetheless two homes for one fact, and AGT's is the one that
+     * WINS, silently, because it arrives as an environment variable. So a stage renamed on
+     * one side only reports itself under AGT's name, and every dashboard, alert and trace
+     * keyed on that identity follows AGT rather than the service, with nothing raised. It
+     * is set here so the launcher's roster is the single deliberate authority instead of an
+     * accidental one, and that is what makes the enum-shape assertion in the test a
+     * fleet-wide control rather than a local nicety.
      */
     private static final String TELEMETRY_ENABLED_ENV = "DCRE_TELEMETRY_ENABLED";
     private static final String TELEMETRY_STAGE_ENV = "DCRE_TELEMETRY_STAGE";
-    private static final String OTLP_ENDPOINT_ENV = "OTLP_ENDPOINT";
-    private static final String METRICS_STEP_ENV = "METRICS_EXPORT_STEP";
+    private static final String OTLP_METRICS_URL_ENV = "MANAGEMENT_OTLP_METRICS_EXPORT_URL";
+    private static final String METRICS_STEP_ENV = "MANAGEMENT_OTLP_METRICS_EXPORT_STEP";
 
     /** Reserved durable-arg prefix carrying a pod env var rather than a Spring
      *  Batch program arg (SCRUM-78). Encoding sweep env into the durable launch
@@ -539,11 +566,16 @@ public class JobLauncher {
      * a stage that genuinely opens no second datasource. The same silence applied to
      * telemetry is a pod that runs, works, and is invisible.
      *
-     * <p>The list is built mutably rather than with {@code List.of}, because the
-     * telemetry block gains a CONDITIONAL member (the launch's trace context, which is
-     * absent for a clock window that no arrival triggered). {@code List.of} rejects null
-     * and cannot be appended to, so the shape that reads as tidier here is the one that
-     * has to be unpicked to add it.
+     * <p><b>The ASSEMBLY list is mutable; the RETURNED list is not.</b> {@link #telemetryEnv}
+     * hands back a real {@code ArrayList} so a CONDITIONAL member can be appended there (the
+     * launch's trace context, absent for a clock window no arrival triggered). What comes
+     * back from here is {@code List.copyOf}, which like {@code List.of} rejects a null
+     * ELEMENT. So an absent member must be SKIPPED, never added as null:
+     * {@code if (tp != null) env.add(new EnvVar(TRACEPARENT_ENV, tp, null));} and not
+     * {@code env.add(traceparentOrNull())}, which throws NullPointerException here on every
+     * launch. Nor is {@code new EnvVar(TRACEPARENT_ENV, null, null)} the way round it:
+     * that is a non-null element carrying a null VALUE, nothing rejects it, and it reaches
+     * the pod as a variable set to nothing, which is the silent half of this failure.
      */
     java.util.List<EnvVar> stageEnv(final Stage stage) {
         final java.util.List<EnvVar> env = telemetryEnv(stage);
@@ -555,16 +587,17 @@ public class JobLauncher {
      * The telemetry block, identical in shape for all 29 stages and differing only in the
      * stage token.
      *
-     * <p>Returns a MUTABLE list on purpose (see {@link #stageEnv}). Values come from
-     * {@link AgtConfig} rather than from literals here: a hardcoded {@code localhost:4318}
-     * in a cluster addresses the stage pod itself, which is precisely how eight payments
-     * services ended up talking to themselves through their committed datasource defaults.
+     * <p>Returns a MUTABLE list on purpose, and {@link #stageEnv} documents exactly what a
+     * conditional member may and may not do with it. Values come from {@link AgtConfig}
+     * rather than from literals here: a hardcoded {@code localhost:4318} in a cluster
+     * addresses the stage pod itself, which is precisely how eight payments services ended
+     * up talking to themselves through their committed datasource defaults.
      */
     private java.util.List<EnvVar> telemetryEnv(final Stage stage) {
         final java.util.List<EnvVar> env = new java.util.ArrayList<>(4);
         env.add(new EnvVar(TELEMETRY_ENABLED_ENV, "true", null));
         env.add(new EnvVar(TELEMETRY_STAGE_ENV, stage.name().toLowerCase(java.util.Locale.ROOT), null));
-        env.add(new EnvVar(OTLP_ENDPOINT_ENV, config.otlpEndpoint(), null));
+        env.add(new EnvVar(OTLP_METRICS_URL_ENV, config.otlpMetricsUrl(), null));
         env.add(new EnvVar(METRICS_STEP_ENV, config.metricsExportStep(), null));
         return env;
     }

@@ -37,7 +37,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class JobLauncherTelemetryEnvTest {
 
     private static final List<String> TELEMETRY_KEYS = List.of(
-            "DCRE_TELEMETRY_ENABLED", "DCRE_TELEMETRY_STAGE", "OTLP_ENDPOINT", "METRICS_EXPORT_STEP");
+            "DCRE_TELEMETRY_ENABLED", "DCRE_TELEMETRY_STAGE",
+            "MANAGEMENT_OTLP_METRICS_EXPORT_URL", "MANAGEMENT_OTLP_METRICS_EXPORT_STEP");
 
     @Test
     void everyStageGetsTheTelemetryBlockIncludingOnesWithNoOtherExtras() {
@@ -108,8 +109,8 @@ class JobLauncherTelemetryEnvTest {
     @Test
     void theEndpointAndStepAreCarriedFromConfigRatherThanHardcoded() {
         final Map<String, String> env = envFor(Stage.CRR);
-        assertEquals(JobLauncherTestAccess.STUB_OTLP_ENDPOINT, env.get("OTLP_ENDPOINT"));
-        assertEquals(JobLauncherTestAccess.STUB_METRICS_STEP, env.get("METRICS_EXPORT_STEP"));
+        assertEquals(JobLauncherTestAccess.STUB_OTLP_METRICS_URL, env.get("MANAGEMENT_OTLP_METRICS_EXPORT_URL"));
+        assertEquals(JobLauncherTestAccess.STUB_METRICS_STEP, env.get("MANAGEMENT_OTLP_METRICS_EXPORT_STEP"));
     }
 
     private static Map<String, String> envFor(final Stage stage) {

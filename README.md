@@ -831,7 +831,13 @@ empty. See [Getting a stage image](#4-getting-a-stage-image) for how to fill the
 | Variable | Default | Purpose |
 |---|---|---|
 | `AGT_CTV_MANDATE_SOURCE` | `projection` | Which mandate store CTV's DC-flow gate reads. Vocabulary is `projection` only: `man_ctv_view` in `dcre_man`. CTV **fails closed** on the retired `legacy` value (throws at bean creation), and the `dcre_col.mandate` table it selected has been dropped. AGT carries the token verbatim and never interprets it. |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://localhost:4317` | OTLP endpoint for traces, metrics and logs |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://localhost:4317` | OTLP endpoint for **AGT's own** traces, metrics and logs. Quarkus, gRPC. Nothing to do with the two below, which are what AGT hands its stage pods. |
+| `AGT_OTLP_METRICS_URL` | `http://localhost:4318/v1/metrics` | The OTLP/HTTP metrics receiver every stage pod gets as `MANAGEMENT_OTLP_METRICS_EXPORT_URL`. Full SIGNAL path, not a base URL. In-cluster wants `http://lgtm.dcre.svc.cluster.local:4318/v1/metrics`; unset today, so every stage pod exports to its own loopback. |
+| `AGT_METRICS_EXPORT_STEP` | `5s` | The push interval every stage pod gets as `MANAGEMENT_OTLP_METRICS_EXPORT_STEP`. Carried verbatim; Boot owns the vocabulary. |
+
+Neither of the last two has a line in `application.yml`; both bind from the `@WithDefault` on
+`AgtConfig`, the same way `AGT_OBSERVE_ENABLED` does. They are also outside the 29-knob image
+count above, which covers stage images only.
 
 ---
 
@@ -860,6 +866,8 @@ one.
 ### On every stage pod, always
 
 Set in both `JobLauncher.serviceJob` (DAG stages) and `JobLauncher.clockJob` (clock windows).
+The first five are literal `addNewEnv` chains declared SEPARATELY in each builder; the last four
+come from `JobLauncher.stageEnv`, which both builders now seed from.
 
 | Variable | Value | Source |
 |---|---|---|
@@ -868,11 +876,34 @@ Set in both `JobLauncher.serviceJob` (DAG stages) and `JobLauncher.clockJob` (cl
 | `DCRE_EXCHANGE_ROOT` | `/exchange` | Hard-coded, matching the `dcre-exchange` PVC mount |
 | `DCRE_AGTOPS_DB_URL` | `agt_ops` URL | `AGT_AGTOPS_DB_URL` |
 | `DCRE_AGTOPS_DB_USER` | `root` | `AGT_AGTOPS_DB_USER` |
+| `DCRE_TELEMETRY_ENABLED` | `true` | Hard-coded. The library's export gate fails CLOSED, so an empty value is telemetry off. |
+| `DCRE_TELEMETRY_STAGE` | the LOWERCASE stage name (`crg`, `ptv`) | `Stage.name().toLowerCase()`. The library builds `service.name` from it and refuses anything outside `dcre-[a-z]+` **at startup**, so a bad token stops the pod rather than losing its metrics. |
+| `MANAGEMENT_OTLP_METRICS_EXPORT_URL` | `http://localhost:4318/v1/metrics` | `AGT_OTLP_METRICS_URL`. **Spring Boot's own property name**, not one of ours, and the full SIGNAL path, not a base URL. |
+| `MANAGEMENT_OTLP_METRICS_EXPORT_STEP` | `5s` | `AGT_METRICS_EXPORT_STEP`. Boot's `management.otlp.metrics.export.step`. |
+
+**The last two names are Boot's, and inventing a shorter pair is a silent failure.** An
+`OTLP_ENDPOINT` binds the property `otlp.endpoint`, which nothing in the fleet reads; Boot does
+not complain about a property nobody asked for, so the pod starts, looks correctly wired, and
+exports to Boot's own localhost default. That is the same symptom the variable was added to cure,
+and it was caught in review on 2026-09-11 before it shipped. Snapshot with a date on it, like
+everything here about another repository: the consumers read these through Boot's relaxed binding,
+which this repo cannot test.
+
+**Nothing sets the URL for a real deployment yet, so in-cluster every stage pod currently exports
+to itself.** `k8s/10-agt-deployment.yml` does not set `AGT_OTLP_METRICS_URL`, so the default
+applies and `localhost` inside a pod is that pod. The in-cluster value is
+`http://lgtm.dcre.svc.cluster.local:4318/v1/metrics`: fully qualified, because the `lgtm` Service
+lives in namespace `dcre` while stage Jobs run in `dcre-col`, `dcre-pay` and `dcre-man`, exactly as
+the datasource URLs above are fully qualified and for exactly that reason. 4318 is OTLP/HTTP, which
+is what a Boot stage pod speaks; AGT's own Quarkus exporter uses 4317, gRPC. Two runtimes, two
+transports, not a disagreement.
 
 ### Stage-keyed second datasource seams
 
-Set by `JobLauncher.stageEnv`, on DAG service Jobs only. Each is a read-only window from one
-stage into another bounded context's published views. **Both fail CLOSED at the consumer**:
+Set by `JobLauncher.stageSpecificEnv`, the per-stage switch that `stageEnv` wraps. These reach
+DAG service Jobs only in practice, because no clock stage has an arm, but they travel the same
+`stageEnv` path as the telemetry block above and would reach a clock window if one ever gained an
+arm. Each is a read-only window from one stage into another bounded context's published views. **Both fail CLOSED at the consumer**:
 `cde` and `ctv` detect `KUBERNETES_SERVICE_HOST` and refuse to start rather than fall back to
 their committed localhost default, naming the exact variable. AGT is the only thing that sets
 them, so a missing arm here is a crash-looping pod, not a wrong answer.
@@ -883,8 +914,8 @@ them, so a missing arm here is a crash-looping pod, not a wrong answer.
 | `CTV` | `DCRE_CTV_MANDATE_SOURCE` | not a URL: selects which store the gate reads | `AGT_CTV_MANDATE_SOURCE` |
 | `CDE` | `DCRE_CDE_HOLIDAYS_DB_URL` | `dcre_hcs`, the holiday calendar | `AGT_HCS_SERVICE_DB_URL` |
 
-The `stageEnv` switch **does** have a default arm, and that asymmetry with the routing switches
-is deliberate. "This stage opens no second datasource" is the correct answer for 27 of the 29
+The `stageSpecificEnv` switch **does** have a default arm, and that asymmetry with the routing
+switches is deliberate. "This stage opens no second datasource" is the correct answer for 27 of the 29
 stages, and a stage that needs one and is forgotten fails closed at the consumer with the
 variable named. In the routing switches a default arm gave a well-formed WRONG answer that
 nothing could observe. Same shape, opposite risk.
@@ -1126,7 +1157,7 @@ kubectl -n dcre-pay logs job/<job>
 |---|---|
 | `Connection to localhost:26257 refused` in a stage pod | AGT did not set that pod's URL variable, so the pod fell back to its committed localhost default, which in a cluster is the pod itself. Check which variable the consumer reads: the name is a cross-repo contract. |
 | That symptom in a **payments** pod | Historically this was the `DCRE_PAY_DB_URL` drift, repaired in all nine payments repositories on 2026-08-09. If it recurs, the pod is reading a variable name AGT does not set. Confirm with `kubectl -n dcre-pay get job <job> -o jsonpath='{.spec.template.spec.containers[0].env}'`: AGT sets `DCRE_DB_URL` and never `DCRE_PAY_DB_URL`. Check the consumer's committed `application.yml`, not this README. |
-| `cde` or `ctv` refuses to start, naming a variable | The `JobLauncher.stageEnv` arm is missing, or the knob feeding it is unset. Both fail closed on purpose. |
+| `cde` or `ctv` refuses to start, naming a variable | The `JobLauncher.stageSpecificEnv` arm is missing, or the knob feeding it is unset. Both fail closed on purpose. |
 | HCS pod dies immediately on startup | `AGT_HCS_SERVICE_DB_URL` is unset or points at `dcre_col`. `shared/hcs` compares `current_database()` against `dcre_hcs` before any DDL and refuses. |
 | A payments schema appearing inside `dcre_col` | Historical only, and doubly prevented now: `AGT_PAY_SERVICE_DB_URL` defaults to the `dcre_pay` FQDN, and `StageDatabases.requireAddresses` refuses a cross-family URL at Job-build time before a pod exists. If you see this on a live cluster, the pod predates both. |
 | `IllegalStateException: the PAY family owns database 'dcre_pay' but its configured url addresses '...'` | The guard working. Fix the `AGT_*_SERVICE_DB_URL`, not the guard. |

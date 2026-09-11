@@ -571,12 +571,25 @@ class NamespaceRoutingTest {
                     .getContainers().get(0).getEnv().stream()
                     .map(io.fabric8.kubernetes.api.model.EnvVar::getName)
                     .collect(java.util.stream.Collectors.toSet());
-            // Control: this really reads the pod's env, so an absence below is a fact
-            // about the Job spec rather than about an empty list.
-            assertTrue(names.contains(JobLauncher.DB_URL_ENV),
-                    "control: every stage pod carries its primary datasource url. Got " + names);
+            // The five "on every stage pod, always" variables, asserted on BOTH rows, and
+            // they are more than a control. serviceJob and clockJob still declare them as
+            // two separate literal addNewEnv chains, and that duplication is exactly what
+            // let telemetry reach one path and not the other. Unifying the chains is a
+            // larger change than this task should carry, so the observation gap is closed
+            // instead: the next variable added to one chain and forgotten in the other
+            // fails here rather than shipping. They double as the control that this walk
+            // really reads the pod's env, so an absence below is a fact about the Job spec
+            // rather than about an empty list.
+            for (final String common : java.util.List.of("JOB_NAME", JobLauncher.DB_URL_ENV,
+                    "DCRE_EXCHANGE_ROOT", "DCRE_AGTOPS_DB_URL", "DCRE_AGTOPS_DB_USER")) {
+                assertTrue(names.contains(common), job.getMetadata().getName() + " must carry "
+                        + common + ": it is one of the five variables every stage pod gets on"
+                        + " every builder path, and the two builders declare them separately."
+                        + " Got " + names);
+            }
             for (final String key : java.util.List.of("DCRE_TELEMETRY_ENABLED",
-                    "DCRE_TELEMETRY_STAGE", "OTLP_ENDPOINT", "METRICS_EXPORT_STEP")) {
+                    "DCRE_TELEMETRY_STAGE", "MANAGEMENT_OTLP_METRICS_EXPORT_URL",
+                    "MANAGEMENT_OTLP_METRICS_EXPORT_STEP")) {
                 assertTrue(names.contains(key), job.getMetadata().getName() + " must carry "
                         + key + ": telemetry reaches every launched pod, on every builder"
                         + " path. Got " + names);
@@ -585,9 +598,9 @@ class NamespaceRoutingTest {
                     job.getMetadata().getName() + " must name its own stage, lowercased:"
                             + " the library refuses any service.name outside dcre-[a-z]+ AT"
                             + " STARTUP");
-            assertEquals(config.otlpEndpoint(), envOf(job, "OTLP_ENDPOINT"),
-                    "the endpoint travels from AgtConfig to the pod");
-            assertEquals(config.metricsExportStep(), envOf(job, "METRICS_EXPORT_STEP"),
+            assertEquals(config.otlpMetricsUrl(), envOf(job, "MANAGEMENT_OTLP_METRICS_EXPORT_URL"),
+                    "the metrics url travels from AgtConfig to the pod");
+            assertEquals(config.metricsExportStep(), envOf(job, "MANAGEMENT_OTLP_METRICS_EXPORT_STEP"),
                     "the export step travels from AgtConfig to the pod");
         });
     }

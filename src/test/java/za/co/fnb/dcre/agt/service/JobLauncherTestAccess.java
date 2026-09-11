@@ -33,14 +33,14 @@ final class JobLauncherTestAccess {
      * against the defaults would pass equally for an implementation that hardcoded the
      * literal, which is the thing worth catching.
      */
-    static final String STUB_OTLP_ENDPOINT = "http://collector.stub.test:4318";
+    static final String STUB_OTLP_METRICS_URL = "http://collector.stub.test:4318/v1/metrics";
     static final String STUB_METRICS_STEP = "7s";
     static final String STUB_MAN_DB_URL = "jdbc:postgresql://stub:26257/dcre_man?sslmode=disable";
     static final String STUB_HCS_DB_URL = "jdbc:postgresql://stub:26257/dcre_hcs?sslmode=disable";
     static final String STUB_CTV_MANDATE_SOURCE = "projection";
 
     private static final Map<String, String> STUBBED = Map.of(
-            "otlpEndpoint", STUB_OTLP_ENDPOINT,
+            "otlpMetricsUrl", STUB_OTLP_METRICS_URL,
             "metricsExportStep", STUB_METRICS_STEP,
             "manServiceDbUrl", STUB_MAN_DB_URL,
             "hcsServiceDbUrl", STUB_HCS_DB_URL,
