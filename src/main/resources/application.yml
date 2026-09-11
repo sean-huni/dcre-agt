@@ -32,6 +32,22 @@ quarkus:
     devservices:
       enabled: false
   otel:
+    # Prometheus derives `job` from service.name and `instance` from
+    # service.instance.id. Without the second, every replica of a service writes into
+    # ONE series, independent counters interleave, and each crossing reads as a counter
+    # reset, so rate() extrapolates from zero. AGT is the only long-lived Deployment in
+    # this fleet and it was the only job publishing no instance label at all: measured
+    # 2026-09-11, `group by (job, instance) (jvm_memory_used_bytes)` returned an empty
+    # instance for job="agt" while every stage service carried its pod name. One replica
+    # today makes the collapse invisible, which is exactly why it is set before there
+    # are two.
+    #
+    # HOSTNAME is the pod name under Kubernetes and the container id under compose, so a
+    # series traces back to the process that produced it. A random UUID would split the
+    # series correctly and name nothing.
+    resource:
+      attributes:
+        - "service.instance.id=${HOSTNAME:agt-local}"
     exporter:
       otlp:
         endpoint: ${OTEL_EXPORTER_OTLP_ENDPOINT:http://localhost:4317}
