@@ -101,6 +101,35 @@ public class JobLauncher {
      *  start in-cluster without it, naming this variable. */
     public static final String CDE_HOLIDAYS_DB_URL_ENV = "DCRE_CDE_HOLIDAYS_DB_URL";
 
+    /**
+     * The telemetry block every launched stage pod receives, read by the shared
+     * observability library at startup.
+     *
+     * <p>Private, unlike the seam names above, and that difference is deliberate: those
+     * are cross-repo wire contracts other classes and tests reference by constant, while
+     * these four are assembled in exactly one place. A name nothing else needs is not
+     * published.
+     *
+     * <p>{@code DCRE_TELEMETRY_STAGE} carries the LOWERCASE enum name, which the library
+     * turns into {@code service.name} and validates against {@code dcre-[a-z]+}. That
+     * check FAILS CLOSED at startup, so a token with a hyphen or an uppercase letter does
+     * not merely lose telemetry, it stops the pod.
+     *
+     * <p>The token is derived from the enum constant and from nothing else. In particular
+     * it is NOT the token a service hands its {@code OutcomeSeamListener}: that value is
+     * per-JOB rather than per-service, so it is not a service identity at all, and some
+     * services carry several (fleet survey, 2026-09-10: mrv carries two and mrg passes a
+     * variable at its construction site). Deriving service.name from it would hand those
+     * stages a name the library refuses. That survey read repositories this one cannot
+     * see, so it is recorded here as a dated observation, not as a fact this repo keeps
+     * true; what this repo can and does assert is the lowercase-enum rule, over every
+     * constant, in {@code JobLauncherTelemetryEnvTest}.
+     */
+    private static final String TELEMETRY_ENABLED_ENV = "DCRE_TELEMETRY_ENABLED";
+    private static final String TELEMETRY_STAGE_ENV = "DCRE_TELEMETRY_STAGE";
+    private static final String OTLP_ENDPOINT_ENV = "OTLP_ENDPOINT";
+    private static final String METRICS_STEP_ENV = "METRICS_EXPORT_STEP";
+
     /** Reserved durable-arg prefix carrying a pod env var rather than a Spring
      *  Batch program arg (SCRUM-78). Encoding sweep env into the durable launch
      *  args means the intent row alone rebuilds the same Job on a reconciled
@@ -369,7 +398,16 @@ public class JobLauncher {
         // into dcre-pay, or a PRG window into dcre-col, is the report-generator
         // half of the inversion this rename created and must not be creatable.
         stageNamespaces.requireCorrectNamespace(stage, flowNamespaces.flowForNamespace(namespace), namespace);
-        java.util.List<io.fabric8.kubernetes.api.model.EnvVar> extraEnv = new java.util.ArrayList<>();
+        // Seeded from stageEnv, exactly as serviceJob is. This list used to start EMPTY,
+        // so the clock builder was the one launch path telemetry never reached: the three
+        // report generators, the CRW executor, the MRG suspension sweep and the HCS
+        // holiday sync all launch through here, and a test walking every Stage constant
+        // through stageEnv stayed green while none of them exported anything. A stage
+        // reached by two builders needs its environment decided in one place; the
+        // per-stage arms are empty for every clock stage today, so this adds only the
+        // telemetry block, and it keeps the two paths from diverging again.
+        java.util.List<io.fabric8.kubernetes.api.model.EnvVar> extraEnv =
+                new java.util.ArrayList<>(stageEnv(stage));
         java.util.List<String> programArgs = new java.util.ArrayList<>();
         splitEnvArgs(args, extraEnv, programArgs);
         return new JobBuilder()
@@ -491,6 +529,47 @@ public class JobLauncher {
     }
 
     /**
+     * The complete extra pod env for a stage: the telemetry block EVERY stage gets,
+     * followed by whatever that particular stage additionally needs.
+     *
+     * <p><b>Telemetry is assembled AROUND the per-stage switch, never inside it.</b> It
+     * is not a per-stage special case: every stage exports, so a stage added to the enum
+     * later must get it without anyone remembering to add a case. Inside the switch it
+     * would depend on the default arm, which answers "nothing" silently and correctly for
+     * a stage that genuinely opens no second datasource. The same silence applied to
+     * telemetry is a pod that runs, works, and is invisible.
+     *
+     * <p>The list is built mutably rather than with {@code List.of}, because the
+     * telemetry block gains a CONDITIONAL member (the launch's trace context, which is
+     * absent for a clock window that no arrival triggered). {@code List.of} rejects null
+     * and cannot be appended to, so the shape that reads as tidier here is the one that
+     * has to be unpicked to add it.
+     */
+    java.util.List<EnvVar> stageEnv(final Stage stage) {
+        final java.util.List<EnvVar> env = telemetryEnv(stage);
+        env.addAll(stageSpecificEnv(stage));
+        return java.util.List.copyOf(env);
+    }
+
+    /**
+     * The telemetry block, identical in shape for all 29 stages and differing only in the
+     * stage token.
+     *
+     * <p>Returns a MUTABLE list on purpose (see {@link #stageEnv}). Values come from
+     * {@link AgtConfig} rather than from literals here: a hardcoded {@code localhost:4318}
+     * in a cluster addresses the stage pod itself, which is precisely how eight payments
+     * services ended up talking to themselves through their committed datasource defaults.
+     */
+    private java.util.List<EnvVar> telemetryEnv(final Stage stage) {
+        final java.util.List<EnvVar> env = new java.util.ArrayList<>(4);
+        env.add(new EnvVar(TELEMETRY_ENABLED_ENV, "true", null));
+        env.add(new EnvVar(TELEMETRY_STAGE_ENV, stage.name().toLowerCase(java.util.Locale.ROOT), null));
+        env.add(new EnvVar(OTLP_ENDPOINT_ENV, config.otlpEndpoint(), null));
+        env.add(new EnvVar(METRICS_STEP_ENV, config.metricsExportStep(), null));
+        return env;
+    }
+
+    /**
      * Stage-keyed extra pod env: the SECOND read-only datasource a stage opens onto
      * another bounded context, plus the CTV gate's source token.
      *
@@ -531,7 +610,7 @@ public class JobLauncher {
      * the DC flow, and whose VerdictChain made the former {@code dcre.flow-dc=false}
      * behaviour unconditional. CTV is collections-only, so the arm was unreachable.
      */
-    private java.util.List<EnvVar> stageEnv(Stage stage) {
+    private java.util.List<EnvVar> stageSpecificEnv(final Stage stage) {
         return switch (stage) {
             case CTV -> java.util.List.of(
                     new EnvVar(CTV_MANDATES_DB_URL_ENV, config.manServiceDbUrl(), null),

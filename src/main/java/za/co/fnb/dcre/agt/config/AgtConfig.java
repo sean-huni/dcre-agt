@@ -151,6 +151,21 @@ public interface AgtConfig {
     @WithDefault("root")
     String agtopsDbUser();
 
+    /** OTLP collector endpoint handed to EVERY launched stage pod as OTLP_ENDPOINT.
+     *  Config, never a literal in the launcher: the default is the dev collector on the
+     *  pod's own loopback, and in a cluster a hardcoded localhost:4318 would address the
+     *  stage pod itself, which is the same failure shape as the localhost datasource
+     *  defaults above. Overridden per environment through AGT_OTLP_ENDPOINT. */
+    @WithDefault("http://localhost:4318")
+    String otlpEndpoint();
+
+    /** Micrometer push interval handed to every stage pod as METRICS_EXPORT_STEP.
+     *  A duration token carried verbatim and never parsed here; the shared telemetry
+     *  library owns the vocabulary, exactly as ctv owns the mandate-source one.
+     *  Overridden through AGT_METRICS_EXPORT_STEP. */
+    @WithDefault("5s")
+    String metricsExportStep();
+
     /** Stage-pod memory request. Default matches the pre-load-test sizing;
      *  large-copybook runs (300k tx) need more (found live 2026-07-14: CTV OOM
      *  at 768Mi across partition workers). */

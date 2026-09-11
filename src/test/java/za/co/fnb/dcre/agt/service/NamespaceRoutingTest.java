@@ -527,6 +527,71 @@ class NamespaceRoutingTest {
         });
     }
 
+    /**
+     * The telemetry block on the Job specs AGT actually builds, on BOTH builder paths.
+     *
+     * <p>{@code JobLauncherTelemetryEnvTest} asserts the block for every {@link Stage},
+     * and it is blind to this: it exercises {@code stageEnv} directly, and {@code stageEnv}
+     * was wired into {@code serviceJob} alone. The clock builder assembled its own env from
+     * the durable launch args and never called it, so every clock-launched pod carried no
+     * telemetry while a test walking all 29 constants stayed green. Measured, not inferred:
+     * this case failed on the clock row and passed on the DAG row before the wiring landed.
+     *
+     * <p>That gap is not a corner. The clock builder is how the three report generators
+     * (CRG, PRG, MRG), the CRW process-date executor, the MRG suspension sweep and the HCS
+     * holiday sync all launch, so it owns the stages whose silence is hardest to notice:
+     * they are driven by a clock rather than by an arrival, so nobody is waiting on them.
+     *
+     * <p>The two rows carry DIFFERENT stage tokens on purpose. A fixture whose rows share
+     * the value under test cannot exercise what that value drives, and the token is the
+     * field the library validates {@code service.name} from.
+     */
+    @Test
+    void everyLaunchedPodCarriesTheTelemetryBlockOnBothBuilderPaths() {
+        final UUID arrivalId = insertArrival("onhost-req", "FNBCC01");
+        launcher.launch(arrivalId, Stage.CRR);
+        final Job dagJob = k8s.batch().v1().jobs().inNamespace("dcre-col")
+                .withName(JobLauncher.jobName(
+                        za.co.fnb.dcre.agt.domain.Flow.COL, Stage.CRR, arrivalId)).get();
+
+        final String clockKey = "telemetry-" + suffix();
+        launcher.launchClock(za.co.fnb.dcre.agt.domain.Flow.PAY, Stage.PRG, clockKey,
+                java.util.List.of("client=FNBRF01", "window=" + clockKey));
+        final Job clockJob = k8s.batch().v1().jobs().inNamespace("dcre-pay")
+                .withName(JobLauncher.clockJobName(
+                        za.co.fnb.dcre.agt.domain.Flow.PAY, Stage.PRG, clockKey)).get();
+
+        final Map<Job, String> byJob = new java.util.LinkedHashMap<>();
+        byJob.put(dagJob, "crr");   // DAG path:   serviceJob
+        byJob.put(clockJob, "prg"); // clock path: clockJob
+
+        byJob.forEach((job, token) -> {
+            assertNotNull(job, "no Job built for expected stage token " + token);
+            final Set<String> names = job.getSpec().getTemplate().getSpec()
+                    .getContainers().get(0).getEnv().stream()
+                    .map(io.fabric8.kubernetes.api.model.EnvVar::getName)
+                    .collect(java.util.stream.Collectors.toSet());
+            // Control: this really reads the pod's env, so an absence below is a fact
+            // about the Job spec rather than about an empty list.
+            assertTrue(names.contains(JobLauncher.DB_URL_ENV),
+                    "control: every stage pod carries its primary datasource url. Got " + names);
+            for (final String key : java.util.List.of("DCRE_TELEMETRY_ENABLED",
+                    "DCRE_TELEMETRY_STAGE", "OTLP_ENDPOINT", "METRICS_EXPORT_STEP")) {
+                assertTrue(names.contains(key), job.getMetadata().getName() + " must carry "
+                        + key + ": telemetry reaches every launched pod, on every builder"
+                        + " path. Got " + names);
+            }
+            assertEquals(token, envOf(job, "DCRE_TELEMETRY_STAGE"),
+                    job.getMetadata().getName() + " must name its own stage, lowercased:"
+                            + " the library refuses any service.name outside dcre-[a-z]+ AT"
+                            + " STARTUP");
+            assertEquals(config.otlpEndpoint(), envOf(job, "OTLP_ENDPOINT"),
+                    "the endpoint travels from AgtConfig to the pod");
+            assertEquals(config.metricsExportStep(), envOf(job, "METRICS_EXPORT_STEP"),
+                    "the export step travels from AgtConfig to the pod");
+        });
+    }
+
     @Test
     void manStageJobCarriesTheManDbUrlAndCollectionsKeepsCol() {
         // B2 (SCRUM-79 review): the nine M-services own their schema in
