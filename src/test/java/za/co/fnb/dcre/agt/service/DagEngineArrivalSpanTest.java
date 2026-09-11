@@ -7,7 +7,10 @@ import io.opentelemetry.sdk.trace.data.SpanData;
 import io.opentelemetry.sdk.trace.export.SimpleSpanProcessor;
 import io.opentelemetry.sdk.trace.export.SpanExporter;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 import org.mockito.Mockito;
+import za.co.fnb.dcre.agt.domain.Outcome;
 import za.co.fnb.dcre.agt.domain.ArrivalStatus;
 import za.co.fnb.dcre.agt.domain.FileArrival;
 import za.co.fnb.dcre.agt.domain.Flow;
@@ -48,8 +51,16 @@ class DagEngineArrivalSpanTest {
 
     private static final String FILENAME = "FNBCC01_F.txt";
 
-    @Test
-    void everyArrivalIsProcessedInsideAnArrivalSpanWhoseContextReachesTheLaunchedPod() {
+    /**
+     * Over BOTH loops, because they are two separate wirings of the same thing and the second is the
+     * bigger one: the CLAIMED loop launches an arrival's FIRST stage, the DAG_RUNNING loop launches
+     * every stage after it. A test that stubbed the second loop to empty would stay green with the
+     * span wiring deleted from it, which is the same mutation shape this class exists to catch.
+     */
+    @ParameterizedTest(name = "{0} loop")
+    @EnumSource(value = ArrivalStatus.class, names = {"CLAIMED", "DAG_RUNNING"})
+    void everyArrivalIsProcessedInsideAnArrivalSpanWhoseContextReachesTheLaunchedPod(
+            final ArrivalStatus loop) {
         final RecordingSpanExporter exported = new RecordingSpanExporter();
         final UUID arrivalId = UUID.randomUUID();
         final List<String> traceparents = new CopyOnWriteArrayList<>();
@@ -63,12 +74,16 @@ class DagEngineArrivalSpanTest {
             engine.lease = Mockito.mock(LeaseService.class);
             Mockito.when(engine.lease.holdsLease()).thenReturn(true);
             engine.arrivalRepo = Mockito.mock(ArrivalRepo.class);
-            Mockito.when(engine.arrivalRepo.arrivalsByStatus(ArrivalStatus.CLAIMED))
-                    .thenReturn(List.of(claimed(arrivalId)));
-            Mockito.when(engine.arrivalRepo.arrivalsByStatus(ArrivalStatus.DAG_RUNNING))
-                    .thenReturn(List.of());
+            // Exactly one loop sees the arrival, so the span and the launch below are attributable
+            // to THAT loop's wiring and to nothing else.
+            Mockito.when(engine.arrivalRepo.arrivalsByStatus(Mockito.any())).thenReturn(List.of());
+            Mockito.when(engine.arrivalRepo.arrivalsByStatus(loop))
+                    .thenReturn(List.of(arrival(arrivalId, loop)));
             engine.outcomeRepo = Mockito.mock(OutcomeRepo.class);
+            Mockito.when(engine.outcomeRepo.outcomesForArrival(Mockito.any()))
+                    .thenReturn(Map.of(Stage.CRR, Outcome.BUSINESS_ACCEPTED));
             engine.intentRepo = Mockito.mock(IntentRepo.class);
+            Mockito.when(engine.intentRepo.intentsForArrival(Mockito.any())).thenReturn(List.of());
             engine.collectionsRead = Mockito.mock(CollectionsReadRepo.class);
             engine.counters = Mockito.mock(EventCounters.class);
             // Mocked rather than real: the real one reads AgtConfig.payClients(), and a null
@@ -84,7 +99,7 @@ class DagEngineArrivalSpanTest {
             // stub asks the real launcher code what it would put on the pod, through the same
             // package-private door the sibling test uses.
             Mockito.doAnswer(invocation -> {
-                traceparents.add(JobLauncherTestAccess.stageEnvAsMap(Stage.CRR).get("TRACEPARENT"));
+                traceparents.add(JobLauncherTestAccess.stageEnvAsMap(Stage.CTV).get("TRACEPARENT"));
                 return null;
             }).when(engine.launcher).launch(Mockito.any(), Mockito.any());
 
@@ -130,9 +145,15 @@ class DagEngineArrivalSpanTest {
         assertTrue(!JobLauncherTestAccess.stageEnvAsMap(Stage.CRR).containsKey("TRACEPARENT"));
     }
 
-    private static FileArrival claimed(final UUID id) {
+    /**
+     * The same arrival in whichever status the loop under test reads. DAG_RUNNING is seeded with a
+     * CRR outcome of ACCEPTED so the second loop has a successor to launch: CTV. Without an outcome
+     * it computes no launches, the launcher is never called, and the assertion that would have
+     * caught a missing span would pass over a loop that did nothing.
+     */
+    private static FileArrival arrival(final UUID id, final ArrivalStatus status) {
         return new FileArrival(id, ROUTE, FILENAME, "sha", "FNBCC01", "MSG1",
-                ArrivalStatus.CLAIMED, null, "/exchange/claimed/" + FILENAME);
+                status, null, "/exchange/claimed/" + FILENAME);
     }
 
     /** Holds what the SDK actually ended, which is the only evidence the span existed. */

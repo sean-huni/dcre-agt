@@ -177,9 +177,26 @@ public class JobLauncher {
             "MANAGEMENT_OPENTELEMETRY_TRACING_EXPORT_OTLP_ENDPOINT";
 
     /**
-     * The W3C {@code traceparent}, carried to the pod as an ENVIRONMENT VARIABLE of that name
-     * because that is the spelling the OpenTelemetry SDK autoconfiguration reads for a parent
-     * context. It is the one member of the telemetry block that is CONDITIONAL: see
+     * The W3C {@code traceparent}, carried to the pod as an ENVIRONMENT VARIABLE of that name.
+     *
+     * <p><b>CORRECTION, 2026-09-11. An earlier version of this comment said this is the spelling the
+     * OpenTelemetry SDK autoconfiguration reads for a parent context. That is FALSE, and it sat
+     * exactly where it would stop anyone checking.</b> Measured over all 65 jars on a stage
+     * service's resolved runtime classpath: the literal {@code traceparent} appears in exactly one
+     * class, {@code io.opentelemetry.api.trace.propagation.W3CTraceContextPropagator}, which is
+     * CARRIER-based and never touches the process environment; the SDK's autoconfigure
+     * implementation is not on that classpath at all, only its service-provider interface; and
+     * Boot's {@code OpenTelemetryEnvironmentVariableEnvironmentPostProcessor} maps eight
+     * {@code OTEL_*} variables, of which this is not one.
+     *
+     * <p>So the name is OURS. It matches the W3C header so a human reading a pod spec recognises it,
+     * and the consumer half is explicit code in the shared library:
+     * {@code za.co.fnb.dcre.platform.batch.telemetry.ParentTraceContext} extracts it and
+     * {@code ParentTraceContextListener} makes it current across the runner phase, which is where a
+     * Spring Batch job runs. Setting this variable without that library is inert. Snapshot with a
+     * date on it, like everything here about another repository.
+     *
+     * <p>It is the one member of the telemetry block that is CONDITIONAL: see
      * {@link #currentTraceparent()} and the contract on {@link #stageEnv(Stage)}.
      */
     private static final String TRACEPARENT_ENV = "TRACEPARENT";

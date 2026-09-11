@@ -868,8 +868,13 @@ one.
 ### On every stage pod, always
 
 Set in both `JobLauncher.serviceJob` (DAG stages) and `JobLauncher.clockJob` (clock windows).
-The first five are literal `addNewEnv` chains declared SEPARATELY in each builder; the last four
-come from `JobLauncher.stageEnv`, which both builders now seed from.
+The first five are literal `addNewEnv` chains declared SEPARATELY in each builder; the remaining
+SEVEN come from `JobLauncher.stageEnv`, which both builders now seed from. Six of those seven are
+unconditional; `TRACEPARENT` is the exception and is absent whenever no arrival span is active.
+Counted from `JobLauncher.telemetryEnv` rather than from this table, because a number beside a table
+is a second home for a fact and this sentence has already been stale once: it said "the last four"
+after the count had reached seven, and the presence check that verifies every variable appears in
+this README is structurally blind to a wrong number in the prose.
 
 | Variable | Value | Source |
 |---|---|---|

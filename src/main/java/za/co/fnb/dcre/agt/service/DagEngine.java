@@ -225,9 +225,11 @@ public class DagEngine {
                 // waiting, so retrying it every 2s is a permanent WARN loop.
                 LOG.errorf("QUARANTINED %s: unresolvable route %s: %s",
                         arrival.id(), arrival.routeId(), e.getMessage());
+                failed(span, e);
                 transition(arrival.id(), ArrivalStatus.CLAIMED, ArrivalStatus.QUARANTINED);
             } catch (Exception e) {
                 LOG.warnf("start DAG for %s failed: %s", arrival.id(), e.getMessage());
+                failed(span, e);
             } finally {
                 span.end();
             }
@@ -264,9 +266,11 @@ public class DagEngine {
                 // the CLAIMED loop.
                 LOG.errorf("QUARANTINED %s: unresolvable route %s: %s",
                         arrival.id(), arrival.routeId(), e.getMessage());
+                failed(span, e);
                 transition(arrival.id(), ArrivalStatus.DAG_RUNNING, ArrivalStatus.QUARANTINED);
             } catch (Exception e) {
                 LOG.warnf("advance DAG for %s failed: %s", arrival.id(), e.getMessage()); // one poisoned arrival never wedges the loop (F10)
+                failed(span, e);
             } finally {
                 span.end();
             }
@@ -289,9 +293,34 @@ public class DagEngine {
      * including the early {@code return} when the lease is lost.
      */
     private Span arrivalSpan(final FileArrival arrival) {
-        return tracer.spanBuilder("arrival")
-                .setAttribute("dcre.arrival.id", arrival.id().toString())
-                .startSpan();
+        try {
+            return tracer.spanBuilder("arrival")
+                    .setAttribute("dcre.arrival.id", arrival.id().toString())
+                    .startSpan();
+        } catch (RuntimeException telemetryNeverDecidesAnArrival) {
+            // The span is created OUTSIDE the per-arrival try, so a throw here would escape the
+            // loop's isolation and wedge the whole tick. Moving it inside would be worse, not
+            // better: the catch arms below QUARANTINE, so a tracer fault would terminate a
+            // perfectly good arrival. Degrading to the invalid span keeps both properties. An
+            // invalid span ends as a no-op and carries no valid context, so JobLauncher contributes
+            // no TRACEPARENT and the stage starts its own trace, which is the designed degradation.
+            LOG.warnf("no arrival span for %s: %s", arrival.id(), telemetryNeverDecidesAnArrival.getMessage());
+            return Span.getInvalid();
+        }
+    }
+
+    /**
+     * Marks the arrival's span failed, so a quarantined or wedged arrival is distinguishable from a
+     * healthy one on the board this work exists to populate. Without it every arrival ends OK and
+     * the Traces view answers "did this file fail" with silence.
+     *
+     * <p>Called from the catch arms, where the {@link Scope} is already closed. That is fine and is
+     * why the span is passed rather than read from {@code Span.current()}: the span object is still
+     * live until {@code end()}, and reading the ambient context there would find nothing.
+     */
+    private static void failed(final Span span, final Exception cause) {
+        span.setStatus(io.opentelemetry.api.trace.StatusCode.ERROR, String.valueOf(cause.getMessage()));
+        span.recordException(cause);
     }
 
     /** Route dispatch: request routes resolve their DAG from the R-36 registry;
