@@ -64,6 +64,9 @@ public class OutcomeWatcher {
     @Inject
     KubernetesClient k8s;
 
+    @Inject
+    EventCounters counters;
+
     @RunOnVirtualThread
     @Scheduled(every = "3s", concurrentExecution = io.quarkus.scheduler.Scheduled.ConcurrentExecution.SKIP)
     void tick() {
@@ -128,6 +131,10 @@ public class OutcomeWatcher {
             outcome = business.get();
         }
         if (outcomeRepo.insertOutcome(intent.id(), intent.attempt(), outcome, exitCode, condition)) {
+            // Inside the true branch only: insertOutcome is ON CONFLICT DO NOTHING,
+            // so false means a duplicate observation wrote nothing and counting it
+            // would inflate the rate with work that did not happen.
+            counters.recordOutcomeEvent(outcome);
             LOG.infof("Outcome %s = %s (%s, exit=%s)", intent.jobName(), outcome, condition, exitCode);
         }
     }

@@ -6,6 +6,7 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import org.jboss.logging.Logger;
 import za.co.fnb.dcre.agt.config.AgtConfig;
+import za.co.fnb.dcre.agt.domain.ArrivalStatus;
 import za.co.fnb.dcre.agt.domain.LaunchIntent;
 import za.co.fnb.dcre.agt.domain.Outcome;
 import za.co.fnb.dcre.agt.domain.RelaunchCandidate;
@@ -54,6 +55,9 @@ public class OrphanRelauncher {
 
     @Inject
     KubernetesClient k8s;
+
+    @Inject
+    EventCounters counters;
 
     /** OrphanSweeper (spec 2026-07-14): current attempt ended TECH -> bounded relaunch.
      *  The k8s-Failed path: a Failed Job condition minted a TECH_FAILED outcome, or
@@ -130,6 +134,7 @@ public class OrphanRelauncher {
                     ? "InfraBudgetExhausted" : "OrphanBudgetExhausted";
             if (outcomeRepo.insertOutcome(intent.id(), attempt, Outcome.TECH_EXHAUSTED,
                     null, exhaustionCondition)) {
+                counters.recordOutcomeEvent(Outcome.TECH_EXHAUSTED);
                 if (intent.isArrivalReport()) {
                     // SCRUM-90: an IMMEDIATE report is downstream of DAG completion;
                     // its exhaustion is terminal on the REPORT intent ONLY and must
@@ -137,7 +142,18 @@ public class OrphanRelauncher {
                     LOG.errorf("Immediate report %s exhausted %d attempts: TECH_EXHAUSTED"
                             + " (parent arrival DAG untouched)", intent.jobName(), intent.attempt());
                 } else {
-                    arrivalRepo.markDagFailed(intent.arrivalId());
+                    // A second INCREMENT site for a real DAG_FAILED transition.
+                    // markDagFailed is its own CAS statement and does not go
+                    // through transitionArrival, so without this the orphan
+                    // exhaustion path's transitions would be missed and the
+                    // series would UNDERCOUNT. It is not the only producer of
+                    // DAG_FAILED: DagEngine.terminalState also returns it on the
+                    // fatal-plus-responder-business-done branch (DagEngine:367),
+                    // which reaches the counter through transition(...).
+                    // Checkable: grep -n 'DAG_FAILED' DagEngine.java.
+                    if (arrivalRepo.markDagFailed(intent.arrivalId())) {
+                        counters.recordArrivalTransition(ArrivalStatus.DAG_FAILED);
+                    }
                     LOG.errorf("Orphan %s exhausted %d attempts: TECH_EXHAUSTED, arrival DAG_FAILED",
                             intent.jobName(), intent.attempt());
                 }

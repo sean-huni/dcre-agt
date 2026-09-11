@@ -1013,26 +1013,67 @@ not edge-triggered: a restart mid-window relaunches nothing.
 
 ### Metrics
 
-Eight metric names, in **three different prefixes**, which anyone writing a dashboard query needs
-to know before they filter on `agt_`. Enumerated 2026-08-09 with
+Ten metric names, in **three different prefixes**, which anyone writing a dashboard query needs
+to know before they filter on `agt_`. Re-enumerated 2026-09-11 with
 `command grep -rn --include='*.java' -oE '"(agt|dcre)_[a-z_]+"' src/main/java | sort -u` (exit 0),
 discarding the four `dcre_col`/`dcre_pay`/`dcre_man`/`dcre_hcs` database-name literals in
-`domain/DbFamily.java` that the same expression matches.
+`domain/DbFamily.java` that the same expression matches. This is what the repository publishes
+today, not a closed universe: any new `registry.counter`/`registry.gauge` call adds to it, and the
+command above is how the next reader re-derives the list rather than trusting this one.
 
-| Metric | Tags | Published by | Notes |
+| Metric | Tags | Name declared at | Notes |
 |---|---|---|---|
-| `agt_lease_held` | none | `MetricsService.java:38` | 1 on the leader, 0 elsewhere |
-| `agt_file_arrivals_total` | `status` | `MetricsService.java:44` | `file_arrival` grouped by status |
-| `agt_dag_running_oldest_age_seconds` | `scope` | `MetricsService.java:51` | AGE, not count. The emission gate makes `DAG_RUNNING` legitimately long-lived, so a count cannot distinguish "warehoused" from "stranded". This is the number worth alerting on. |
-| `agt_launch_intents_total` | `status` | `MetricsService.java:52` | |
-| `agt_stage_outcomes_total` | `outcome` | `MetricsService.java:53` | |
+| `agt_lease_held` | none | `MetricsService.java:43` | 1 on the leader, 0 elsewhere |
+| `agt_file_arrivals_total` | `status` | `MetricsService.java:49` | `file_arrival` grouped by status |
+| `agt_dag_running_oldest_age_seconds` | `scope` | `MetricsService.java:56` | AGE, not count. The emission gate makes `DAG_RUNNING` legitimately long-lived, so a count cannot distinguish "warehoused" from "stranded". This is the number worth alerting on. |
+| `agt_launch_intents_total` | `status` | `MetricsService.java:57` | |
+| `agt_stage_outcomes_total` | `outcome` | `MetricsService.java:58` | |
+| `agt_stage_outcome_events_total` | `outcome` | `EventCounters.java:51` | **Counter, not a gauge, and not a rename of the row above.** Incremented where a `stage_outcome` row is actually written. All seven `Outcome` values are pre-registered at zero. |
+| `agt_arrival_transitions_total` | `status` | `EventCounters.java:54` | Counter. **TRANSITIONS ONLY**, and the tag space is four values, not five: see the note below. |
 | `dcre_sla_pending_amber` | `flow`, `client` | `SlaMonitor.java:45` | Fintegrate SLA amber, per flow AND client: a client can ride both flows and a merged gauge cannot say which side is breaching |
 | `dcre_sla_pending_red` | `flow`, `client` | `SlaMonitor.java:46` | **This is the gauge the ops runbook alerts on** (`AGT_SLA_RED_HOURS`) |
 | `dcre_agt_latent_dir_files_total` | `client`, `dir` | `LatentDirAuditor.java:33` | Counter, not a gauge. Files sitting in directories AGT does not own. |
 
-Despite the `agt_` prefix on five of them, all eight are ordinary Micrometer meters exported over
-OTLP to `OTEL_EXPORTER_OTLP_ENDPOINT`. There is no `dcre-agt` Grafana dashboard in any repository;
-see Known gaps.
+The third column is where the metric NAME literal is declared, which is exactly what the
+enumeration command above returns, so a reader running it gets these line numbers and not different
+ones. For the three metrics declared as a constant (`agt_stage_outcome_events_total`,
+`agt_arrival_transitions_total`, `dcre_agt_latent_dir_files_total`) the `registry.counter(...)` call
+is elsewhere in the same class.
+
+Despite the `agt_` prefix on seven of them, all ten are ordinary Micrometer meters exported over
+OTLP to `OTEL_EXPORTER_OTLP_ENDPOINT`. Checked 2026-09-11: no Grafana dashboard naming `dcre-agt`
+was found in this machine's `~/env/repo` tree (against a control showing 40 dashboard-shaped JSON
+files are reachable by that search); see Known gaps. Alert RULES do exist, in
+`infra/dcre-infra/scripts/grafana-alerts.sh`.
+
+**What `agt_arrival_transitions_total` does NOT count.** `file_arrival.status` has three writers,
+not two: the CAS updates `ArrivalRepo.transitionArrival` and `ArrivalRepo.markDagFailed`, and
+`ArrivalRepo.insertArrival`, which binds a status directly at INSERT. This counter covers the two
+CAS writers only, so:
+
+- `status="CLAIMED"` is **not published at all**. CLAIMED is minted only by `insertArrival`, so a
+  pre-registered CLAIMED series would sit at zero for the life of the process and an operator could
+  not tell it from a broken increment.
+- `status="QUARANTINED"` **undercounts**. `ArrivalService.quarantine()` inserts the row directly at
+  QUARANTINED from four call sites, none of which passes through `transitionArrival`, so a file
+  rejected at ingest lands in the error directory without moving this counter. Only quarantines
+  decided later, by `DagEngine`, are counted here.
+
+For the arrival population including both, use the `agt_file_arrivals_total` gauge, which scans the
+table and therefore sees every writer.
+
+**Why `stage_outcome` carries both a gauge and a counter.** The gauges are a table scan republished
+every 10s, and two of their properties make them unusable for a rate panel or an alert. Each series
+is registered lazily, keyed on a tag value a `GROUP BY` returned, so an outcome with no rows has no
+series at all and a panel reads "No data" rather than 0. And the refresh loop only calls `set` on
+the tags that tick returned, so an outcome that leaves the table keeps its last non-zero reading for
+ever, indistinguishable from a live one. The gauges are KEPT because three of the five alert rules
+provisioned by `infra/dcre-infra/scripts/grafana-alerts.sh` select on them by name
+(`dcre-dag-failed` and `dcre-telemetry-silent` on `agt_file_arrivals_total`, `dcre-tech-failed` on
+`agt_stage_outcomes_total`; checked 2026-09-11, and that script asserts a rule count of 5). The
+counters are the instrument to build anything new on. Both behaviours are pinned by
+`EventCountersTest`, which drives the gauge path against a fake table it can purge and asserts the
+two instruments then disagree.
 
 ---
 

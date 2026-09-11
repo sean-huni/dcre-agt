@@ -165,6 +165,26 @@ public class DagEngine {
     @Inject
     FlowNamespaces flowNamespaces;
 
+    @Inject
+    EventCounters counters;
+
+    /**
+     * Every arrival transition goes through here so the counter cannot miss a
+     * site, and it increments ONLY when the CAS actually moved the row. A
+     * transitionArrival that matched nothing returns false and throws nothing,
+     * so counting on "it did not throw" would record work that did not happen:
+     * this loop re-reads every CLAIMED and DAG_RUNNING arrival every 2s, so a
+     * no-op transition is the common case, not the rare one.
+     *
+     * <p>Package-private rather than private so the guard itself is directly
+     * testable; every other route to it needs a live CockroachDB.
+     */
+    void transition(final java.util.UUID id, final ArrivalStatus from, final ArrivalStatus to) {
+        if (arrivalRepo.transitionArrival(id, from, to)) {
+            counters.recordArrivalTransition(to);
+        }
+    }
+
     @RunOnVirtualThread
     @Scheduled(every = "2s", concurrentExecution = io.quarkus.scheduler.Scheduled.ConcurrentExecution.SKIP)
     void tick() {
@@ -181,20 +201,20 @@ public class DagEngine {
                         flowNamespaces.flowFor(arrival), arrival.physicalFilename());
                 if (first.isEmpty()) {
                     // Unknown fint-resp token never launches (fail closed, F13).
-                    arrivalRepo.transitionArrival(arrival.id(), ArrivalStatus.CLAIMED, ArrivalStatus.QUARANTINED);
+                    transition(arrival.id(), ArrivalStatus.CLAIMED, ArrivalStatus.QUARANTINED);
                     LOG.warnf("QUARANTINED %s: no stage for %s on route %s",
                             arrival.id(), arrival.physicalFilename(), arrival.routeId());
                     continue;
                 }
                 launcher.launch(arrival.id(), first.get());
-                arrivalRepo.transitionArrival(arrival.id(), ArrivalStatus.CLAIMED, ArrivalStatus.DAG_RUNNING);
+                transition(arrival.id(), ArrivalStatus.CLAIMED, ArrivalStatus.DAG_RUNNING);
             } catch (IllegalArgumentException e) {
                 // SCRUM-107: same reasoning as the DAG_RUNNING loop below. An
                 // unresolvable route or namespace never becomes resolvable by
                 // waiting, so retrying it every 2s is a permanent WARN loop.
                 LOG.errorf("QUARANTINED %s: unresolvable route %s: %s",
                         arrival.id(), arrival.routeId(), e.getMessage());
-                arrivalRepo.transitionArrival(arrival.id(), ArrivalStatus.CLAIMED, ArrivalStatus.QUARANTINED);
+                transition(arrival.id(), ArrivalStatus.CLAIMED, ArrivalStatus.QUARANTINED);
             } catch (Exception e) {
                 LOG.warnf("start DAG for %s failed: %s", arrival.id(), e.getMessage());
             }
@@ -221,7 +241,7 @@ public class DagEngine {
                 terminalState(arrival.routeId(), flow, outcomes,
                         () -> collectionsRead.emissionOwedFor(arrival.id()))
                         .ifPresent(
-                        s -> arrivalRepo.transitionArrival(arrival.id(), ArrivalStatus.DAG_RUNNING, s));
+                        s -> transition(arrival.id(), ArrivalStatus.DAG_RUNNING, s));
             } catch (IllegalArgumentException e) {
                 // SCRUM-107: an unresolvable route/namespace is not transient, so a
                 // WARN-and-retry would re-throw every 2s forever: loud, never
@@ -230,7 +250,7 @@ public class DagEngine {
                 // the CLAIMED loop.
                 LOG.errorf("QUARANTINED %s: unresolvable route %s: %s",
                         arrival.id(), arrival.routeId(), e.getMessage());
-                arrivalRepo.transitionArrival(arrival.id(), ArrivalStatus.DAG_RUNNING, ArrivalStatus.QUARANTINED);
+                transition(arrival.id(), ArrivalStatus.DAG_RUNNING, ArrivalStatus.QUARANTINED);
             } catch (Exception e) {
                 LOG.warnf("advance DAG for %s failed: %s", arrival.id(), e.getMessage()); // one poisoned arrival never wedges the loop (F10)
             }

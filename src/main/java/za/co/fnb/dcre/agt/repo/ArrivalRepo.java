@@ -101,19 +101,24 @@ public class ArrivalRepo {
         }
     }
 
-    /** Monotonic CAS transition (Fugu F7): writes only from the expected state. */
-    public void transitionArrival(UUID id, ArrivalStatus from, ArrivalStatus to) {
-        JdbcSupport.exec(ds, "UPDATE file_arrival SET status=? WHERE id=? AND status=?", p -> {
+    /** Monotonic CAS transition (Fugu F7): writes only from the expected state.
+     *  @return true when the arrival WAS in {@code from} and has moved to {@code to}.
+     *      False means another incarnation or an earlier tick already moved it, which
+     *      is a normal no-op and not an error, so it cannot be signalled by throwing. */
+    public boolean transitionArrival(UUID id, ArrivalStatus from, ArrivalStatus to) {
+        return JdbcSupport.exec(ds, "UPDATE file_arrival SET status=? WHERE id=? AND status=?", p -> {
             p.setString(1, to.name());
             p.setObject(2, id);
             p.setString(3, from.name());
-        });
+        }) > 0;
     }
 
-    /** OrphanSweeper exhaustion: terminal only from DAG_RUNNING (guard keeps terminal states immutable). */
-    public void markDagFailed(final UUID arrivalId) {
-        JdbcSupport.exec(ds, "UPDATE file_arrival SET status='DAG_FAILED' WHERE id=? AND status='DAG_RUNNING'",
-                p -> p.setObject(1, arrivalId));
+    /** OrphanSweeper exhaustion: terminal only from DAG_RUNNING (guard keeps terminal states immutable).
+     *  @return true when this call is the one that made the arrival DAG_FAILED. */
+    public boolean markDagFailed(final UUID arrivalId) {
+        return JdbcSupport.exec(ds,
+                "UPDATE file_arrival SET status='DAG_FAILED' WHERE id=? AND status='DAG_RUNNING'",
+                p -> p.setObject(1, arrivalId)) > 0;
     }
 
     public void updateArrivalClaimedPath(UUID id, String claimedPath) {

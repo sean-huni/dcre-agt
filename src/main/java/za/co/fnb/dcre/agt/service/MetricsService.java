@@ -17,6 +17,11 @@ import java.util.concurrent.atomic.AtomicLong;
 /**
  * Ledger-derived gauges for the dcre-agt dashboard (agt_* series). Values are
  * re-read from agt_ops so a restarted AGT reports truth, not in-memory state.
+ *
+ * <p>ONE job: scan the ledger and republish row counts. The genuine event
+ * counters live in {@link EventCounters}, which needs neither the datasource nor
+ * the lease; see that class for why both instruments exist and why these gauge
+ * NAMES are kept unchanged.
  */
 @ApplicationScoped
 public class MetricsService {

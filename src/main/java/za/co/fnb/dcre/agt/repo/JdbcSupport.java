@@ -17,10 +17,16 @@ final class JdbcSupport {
         void bind(PreparedStatement p) throws SQLException;
     }
 
-    static void exec(DataSource ds, String sql, Binder binder) {
+    /**
+     * @return the affected row count. A CAS UPDATE whose WHERE clause did not
+     *     match affects zero rows and throws NOTHING, so a caller that needs to
+     *     know whether its write actually happened cannot learn it from the
+     *     absence of an exception. Callers that do not care may discard this.
+     */
+    static int exec(DataSource ds, String sql, Binder binder) {
         try (Connection c = ds.getConnection(); PreparedStatement p = c.prepareStatement(sql)) {
             binder.bind(p);
-            p.executeUpdate();
+            return p.executeUpdate();
         } catch (SQLException e) {
             throw new IllegalStateException("exec failed: " + sql, e);
         }

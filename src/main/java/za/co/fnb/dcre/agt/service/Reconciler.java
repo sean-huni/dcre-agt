@@ -77,6 +77,9 @@ public class Reconciler {
     @Inject
     FlowNamespaces flowNamespaces;
 
+    @Inject
+    EventCounters counters;
+
     @RunOnVirtualThread
     @Scheduled(every = "5s", concurrentExecution = io.quarkus.scheduler.Scheduled.ConcurrentExecution.SKIP)
     void tick() {
@@ -161,6 +164,7 @@ public class Reconciler {
         if (business.isPresent()) {
             if (outcomeRepo.insertOutcome(intent.id(), intent.attempt(), business.get(), null,
                     "ReapedBeforeObservation")) {
+                counters.recordOutcomeEvent(business.get());
                 LOG.infof("Reconcile: recovered outcome %s = %s from seam after reap",
                         intent.jobName(), business.get());
             }
