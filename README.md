@@ -1,5 +1,7 @@
 # dcre-agt
 
+> Part of the DCRE fleet. For the fleet map, the rulings and the diagrams that specify every stage, start at the [DCRE design register](https://github.com/sean-huni/dcre-design-register); the complete list of live repositories is its [Repositories](https://github.com/sean-huni/dcre-design-register#repositories) table.
+
 The DCRE orchestrator. AGT is the only long-running service in the platform: everything
 else is a short-lived Kubernetes `Job` that AGT mints, watches and reaps.
 
@@ -21,6 +23,15 @@ Two entry points, depending on why you are here. To CHANGE AGT, read
 [Exercise it end to end](#exercise-it-end-to-end): building and deploying AGT is not sufficient,
 because a deployed AGT with no arrival file and no stage images processes nothing and reports
 nothing.
+
+What it launches: the 29 constants of `domain/Stage` (the 28 family stages on the six sheets plus
+the cross-family HCS), each as a Job in its family's flow namespace (`dcre-col`, `dcre-pay`,
+`dcre-man`; HCS is hosted in `dcre-col`), while AGT itself runs in the control namespace `dcre`.
+
+Which databases it uses: `agt_ops` is its own, read/write. `dcre_col` and `dcre_pay` are read-only
+windows onto published views (`crw_emission_owed`, `prg_report_due`, `prg_sla_pending`) through the
+`collections` and `payments` datasources. `dcre_col`, `dcre_pay`, `dcre_man` and `dcre_hcs` are
+otherwise only URLs AGT hands to stage pods, one per family, alongside `agt_ops`.
 
 State lives in AGT's own `agt_ops` database and in the Kubernetes API. Nothing lives only in
 memory: `LeaseService` and `Reconciler` rebuild everything from the ledgers on restart.
@@ -1287,13 +1298,14 @@ Documented because they are not true yet, rather than described as if they were.
 The complete, current list of live DCRE repositories lives in one place: the [DCRE design register README](https://github.com/sean-huni/dcre-design-register#repositories). Deprecated and archived repositories are deliberately absent from it. This README does not copy that list, so it cannot drift.
 
 Three repositories a new engineer needs by name. `dcre-infra`
-provisions the cluster, the five databases and the exchange tree, and owns `switch-version.sh`,
+provisions the cluster, three of the five databases (`dcre_col`, `agt_ops`, `dcre_man`; nothing there
+creates `dcre_pay` or `dcre_hcs`, checked 2026-09-28) and the exchange tree, and owns `switch-version.sh`,
 `env-reset.sh` and `fint-sim.sh`. `dcre-fixture-toolkit` is the Python generator that cuts the
 arrival files, and is checked out here as `env/repo/be/python/dcre/fnb_dcre_ctv_toolkit`.
 `dcre-design-register` holds the six sheets that are the specification, and is checked out here as
 `env/repo/be/java/spring/dcre/design-register`. Both of those directory names differ from the
-repository name, so searching the filesystem for the repository name finds nothing. See
-[Exercise it end to end](#exercise-it-end-to-end).
+repository name, so searching the filesystem for the repository name finds nothing (checkout paths
+checked 2026-09-28). See [Exercise it end to end](#exercise-it-end-to-end).
 
 ### External references
 
