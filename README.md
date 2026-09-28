@@ -1343,7 +1343,7 @@ dateless claim about them cannot be aged by a reader.
 | Liquibase changelogs | 9 files (8 changesets + master) | `find src/main/resources/db/changelog -name '*.xml' \| wc -l` |
 | Gradle wrapper | 9.3.1 | `./gradlew --version` |
 | JDK | 25 (Temurin 25+36-LTS) | `java -version` |
-| Quarkus platform | 3.33.2.1 | `gradle.properties` |
+| Quarkus platform | 3.33.3.1 (re-read 2026-09-28) | `gradle.properties` |
 | Application version | 2.0.1 | `build.gradle` |
 | Stage constants | 29 | `domain/Stage.java` |
 | Image knobs | 29 in `application.yml`, 29 in the manifest | `grep -c '\-image: \${AGT_' src/main/resources/application.yml` |
