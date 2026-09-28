@@ -1,6 +1,6 @@
 # dcre-agt
 
-> Part of the DCRE fleet. For the fleet map, the rulings and the diagrams that specify every stage, start at the [DCRE design register](https://github.com/sean-huni/dcre-design-register); the complete list of live repositories is its [Repositories](https://github.com/sean-huni/dcre-design-register#repositories) table.
+> Part of the DCRE fleet. For the fleet map, the rulings and the diagrams that specify every stage, start at the [DCRE design register](https://github.com/sean-huni/dcre-design-register); the complete list of live repositories is its [Repositories](https://github.com/sean-huni/dcre-design-register/blob/dev/README.md#repositories) table.
 
 The DCRE orchestrator. AGT is the only long-running service in the platform: everything
 else is a short-lived Kubernetes `Job` that AGT mints, watches and reaps.
@@ -1297,7 +1297,7 @@ Documented because they are not true yet, rather than described as if they were.
 
 ## Related repositories
 
-The complete, current list of live DCRE repositories lives in one place: the [DCRE design register README](https://github.com/sean-huni/dcre-design-register#repositories). Deprecated and archived repositories are deliberately absent from it. This README does not copy that list, so it cannot drift.
+The complete, current list of live DCRE repositories lives in one place: the [DCRE design register README](https://github.com/sean-huni/dcre-design-register/blob/dev/README.md#repositories). Deprecated and archived repositories are deliberately absent from it. This README does not copy that list, so it cannot drift.
 
 Three repositories a new engineer needs by name. `dcre-infra`
 provisions the cluster, three of the five databases (`dcre_col`, `agt_ops`, `dcre_man`; nothing there
