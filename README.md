@@ -47,7 +47,9 @@ nothing else. `Stage` is a transcription of them.
 The register is checked out on this machine as `env/repo/be/java/spring/dcre/design-register`,
 under the directory name `design-register` rather than the repository name, so searching the
 filesystem for `dcre-design-register` finds nothing. The six sheets are
-`dcre-{collections,payments,mandates}-{req,res}.png`.
+`dcre-{collections,payments,mandates}-{req,res}.png`. **They are not on the register's `dev` or
+`main` yet** (checked 2026-09-28): `docs/diagrams/` exists only on the unmerged
+`SCRUM-107-design-payments-family-split` and `SCRUM-107-feat-client-authority` branches.
 
 ```
 family        stages                                            database    namespace
