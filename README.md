@@ -1284,26 +1284,9 @@ Documented because they are not true yet, rather than described as if they were.
 
 ## Related repositories
 
-All DCRE repositories are **private** under https://github.com/sean-huni. Verified 2026-08-09
-with `gh api repos/sean-huni/<name> --jq '.private'`: all 38 exist and every one returned
-`true`. An unauthenticated `curl` of any of them returns 404, and that is privacy, not a broken
-link. The control for that check: https://github.com/sean-huni returns 200 and an invented
-repository name under the same account returns 404.
+The complete, current list of live DCRE repositories lives in one place: the [DCRE design register README](https://github.com/sean-huni/dcre-design-register#repositories). Deprecated and archived repositories are deliberately absent from it. This README does not copy that list, so it cannot drift.
 
-Because they are private, the plain names are given rather than links that would 404 for a
-reader who is not signed in.
-
-| Group | Repositories |
-|---|---|
-| This service | `dcre-agt` |
-| Collections | `dcre-crr` `dcre-ctv` `dcre-cde` `dcre-crw` `dcre-cir` `dcre-cix` `dcre-csx` `dcre-cpx` `dcre-crg` |
-| Payments | `dcre-prr` `dcre-ptv` `dcre-pai` `dcre-prw` `dcre-pir` `dcre-pix` `dcre-psx` `dcre-ppx` `dcre-prg` |
-| Mandates | `dcre-mrr` `dcre-mrv` `dcre-mas` `dcre-mit` `dcre-mir` `dcre-mrw` `dcre-mix` `dcre-msx` `dcre-mpx` `dcre-mrg` |
-| Cross-family | `dcre-hcs` `dcre-rpt` |
-| Shared platform | `dcre-platform-model` `dcre-platform-files` `dcre-platform-batch` `dcre-platform-persistence` |
-| Infrastructure and docs | `dcre-infra` `dcre-fixture-toolkit` `dcre-design-register` |
-
-The last three are the ones a new engineer needs by name rather than by group. `dcre-infra`
+Three repositories a new engineer needs by name. `dcre-infra`
 provisions the cluster, the five databases and the exchange tree, and owns `switch-version.sh`,
 `env-reset.sh` and `fint-sim.sh`. `dcre-fixture-toolkit` is the Python generator that cuts the
 arrival files, and is checked out here as `env/repo/be/python/dcre/fnb_dcre_ctv_toolkit`.
@@ -1311,9 +1294,6 @@ arrival files, and is checked out here as `env/repo/be/python/dcre/fnb_dcre_ctv_
 `env/repo/be/java/spring/dcre/design-register`. Both of those directory names differ from the
 repository name, so searching the filesystem for the repository name finds nothing. See
 [Exercise it end to end](#exercise-it-end-to-end).
-
-The pre-cutover repositories (`dcre-ixr`, `dcre-sxr`, `dcre-pxr`, `dcre-ais`) are archived per
-R-48 and their images are no longer built.
 
 ### External references
 
