@@ -47,9 +47,8 @@ nothing else. `Stage` is a transcription of them.
 The register is checked out on this machine as `env/repo/be/java/spring/dcre/design-register`,
 under the directory name `design-register` rather than the repository name, so searching the
 filesystem for `dcre-design-register` finds nothing. The six sheets are
-`dcre-{collections,payments,mandates}-{req,res}.png`. **They are not on the register's `dev` or
-`main` yet** (checked 2026-09-28): `docs/diagrams/` exists only on the unmerged
-`SCRUM-107-design-payments-family-split` and `SCRUM-107-feat-client-authority` branches.
+`dcre-{collections,payments,mandates}-{req,res}.png`, under `docs/diagrams/` on the register's
+dev branch (landed 2026-09-28); they are not on `main` yet.
 
 ```
 family        stages                                            database    namespace
@@ -148,8 +147,9 @@ Treat a compile error here as the design working. Do not add a default arm to ma
    that family owns, compared by parsing the database segment out of the JDBC URL. Pointing
    `AGT_PAY_SERVICE_DB_URL` at `dcre_col` is a one-variable typo that otherwise reads as a
    working deployment. It fails at Job-BUILD time, before a pod exists, and the message names
-   both sides. This is the AGT-side twin of `shared/hcs`'s `FamilyGuard`, which compares
-   `current_database()` before any DDL.
+   both sides. It is the AGT-side twin of the hcs `FamilyGuard`, which compares
+   `current_database()` before any DDL; that guard is not on hcs `dev`, and exists only on the
+   unmerged hcs branch `SCRUM-107-feat-shared-reference-context` (checked 2026-09-28).
 2. **`StageNamespaces.requireCorrectNamespace`.** The namespace a Job is going into must be the
    one its stage is hosted in. The namespace comes from the durable intent row, so this also
    catches a reconciled re-create that would rebuild a pod into the wrong family.
@@ -762,7 +762,7 @@ database knobs.
 | `AGT_SERVICE_DB_URL` | `jdbc:postgresql://crdb.dcre.svc.cluster.local:26257/dcre_col?sslmode=disable` (`:140`) | no | The URL every COLLECTIONS stage pod gets as `DCRE_DB_URL`. Also the `DCRE_COL_DB_URL` handed to the MRG suspension sweep. **No longer handed to HCS.** |
 | `AGT_PAY_SERVICE_DB_URL` | `...:26257/dcre_pay?sslmode=disable` (`:145`) | no | Every PAYMENTS stage pod's `DCRE_DB_URL`. |
 | `AGT_MAN_SERVICE_DB_URL` | `...:26257/dcre_man?sslmode=disable` (`:148`) | no | Every MANDATES stage pod's `DCRE_DB_URL`, **and** every CTV pod's `DCRE_CTV_MANDATES_DB_URL`. One knob feeds both deliberately, so the two cannot drift. |
-| `AGT_HCS_SERVICE_DB_URL` | `...:26257/dcre_hcs?sslmode=disable` (`:155`) | no | The HCS pod's `DCRE_DB_URL`, **and** every CDE pod's `DCRE_CDE_HOLIDAYS_DB_URL`. `shared/hcs` carries a `FamilyGuard` on `current_database()`, so with the pre-2026-08-08 routing every HCS pod dies on startup. |
+| `AGT_HCS_SERVICE_DB_URL` | `...:26257/dcre_hcs?sslmode=disable` (`:155`) | no | The HCS pod's `DCRE_DB_URL`, **and** every CDE pod's `DCRE_CDE_HOLIDAYS_DB_URL`. The hcs `FamilyGuard` on `current_database()` exists only on the unmerged hcs branch `SCRUM-107-feat-shared-reference-context`, not on hcs `dev` (checked 2026-09-28); once it merges, the pre-2026-08-08 routing makes every HCS pod die on startup. |
 | `AGT_AGTOPS_DB_URL` | `...:26257/agt_ops?sslmode=disable` (`:170`) | no | Handed to **every** stage pod so the platform-batch heartbeat writer can reach `agt_ops`. Identical for all flows. |
 | `AGT_AGTOPS_DB_USER` | `root` (`:171`) | no | The heartbeat writer's user |
 
@@ -1363,4 +1363,4 @@ dateless claim about them cannot be aged by a reader.
 | Running deployment env vars | 27 total, 21 image knobs | `kubectl get deploy dcre-agt -o json` |
 | Payments services reading `DCRE_DB_URL` | 9 of 9, as of 2026-08-09 | `git -C <each payments repo> show HEAD:src/main/resources/application.yml`, then grep the `url:` line. Each service is its OWN repository; a `git show` from the parent directory resolves elsewhere and returns nothing. |
 | Loops that gate on the lease | all writers; `SlaMonitor`, `LatentDirAuditor`, `MetricsService` do not | `grep -c holdsLease` per file in `service/` |
-| DCRE repositories | 38, all private | `gh api repos/sean-huni/<name> --jq '.private'` |
+| DCRE repositories | 39 live, per the design register's Repositories table (checked 2026-09-28) | that table, rebuilt from `gh repo list sean-huni --json name,isArchived` filtered to unarchived |
